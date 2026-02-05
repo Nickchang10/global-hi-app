@@ -1,0 +1,109 @@
+name: osmile_admin
+description: Osmile 後台 + 訂單 / 支付 / 商品管理系統
+publish_to: "none"
+
+version: 1.0.1+1
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # --- 國際化 / 日期格式 ---
+  flutter_localizations:
+    sdk: flutter
+  intl: ^0.20.2
+
+  # --- UI / Material Design ---
+  cupertino_icons: ^1.0.8
+  flutter_svg: ^2.0.10
+  animations: ^2.0.11
+  dynamic_color: ^1.7.0
+
+  # --- 狀態管理 ---
+  provider: ^6.1.2
+
+  # --- Firebase SDK ---
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  cloud_firestore: ^5.4.4
+  cloud_functions: ^5.1.4
+  firebase_storage: ^12.4.10
+  firebase_messaging: ^15.2.10
+
+  # --- 檔案 / 儲存 ---
+  shared_preferences: ^2.3.2
+  file_picker: ^8.1.2
+  file_saver: ^0.2.11
+  csv: ^6.0.0
+  excel: ^2.1.0
+  universal_html: ^2.2.4
+  path_provider: ^2.0.15
+  open_filex: ^4.0.0
+  mime: ^1.0.2
+
+  # --- 影像處理 ---
+  flutter_image_compress: ^1.1.0
+  image_picker: ^1.1.2
+  image: ^4.2.0
+
+  # --- 系統 / 裝置資訊 ---
+  device_info_plus: ^11.1.0
+
+  # --- 動畫 / 特效 ---
+  flutter_animate: ^4.5.0
+  lottie: ^3.1.0
+
+  # --- 圖表分析 ---
+  fl_chart: ^0.68.0
+
+  # --- 通用工具 ---
+  url_launcher: ^6.3.0
+  collection: ^1.18.0
+  rxdart: ^0.27.7
+
+  # --- PDF / 列印 / 匯出報表 ---
+  pdf: ^3.10.8
+  printing: ^5.13.0
+  share_plus: ^12.0.1
+
+  # --- 路由 / 導航 ---
+  get: ^4.7.3
+
+  # --- HTTP / API / 安全儲存 / env / model annotations ---
+  dio: ^5.0.4
+  flutter_secure_storage: ^9.0.2
+  flutter_dotenv: ^5.0.2
+  json_annotation: ^4.8.1
+
+  # --- 富文字、markdown 與 web 檔案上傳支援 ---
+  flutter_quill: ^11.5.0
+  flutter_markdown: ^0.6.10
+  flutter_dropzone: ^4.0.0
+
+  # --- 拖曳/重排序等 UI ---
+  reorderables: ^0.4.2
+
+  # --- 通知 (本地通知) ---
+  # ✅ 只保留主套件即可；❌ 不要加 flutter_local_notifications_web（不存在）
+  flutter_local_notifications: ^17.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+  # Codegen (optional)
+  build_runner: ^2.4.6
+  json_serializable: ^6.6.0
+
+flutter:
+  uses-material-design: true
+  generate: false
+
+  assets:
+    - assets/
+    - assets/icons/
+    - assets/images/

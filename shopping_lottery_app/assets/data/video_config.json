@@ -1,0 +1,14 @@
+[
+  {
+    "productName": "智能手錶 ED1000",
+    "videoUrl": "https://flutter.github.io/assets-for-api-docs/assets/videos/bee.mp4",
+    "coverUrl": "https://images.unsplash.com/photo-1512499617640-c2f999098c1a?auto=format&fit=crop&w=900&q=80",
+    "note": "ED1000 展場主打影片"
+  },
+  {
+    "productName": "SOS 兒童安全錶",
+    "videoUrl": "https://samplelib.com/lib/preview/mp4/sample-5s.mp4",
+    "coverUrl": "https://images.unsplash.com/photo-1590080875831-7e0cdfbb6799?auto=format&fit=crop&w=900&q=80",
+    "note": "一鍵求救示範影片"
+  }
+]

@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    /* ===============================
+     * 編譯目標（解決 padStart 問題）
+     * =============================== */
+    "target": "es2017",
+    "lib": ["es2017"],
+
+    /* ===============================
+     * 模組與輸出
+     * =============================== */
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "rootDir": "src",
+    "outDir": "lib",
+    "sourceMap": true,
+
+    /* ===============================
+     * 型別與嚴謹度（商用等級）
+     * =============================== */
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    /* ===============================
+     * Node / Cloud Functions
+     * =============================== */
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "lib"]
+}

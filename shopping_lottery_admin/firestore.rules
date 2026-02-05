@@ -1,0 +1,205 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ----------------------------
+    // Helpers / 公用函式
+    // ----------------------------
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userRef(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function userDocExists() {
+      return signedIn() && exists(userRef(request.auth.uid));
+    }
+
+    function userData() {
+      return userDocExists() ? get(userRef(request.auth.uid)).data : null;
+    }
+
+    function userRole() {
+      return userDocExists() && (userData().role is string) ? userData().role : "";
+    }
+
+    function isAdmin() {
+      return signedIn() && userRole() == "admin";
+    }
+
+    function isVendor() {
+      return signedIn() && userRole() == "vendor";
+    }
+
+    function vendorId() {
+      return userDocExists() && (userData().vendorId is string) ? userData().vendorId : "";
+    }
+
+    // ✅ 支援 vendorId (string) 與 vendorIds (list)
+    function vendorOwnsOrder() {
+      return isVendor() && (
+        ((resource.data.vendorId is string) && (resource.data.vendorId == vendorId())) ||
+        ((resource.data.vendorIds is list) && (vendorId() in resource.data.vendorIds))
+      );
+    }
+
+    function buyerOwnsOrder() {
+      return signedIn() && (resource.data.buyerUid == request.auth.uid);
+    }
+
+    function vendorAllowedOrderUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'status',
+        'statusHistory',
+        'shipping',
+        'updatedAt'
+      ]);
+    }
+
+    // ----------------------------
+    // roles collection (🔥 新增)
+    // ----------------------------
+    match /roles/{uid} {
+      // Admin 可管理所有角色
+      allow read, write: if isAdmin();
+
+      // 登入者可讀自己的角色 (Dashboard 初始化)
+      allow read: if signedIn() && request.auth.uid == uid;
+    }
+
+    // ----------------------------
+    // users collection
+    // ----------------------------
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if signedIn() && request.auth.uid == uid;
+      allow update: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // vendors collection
+    // ----------------------------
+    match /vendors/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // products collection
+    // ----------------------------
+    match /products/{id} {
+      allow read: if true;
+
+      allow create: if isAdmin()
+        || (isVendor() && request.resource.data.vendorId == vendorId());
+
+      allow update: if isAdmin()
+        || (
+          isVendor()
+          && resource.data.vendorId == vendorId()
+          && request.resource.data.vendorId == resource.data.vendorId
+        );
+
+      allow delete: if isAdmin()
+        || (isVendor() && resource.data.vendorId == vendorId());
+    }
+
+    // ----------------------------
+    // categories collection
+    // ----------------------------
+    match /categories/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // announcements collection
+    // ----------------------------
+    match /announcements/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // app_config collection
+    // ----------------------------
+    match /app_config/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // task_templates collection
+    // ----------------------------
+    match /task_templates/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // coupons collection
+    // ----------------------------
+    match /coupons/{code} {
+      allow read: if signedIn() && (isAdmin() || resource.data.uid == request.auth.uid);
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // notifications
+    // ----------------------------
+    match /notifications/{uid}/items/{notifId} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+
+      allow create: if signedIn()
+        && (isAdmin() || isVendor())
+        && (request.resource.data.read == false)
+        && request.resource.data.keys().hasAny([
+          'title',
+          'body',
+          'type',
+          'orderId',
+          'actorUid',
+          'actorRole',
+          'read',
+          'createdAt',
+          'extra'
+        ]);
+
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['read', 'readAt']);
+
+      allow delete: if false;
+    }
+
+    // ----------------------------
+    // orders collection
+    // ----------------------------
+    match /orders/{orderId} {
+      allow create: if signedIn() && request.resource.data.buyerUid == request.auth.uid;
+
+      allow read: if signedIn() && (
+        isAdmin()
+        || buyerOwnsOrder()
+        || vendorOwnsOrder()
+      );
+
+      allow update: if signedIn() && (
+        isAdmin()
+        || (vendorOwnsOrder() && vendorAllowedOrderUpdate())
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // Default deny (最後防護)
+    // ----------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

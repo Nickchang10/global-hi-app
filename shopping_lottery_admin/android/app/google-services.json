@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "569654002656",
+    "project_id": "global-hi-app",
+    "storage_bucket": "global-hi-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:569654002656:android:3616f4261c8e527513a185",
+        "android_client_info": {
+          "package_name": "com.example.shopping_lottery_admin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbQVFqXoXlsxZ0H55NHVfYT9gYbTAxRS0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

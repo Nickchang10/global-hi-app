@@ -1,0 +1,69 @@
+name: osmile_shopping_app
+description: Osmile 示範購物 App（整合健康 / 支付 / 追蹤 / BLE）
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 本地化
+  flutter_localizations:
+    sdk: flutter
+
+  # 狀態管理
+  provider: ^6.1.2
+  uuid: ^4.5.2
+
+  # 儲存 / 工具 / 網路
+  shared_preferences: ^2.3.2
+  http: ^1.2.2
+  url_launcher: ^6.3.0
+  intl: ^0.20.2
+  google_fonts: ^4.0.3
+  path_provider: ^2.1.2
+  path: ^1.8.3
+
+  # UI
+  cupertino_icons: ^1.0.5
+  percent_indicator: ^4.2.3
+  lottie: ^3.0.0
+
+  # 多媒體
+  video_player: ^2.5.1
+  image_picker: ^1.1.2
+  audioplayers: ^6.0.0
+
+  # 語音
+  flutter_tts: ^3.6.7
+  speech_to_text: ^6.6.2
+
+  # 動畫
+  confetti: ^0.7.0
+
+  # ✅ Firebase（升級至 3.x 完全相容 geolocator 14.x）
+  firebase_core: ^3.15.2
+  firebase_auth: ^5.7.0
+  cloud_firestore: ^5.6.12
+
+  # ✅ 追蹤與定位
+  geolocator: ^14.0.1
+  firebase_storage: ^12.4.10
+  firebase_messaging: ^15.2.10
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/audio/
+    - assets/images/
