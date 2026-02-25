@@ -40,7 +40,7 @@ class _SocialPageState extends State<SocialPage>
       'liked': false,
       'comments': [
         {'user': 'Alice', 'text': '太酷了！'},
-        {'user': 'Bob', 'text': '我也想試！'}
+        {'user': 'Bob', 'text': '我也想試！'},
       ],
     },
     {
@@ -56,9 +56,7 @@ class _SocialPageState extends State<SocialPage>
 
   List<Map<String, dynamic>> get _topPosts {
     final sorted = List<Map<String, dynamic>>.from(_posts);
-    sorted.sort(
-      (a, b) => (b['likes'] as int).compareTo(a['likes'] as int),
-    );
+    sorted.sort((a, b) => (b['likes'] as int).compareTo(a['likes'] as int));
     return sorted.take(3).toList();
   }
 
@@ -81,7 +79,7 @@ class _SocialPageState extends State<SocialPage>
   void _toggleLike(Map<String, dynamic> post) {
     setState(() {
       post['liked'] = !(post['liked'] as bool);
-      post['likes'] += post['liked'] ? 1 : -1;
+      post['likes'] += (post['liked'] as bool) ? 1 : -1;
     });
   }
 
@@ -91,30 +89,32 @@ class _SocialPageState extends State<SocialPage>
       context: context,
       builder: (_) => Padding(
         padding: const EdgeInsets.all(12),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Text('留言', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          TextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              hintText: '輸入留言內容...',
-              border: OutlineInputBorder(),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('留言', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                hintText: '輸入留言內容...',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
-          ElevatedButton(
-            onPressed: () {
-              final text = controller.text.trim();
-              if (text.isEmpty) return;
-              setState(() {
-                (post['comments'] as List)
-                    .add({'user': '我', 'text': text});
-              });
-              Navigator.pop(context);
-            },
-            child: const Text('送出'),
-          ),
-        ]),
+            const SizedBox(height: 12),
+            ElevatedButton(
+              onPressed: () {
+                final text = controller.text.trim();
+                if (text.isEmpty) return;
+                setState(() {
+                  (post['comments'] as List).add({'user': '我', 'text': text});
+                });
+                Navigator.pop(context);
+              },
+              child: const Text('送出'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -131,40 +131,43 @@ class _SocialPageState extends State<SocialPage>
           top: 20,
           bottom: MediaQuery.of(context).viewInsets.bottom + 20,
         ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Text('新增貼文', style: TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          TextField(
-            controller: controller,
-            maxLines: 3,
-            decoration: const InputDecoration(
-              hintText: '分享你今天與 Osmile 的故事...',
-              border: OutlineInputBorder(),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('新增貼文', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                hintText: '分享你今天與 Osmile 的故事...',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
-          ElevatedButton(
-            onPressed: () {
-              final text = controller.text.trim();
-              if (text.isEmpty) return;
-              setState(() {
-                _posts.insert(0, {
-                  'user': '我',
-                  'time': '剛剛',
-                  'image':
-                      'https://picsum.photos/seed/${Random().nextInt(1000)}/800/500',
-                  'likes': 0,
-                  'content': text,
-                  'liked': false,
-                  'comments': [],
+            const SizedBox(height: 12),
+            ElevatedButton(
+              onPressed: () {
+                final text = controller.text.trim();
+                if (text.isEmpty) return;
+                setState(() {
+                  _posts.insert(0, {
+                    'user': '我',
+                    'time': '剛剛',
+                    'image':
+                        'https://picsum.photos/seed/${Random().nextInt(1000)}/800/500',
+                    'likes': 0,
+                    'content': text,
+                    'liked': false,
+                    'comments': <Map<String, dynamic>>[],
+                  });
                 });
-              });
-              Navigator.pop(context);
-              _confetti.play();
-            },
-            child: const Text('發佈'),
-          ),
-        ]),
+                Navigator.pop(context);
+                _confetti.play();
+              },
+              child: const Text('發佈'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -184,15 +187,16 @@ class _SocialPageState extends State<SocialPage>
               child: Icon(Icons.emoji_events, color: Colors.white),
             ),
             const SizedBox(width: 12),
-            Expanded(
+            const Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('今日互動挑戰',
-                      style:
-                          TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  const Text(
+                  Text(
+                    '今日互動挑戰',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
                     '按 5 個讚 + 留一則留言，晚上可獲得小驚喜徽章！',
                     style: TextStyle(fontSize: 12),
                   ),
@@ -202,17 +206,18 @@ class _SocialPageState extends State<SocialPage>
             const SizedBox(width: 8),
             ElevatedButton(
               onPressed: () {
-                setState(() {
-                  _todayMissionDone = true;
-                });
+                setState(() => _todayMissionDone = true);
                 _confetti.play();
               },
               style: ElevatedButton.styleFrom(
-                backgroundColor:
-                    _todayMissionDone ? Colors.grey[400] : Colors.orange,
+                backgroundColor: _todayMissionDone
+                    ? Colors.grey
+                    : Colors.orange,
                 foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
               ),
               child: Text(_todayMissionDone ? '已完成' : '去挑戰'),
             ),
@@ -234,16 +239,14 @@ class _SocialPageState extends State<SocialPage>
               children: [
                 Icon(Icons.poll_outlined, size: 18),
                 SizedBox(width: 6),
-                Text('今日小調查',
-                    style:
-                        TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                Text(
+                  '今日小調查',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
               ],
             ),
             const SizedBox(height: 8),
-            const Text(
-              '你今天有跟 Osmile 手錶互動了嗎？',
-              style: TextStyle(fontSize: 13),
-            ),
+            const Text('你今天有跟 Osmile 手錶互動了嗎？', style: TextStyle(fontSize: 13)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -256,13 +259,11 @@ class _SocialPageState extends State<SocialPage>
             const SizedBox(height: 6),
             Row(
               children: [
-                const Text('我的回答：',
-                    style:
-                        TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                Text(
-                  _surveyAnswer,
-                  style: const TextStyle(fontSize: 12),
+                const Text(
+                  '我的回答：',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                 ),
+                Text(_surveyAnswer, style: const TextStyle(fontSize: 12)),
               ],
             ),
           ],
@@ -276,11 +277,7 @@ class _SocialPageState extends State<SocialPage>
     return ChoiceChip(
       label: Text(label, style: const TextStyle(fontSize: 12)),
       selected: selected,
-      onSelected: (_) {
-        setState(() {
-          _surveyAnswer = label;
-        });
-      },
+      onSelected: (_) => setState(() => _surveyAnswer = label),
       selectedColor: Colors.orange.shade100,
     );
   }
@@ -295,13 +292,11 @@ class _SocialPageState extends State<SocialPage>
         itemBuilder: (context, index) {
           final story = _stories[index];
           final bool isMe = story['name'] == '我';
-          final bool unread = story['unread'] as bool;
+          final bool unread = (story['unread'] as bool?) ?? false;
 
           return GestureDetector(
             onTap: () {
-              setState(() {
-                story['unread'] = false;
-              });
+              setState(() => story['unread'] = false);
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('查看 ${story['name']} 的一天（示意）')),
               );
@@ -320,15 +315,11 @@ class _SocialPageState extends State<SocialPage>
                         : null,
                     border: unread
                         ? null
-                        : Border.all(
-                            color: Colors.grey.shade300,
-                            width: 2,
-                          ),
+                        : Border.all(color: Colors.grey, width: 2),
                   ),
                   child: CircleAvatar(
                     radius: 26,
-                    backgroundColor:
-                        isMe ? Colors.blueAccent : Colors.orange,
+                    backgroundColor: isMe ? Colors.blueAccent : Colors.orange,
                     child: isMe
                         ? const Icon(Icons.add, color: Colors.white)
                         : Text(
@@ -341,10 +332,7 @@ class _SocialPageState extends State<SocialPage>
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  story['name'],
-                  style: const TextStyle(fontSize: 11),
-                ),
+                Text(story['name'], style: const TextStyle(fontSize: 11)),
               ],
             ),
           );
@@ -354,7 +342,7 @@ class _SocialPageState extends State<SocialPage>
   }
 
   Widget _buildHashtagRow() {
-    final tags = ['#Osmile', '#今日步數', '#親子互動', '#長輩關懷', '#健康打卡'];
+    const tags = ['#Osmile', '#今日步數', '#親子互動', '#長輩關懷', '#健康打卡'];
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
@@ -365,9 +353,9 @@ class _SocialPageState extends State<SocialPage>
                 child: ActionChip(
                   label: Text(t),
                   onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('查看 $t 相關貼文（示意）')),
-                    );
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text('查看 $t 相關貼文（示意）')));
                   },
                   backgroundColor: Colors.grey.shade100,
                 ),
@@ -386,14 +374,15 @@ class _SocialPageState extends State<SocialPage>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 4),
-        const Text('🏆 人氣排行榜',
-            style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('🏆 人氣排行榜', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         ...top.map(
           (p) => ListTile(
             dense: true,
-            leading: const Icon(Icons.local_fire_department,
-                color: Colors.orange),
+            leading: const Icon(
+              Icons.local_fire_department,
+              color: Colors.orange,
+            ),
             title: Text(p['user']),
             subtitle: Text('讚數：${p['likes']}'),
           ),
@@ -418,15 +407,13 @@ class _SocialPageState extends State<SocialPage>
             const SizedBox(height: 12),
             _buildRankingSection(),
             const SizedBox(height: 8),
-            ..._posts
-                .map(
-                  (p) => _PostCard(
-                    post: p,
-                    onLike: () => _toggleLike(p),
-                    onComment: () => _addComment(p),
-                  ),
-                )
-                .toList(),
+            ..._posts.map(
+              (p) => _PostCard(
+                post: p,
+                onLike: () => _toggleLike(p),
+                onComment: () => _addComment(p),
+              ),
+            ),
             const SizedBox(height: 60),
           ],
         ),
@@ -446,27 +433,25 @@ class _SocialPageState extends State<SocialPage>
     );
   }
 
-  // ------------------- UI: 活動分頁 -------------------
-
   Widget _buildActivityTab() {
     final activities = [
       {
         'title': '每日登入獎勵',
         'desc': '簽到可得 5 積分與抽獎券！',
         'icon': Icons.calendar_today,
-        'color': Colors.blueAccent
+        'color': Colors.blueAccent,
       },
       {
         'title': '好友互動挑戰',
         'desc': '今日按讚 + 留言 5 次可領徽章！',
         'icon': Icons.emoji_events_outlined,
-        'color': Colors.orangeAccent
+        'color': Colors.orangeAccent,
       },
       {
         'title': '社群任務：Osmile 一起動起來！',
         'desc': '上傳運動照片可抽神秘禮物 🎁',
         'icon': Icons.fitness_center,
-        'color': Colors.green
+        'color': Colors.green,
       },
     ];
 
@@ -504,8 +489,6 @@ class _SocialPageState extends State<SocialPage>
     );
   }
 
-  // ------------------- Scaffold -------------------
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -526,7 +509,7 @@ class _SocialPageState extends State<SocialPage>
         controller: _tabController,
         children: [
           _buildDynamicTab(),
-          SocialFriendsTab(currentUser: '我'),
+          const SocialFriendsTab(currentUser: '我'),
           _buildActivityTab(),
         ],
       ),
@@ -579,8 +562,10 @@ class _PostCard extends StatelessWidget {
               children: [
                 IconButton(
                   icon: Icon(
-                    post['liked'] ? Icons.favorite : Icons.favorite_border,
-                    color: post['liked'] ? Colors.red : null,
+                    (post['liked'] as bool)
+                        ? Icons.favorite
+                        : Icons.favorite_border,
+                    color: (post['liked'] as bool) ? Colors.red : null,
                   ),
                   onPressed: onLike,
                 ),

@@ -7,19 +7,6 @@
 // - 顯示 createdAt / updatedAt（若存在）
 // - 複製 vendorId / 查看 JSON
 //
-// Firestore 建議：vendors/{vendorId}
-//   - name: String
-//   - contactName: String
-//   - phone: String
-//   - email: String
-//   - address: String
-//   - description: String
-//   - logoUrl: String
-//   - note: String
-//   - isActive: bool
-//   - createdAt: Timestamp
-//   - updatedAt: Timestamp
-//
 // 依賴：cloud_firestore, flutter/material, flutter/services
 
 import 'dart:convert';
@@ -29,10 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class VendorProfilePage extends StatefulWidget {
-  const VendorProfilePage({
-    super.key,
-    required this.vendorId,
-  });
+  const VendorProfilePage({super.key, required this.vendorId});
 
   final String vendorId;
 
@@ -63,7 +47,8 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
   bool _isActive = true;
 
   String get _vid => widget.vendorId.trim();
-  DocumentReference<Map<String, dynamic>> get _ref => _db.collection('vendors').doc(_vid);
+  DocumentReference<Map<String, dynamic>> get _ref =>
+      _db.collection('vendors').doc(_vid);
 
   @override
   void initState() {
@@ -103,7 +88,9 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
   }
 
   void _snack(String msg) {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
     );
@@ -111,7 +98,9 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
 
   Future<void> _copy(String text, {String done = '已複製'}) async {
     final t = text.trim();
-    if (t.isEmpty) return;
+    if (t.isEmpty) {
+      return;
+    }
     await Clipboard.setData(ClipboardData(text: t));
     _snack(done);
   }
@@ -126,11 +115,19 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
 
   String? _validateUrl(String? v) {
     final s = (v ?? '').trim();
-    if (s.isEmpty) return null;
-    final ok = Uri.tryParse(s)?.hasAbsolutePath ?? false;
-    // Uri 判斷不夠嚴格，這裡只做基本檢查
-    if (!s.startsWith('http://') && !s.startsWith('https://')) return '請輸入 http/https 開頭的網址';
-    if (!ok) return '網址格式不正確';
+    if (s.isEmpty) {
+      return null;
+    }
+
+    final uri = Uri.tryParse(s);
+    final ok = uri != null && uri.hasScheme && uri.host.isNotEmpty;
+
+    if (!(s.startsWith('http://') || s.startsWith('https://'))) {
+      return '請輸入 http/https 開頭的網址';
+    }
+    if (!ok) {
+      return '網址格式不正確';
+    }
     return null;
   }
 
@@ -162,7 +159,9 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
     } catch (e) {
       _snack('載入失敗：$e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -171,7 +170,9 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
       _snack('vendorId 不可為空');
       return;
     }
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
 
     final name = _nameCtrl.text.trim();
     if (name.isEmpty) {
@@ -194,7 +195,6 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
-      // 初次建立時補 createdAt（若不存在）
       final snap = await _ref.get();
       if (!snap.exists) {
         payload['createdAt'] = FieldValue.serverTimestamp();
@@ -208,12 +208,13 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
       await _ref.set(payload, SetOptions(merge: true));
       _snack('已儲存');
 
-      // 重新載入更新 updatedAt 顯示
       await _load();
     } catch (e) {
       _snack('儲存失敗：$e');
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        setState(() => _saving = false);
+      }
     }
   }
 
@@ -233,14 +234,15 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
     final cs = Theme.of(context).colorScheme;
 
     if (_vid.isEmpty) {
-      return const Scaffold(
-        body: Center(child: Text('vendorId 不可為空')),
-      );
+      return const Scaffold(body: Center(child: Text('vendorId 不可為空')));
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('廠商資料', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '廠商資料',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
             tooltip: '複製 vendorId',
@@ -297,7 +299,9 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
                               ? const SizedBox(
                                   width: 18,
                                   height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
                               : const Icon(Icons.save_outlined),
                           label: const Text('儲存'),
@@ -325,11 +329,7 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
                         child: SingleChildScrollView(
                           padding: const EdgeInsets.all(12),
                           child: Column(
-                            children: [
-                              left,
-                              const SizedBox(height: 12),
-                              right,
-                            ],
+                            children: [left, const SizedBox(height: 12), right],
                           ),
                         ),
                       ),
@@ -373,13 +373,26 @@ class _VendorProfilePageState extends State<VendorProfilePage> {
               color: cs.surface,
               elevation: 10,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 child: Row(
                   children: [
-                    const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                    const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: Text('儲存中...', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800)),
+                      child: Text(
+                        '儲存中...',
+                        style: TextStyle(
+                          color: cs.onSurfaceVariant,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -443,7 +456,14 @@ class _ProfileForm extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('基本資料', style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w900, fontSize: 16)),
+              Text(
+                '基本資料',
+                style: TextStyle(
+                  color: cs.onSurface,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 16,
+                ),
+              ),
               const SizedBox(height: 10),
 
               TextFormField(
@@ -607,7 +627,14 @@ class _MetaPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('系統資訊', style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w900, fontSize: 16)),
+            Text(
+              '系統資訊',
+              style: TextStyle(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w900,
+                fontSize: 16,
+              ),
+            ),
             const SizedBox(height: 10),
 
             _InfoRow(label: 'vendorId', value: vendorId),
@@ -619,19 +646,27 @@ class _MetaPanel extends StatelessWidget {
             _InfoRow(label: '更新時間', value: fmt(updatedAt)),
 
             const SizedBox(height: 12),
-            Text('原始資料（摘要）', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w900)),
+            Text(
+              '原始資料（摘要）',
+              style: TextStyle(
+                color: cs.onSurfaceVariant,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
             const SizedBox(height: 8),
 
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: cs.surfaceContainerHighest.withOpacity(0.25),
+                color: cs.surfaceContainerHighest.withValues(alpha: 0.25),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: cs.outline.withOpacity(0.18)),
+                border: Border.all(color: cs.outline.withValues(alpha: 0.18)),
               ),
               child: Text(
-                _s(raw['description']).isEmpty ? '（無簡介）' : _s(raw['description']),
+                _s(raw['description']).isEmpty
+                    ? '（無簡介）'
+                    : _s(raw['description']),
                 maxLines: 6,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -654,8 +689,19 @@ class _InfoRow extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(width: 86, child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12))),
-        Expanded(child: Text(value.isEmpty ? '-' : value, style: const TextStyle(fontWeight: FontWeight.w800))),
+        SizedBox(
+          width: 86,
+          child: Text(
+            label,
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value.isEmpty ? '-' : value,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
       ],
     );
   }
@@ -682,13 +728,20 @@ class _JsonDialog extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w900))),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                  ),
                   IconButton(
                     tooltip: '複製 JSON',
                     onPressed: () async {
                       await Clipboard.setData(ClipboardData(text: jsonText));
                       if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製 JSON')));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('已複製 JSON')),
+                        );
                       }
                     },
                     icon: const Icon(Icons.copy),
@@ -700,7 +753,10 @@ class _JsonDialog extends StatelessWidget {
                 child: SingleChildScrollView(
                   child: SelectableText(
                     jsonText,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
                   ),
                 ),
               ),

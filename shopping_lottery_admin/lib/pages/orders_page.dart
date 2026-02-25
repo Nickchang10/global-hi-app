@@ -1,47 +1,30 @@
 // lib/pages/orders_page.dart
 //
-// ✅ OrdersPage（最終完整版｜可編譯｜vendorIds 相容）
-//
-// 功能：
-// - Admin：看全部訂單；Vendor：只看 orders.vendorIds contains 自己 vendorId（符合你的 Firestore rules）
-// - 搜尋（orderId / buyerEmail / buyer / vendorId/vendorIds）
-// - 狀態篩選（status）
-// - 匯出 CSV（套用目前篩選後結果）
-// - 寬螢幕：左列表＋右側詳情；窄螢幕：點擊彈窗詳情
-// - Admin：可更新訂單 status，並 append 到 timeline（PaymentStatusPage 可讀到）
-// - 快捷：複製訂單號、前往付款狀態頁（/payment_status arguments: orderId）
-//
-// Firestore 假設：orders/{orderId}
-//  - status: String
-//  - paymentStatus: String? (optional)
-//  - total / amount / priceTotal: num
-//  - createdAt: Timestamp
-//  - buyerEmail / buyer: String
-//  - buyerUid: String? (optional, 若你要用通知功能可用)
-//  - vendorId: String? (legacy)
-//  - vendorIds: List<String> (new)
-//  - timeline / paymentTimeline / paymentEvents: List<Map> (optional)
-//
-// 依賴：
-// - cloud_firestore
-// - firebase_auth
-// - flutter/services
-// - provider
-// - services/admin_gate.dart（RoleInfo）
-// - utils/csv_download.dart
-//
-// 可選整合：NotificationService（若你要做「通知買家」功能，可自行加）
-//
+// ✅ OrdersPage（完整版｜可編譯｜Admin/Vendor 訂單列表）
 // ------------------------------------------------------------
+// - 角色判斷：AdminGate.ensureAndGetRole -> RoleInfo
+// - 修正：不再使用 RoleInfo.error（不存在）
+//        改用：info.hasError / info.errorMessage
+// - Admin：看全部訂單（可用 vendorId 篩選）
+// - Vendor：只看自己 vendorId 的訂單
+// - 支援：搜尋（前端過濾）、狀態篩選、基本詳情預覽
+//
+// Firestore（假設）orders/{orderId} 常見欄位（可缺）：
+// - vendorId, buyerUid/userId, buyerName, buyerEmail
+// - status, total/amount, currency
+// - createdAt, updatedAt
+// - items: [{title, qty, price}, ...]
+//
+// 依賴：cloud_firestore, firebase_auth, flutter/material, provider, intl
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../services/admin_gate.dart';
-import '../utils/csv_download.dart';
 
 class OrdersPage extends StatefulWidget {
   const OrdersPage({super.key});
@@ -51,31 +34,41 @@ class OrdersPage extends StatefulWidget {
 }
 
 class _OrdersPageState extends State<OrdersPage> {
-  final _db = FirebaseFirestore.instance;
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
 
+  final TextEditingController _searchCtrl = TextEditingController();
+  final TextEditingController _vendorFilterCtrl = TextEditingController();
+
+  String _statusFilter = 'all';
+  bool _onlyMine = false; // admin 可切換：只看自己（buyerUid=我）(可選)
+
+  // role
   Future<RoleInfo>? _roleFuture;
   String? _lastUid;
-
-  // UI state
-  String _q = '';
-  String _status = 'all';
-  String? _selectedId;
-
-  final _searchCtrl = TextEditingController();
 
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _vendorFilterCtrl.dispose();
     super.dispose();
   }
 
-  // ---------------- utils ----------------
-  String _s(dynamic v) => (v ?? '').toString().trim();
-
-  num _toNum(dynamic v) {
-    if (v is num) return v;
-    return num.tryParse((v ?? '').toString().trim()) ?? 0;
+  void _primeRole() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    if (_roleFuture == null || _lastUid != user.uid) {
+      _lastUid = user.uid;
+      final gate = context.read<AdminGate>();
+      _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
+    }
   }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
 
   DateTime? _toDate(dynamic v) {
     if (v is Timestamp) return v.toDate();
@@ -83,257 +76,237 @@ class _OrdersPageState extends State<OrdersPage> {
     return null;
   }
 
-  String _fmt(DateTime? d) {
+  String _fmtDateTime(DateTime? d) {
     if (d == null) return '-';
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+    final f = DateFormat('yyyy/MM/dd HH:mm');
+    return f.format(d);
   }
 
-  Future<void> _copy(String text, {String done = '已複製'}) async {
-    final t = text.trim();
-    if (t.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: t));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(done), duration: const Duration(seconds: 2)),
-    );
+  num _toNum(dynamic v, {num fallback = 0}) {
+    if (v is num) return v;
+    return num.tryParse('${v ?? ''}') ?? fallback;
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
-  }
-
-  // vendor display helpers
-  List<String> _extractVendorIds(Map<String, dynamic> d) {
-    final raw = d['vendorIds'];
-    if (raw is List) {
-      return raw.map((e) => _s(e)).where((e) => e.isNotEmpty).toList();
-    }
-    final legacy = _s(d['vendorId']);
-    return legacy.isEmpty ? <String>[] : <String>[legacy];
-  }
-
-  String _vendorShow(Map<String, dynamic> d) {
-    final ids = _extractVendorIds(d);
-    if (ids.isEmpty) return '-';
-    return ids.join(', ');
-  }
-
-  bool _match(Map<String, dynamic> d, String id) {
-    final q = _q.trim().toLowerCase();
-    if (q.isEmpty) return true;
-
-    final buyerEmail = _s(d['buyerEmail']).toLowerCase();
-    final buyer = _s(d['buyer']).toLowerCase();
-    final vendor = _vendorShow(d).toLowerCase();
-    final oid = id.toLowerCase();
-
-    return oid.contains(q) || buyerEmail.contains(q) || buyer.contains(q) || vendor.contains(q);
-  }
-
-  // ---------------- query ----------------
-  Stream<QuerySnapshot<Map<String, dynamic>>> _queryStream({
+  // ----------------------------
+  // Query builder
+  // ----------------------------
+  Query<Map<String, dynamic>> _buildQuery({
     required bool isAdmin,
     required bool isVendor,
     required String vendorId,
+    required String uid,
   }) {
-    Query<Map<String, dynamic>> q = _db.collection('orders').orderBy('createdAt', descending: true);
+    Query<Map<String, dynamic>> q = _db
+        .collection('orders')
+        .orderBy('createdAt', descending: true);
 
-    // ✅ Vendor：必須用 vendorIds arrayContains（符合 rules）
-    if (!isAdmin && isVendor) {
-      final vid = vendorId.trim();
-      if (vid.isNotEmpty) {
-        q = q.where('vendorIds', arrayContains: vid);
+    if (isVendor) {
+      // Vendor: 僅看自己 vendorId
+      if (vendorId.isNotEmpty) {
+        q = q.where('vendorId', isEqualTo: vendorId);
       } else {
-        // vendor 沒 vendorId：直接給空 stream，避免 permission error 或拿不到資料
-        return const Stream<QuerySnapshot<Map<String, dynamic>>>.empty();
+        // vendorId 空：直接回傳一個不可能命中的條件避免炸
+        q = q.where('vendorId', isEqualTo: '__missing_vendorId__');
+      }
+    } else if (isAdmin) {
+      // Admin: 可用 vendorId 篩選（輸入框）
+      final vf = _vendorFilterCtrl.text.trim();
+      if (vf.isNotEmpty) {
+        q = q.where('vendorId', isEqualTo: vf);
+      }
+      if (_onlyMine) {
+        // 可選：只看自己下的單（buyerUid/userId）
+        // 注意：欄位可能不同，這裡用 buyerUid 或 userId 任一命中較難做 OR
+        // 所以採用前端過濾（下方 _filterClientSide 會處理）
       }
     }
 
-    // status filter（可讓 Firestore 幫你縮小資料量）
-    if (_status != 'all') {
-      q = q.where('status', isEqualTo: _status);
-    }
-
-    // 避免一次拉太多（你可視需要調大/調小）
-    q = q.limit(500);
-
-    return q.snapshots();
+    // status：由於 status 種類不一定、且要有 index，這裡先不做 where（避免缺 index）
+    // 改以前端過濾處理
+    return q.limit(500);
   }
 
-  // ---------------- admin: update status ----------------
-  Future<void> _updateOrderStatus({
-    required String orderId,
-    required String newStatus,
-    String note = '',
-  }) async {
-    final oid = orderId.trim();
-    final ns = newStatus.trim();
-    if (oid.isEmpty || ns.isEmpty) return;
+  // ----------------------------
+  // Client-side filters
+  // ----------------------------
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _filterClientSide(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
+    required bool isAdmin,
+    required bool isVendor,
+    required String uid,
+  }) {
+    final q = _searchCtrl.text.trim().toLowerCase();
+    final status = _statusFilter;
 
-    try {
-      await _db.collection('orders').doc(oid).set(
-        <String, dynamic>{
-          'status': ns,
-          'updatedAt': FieldValue.serverTimestamp(),
-          // append timeline（PaymentStatusPage 會讀 timeline/paymentTimeline/paymentEvents）
-          'timeline': FieldValue.arrayUnion([
-            <String, dynamic>{
-              'ts': Timestamp.now(),
-              'label': '狀態更新',
-              'status': ns,
-              if (note.trim().isNotEmpty) 'note': note.trim(),
-            }
-          ]),
-        },
-        SetOptions(merge: true),
-      );
+    bool matchStatus(Map<String, dynamic> d) {
+      if (status == 'all') return true;
+      final s = _s(d['status']).toLowerCase();
+      return s == status;
+    }
 
-      _snack('已更新狀態：$ns');
-    } catch (e) {
-      _snack('更新失敗：$e');
+    bool matchSearch(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+      if (q.isEmpty) return true;
+      final d = doc.data();
+      final id = doc.id.toLowerCase();
+      final buyerName = _s(d['buyerName']).toLowerCase();
+      final buyerEmail = _s(d['buyerEmail']).toLowerCase();
+      final vendorId = _s(d['vendorId']).toLowerCase();
+      final status = _s(d['status']).toLowerCase();
+      return id.contains(q) ||
+          buyerName.contains(q) ||
+          buyerEmail.contains(q) ||
+          vendorId.contains(q) ||
+          status.contains(q);
+    }
+
+    bool matchOnlyMine(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+      if (!(isAdmin && _onlyMine)) return true;
+      final d = doc.data();
+      final buyerUid = _s(d['buyerUid']);
+      final userId = _s(d['userId']);
+      return buyerUid == uid || userId == uid;
+    }
+
+    return docs
+        .where((doc) => matchStatus(doc.data()))
+        .where((doc) => matchOnlyMine(doc))
+        .where((doc) => matchSearch(doc))
+        .toList();
+  }
+
+  Set<String> _collectStatuses(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final set = <String>{'all'};
+    for (final d in docs) {
+      final s = _s(d.data()['status']).toLowerCase();
+      if (s.isNotEmpty) set.add(s);
+    }
+    return set;
+  }
+
+  Color _statusColor(BuildContext context, String status) {
+    final s = status.toLowerCase().trim();
+    final cs = Theme.of(context).colorScheme;
+    switch (s) {
+      case 'paid':
+      case 'success':
+      case 'completed':
+        return cs.primaryContainer;
+      case 'pending':
+      case 'processing':
+        return cs.tertiaryContainer;
+      case 'cancelled':
+      case 'canceled':
+      case 'failed':
+        return cs.errorContainer;
+      case 'shipped':
+      case 'delivered':
+        return cs.secondaryContainer;
+      default:
+        // ✅ surfaceVariant deprecated → surfaceContainerHighest
+        return cs.surfaceContainerHighest;
     }
   }
 
-  Future<void> _openStatusDialog({
-    required String orderId,
-    required String currentStatus,
+  Future<void> _openPreview(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc, {
+    required bool isAdmin,
+    required bool isVendor,
   }) async {
-    String status = currentStatus.trim().isEmpty ? 'created' : currentStatus.trim();
-    final noteCtrl = TextEditingController();
+    final d = doc.data();
+    final createdAt = _toDate(d['createdAt']);
+    final total = _toNum(
+      d['total'],
+      fallback: _toNum(d['amount'], fallback: 0),
+    );
+    final currency = _s(d['currency']).isEmpty ? 'NT\$' : _s(d['currency']);
+    final status = _s(d['status']).isEmpty ? '-' : _s(d['status']);
+    final vendorId = _s(d['vendorId']).isEmpty ? '-' : _s(d['vendorId']);
+    final buyerName = _s(d['buyerName']);
+    final buyerEmail = _s(d['buyerEmail']);
+    final buyerUid = _s(d['buyerUid']).isEmpty
+        ? _s(d['userId'])
+        : _s(d['buyerUid']);
 
-    final ok = await showDialog<bool>(
+    await showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text('更新訂單狀態：$orderId'),
+        title: Text('訂單預覽：${doc.id}'),
         content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<String>(
-                value: status,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: '狀態（status）',
-                  border: OutlineInputBorder(),
-                  isDense: true,
+          width: 520,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _kv('狀態', status),
+                _kv('建立時間', _fmtDateTime(createdAt)),
+                _kv('金額', '$currency${total.toStringAsFixed(0)}'),
+                _kv('vendorId', vendorId),
+                _kv('買家', buyerName.isEmpty ? '-' : buyerName),
+                _kv('Email', buyerEmail.isEmpty ? '-' : buyerEmail),
+                _kv('buyerUid/userId', buyerUid.isEmpty ? '-' : buyerUid),
+                const SizedBox(height: 12),
+                const Text(
+                  '原始資料（debug）',
+                  style: TextStyle(fontWeight: FontWeight.w900),
                 ),
-                items: const [
-                  DropdownMenuItem(value: 'created', child: Text('created（建立）')),
-                  DropdownMenuItem(value: 'pending_payment', child: Text('pending_payment（待付款）')),
-                  DropdownMenuItem(value: 'paid', child: Text('paid（已付款）')),
-                  DropdownMenuItem(value: 'processing', child: Text('processing（處理中）')),
-                  DropdownMenuItem(value: 'shipping', child: Text('shipping（出貨中）')),
-                  DropdownMenuItem(value: 'completed', child: Text('completed（完成）')),
-                  DropdownMenuItem(value: 'cancelled', child: Text('cancelled（取消）')),
-                  DropdownMenuItem(value: 'failed', child: Text('failed（失敗）')),
-                ],
-                onChanged: (v) => status = (v ?? status),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: noteCtrl,
-                decoration: const InputDecoration(
-                  labelText: '備註（可留空）',
-                  border: OutlineInputBorder(),
-                  isDense: true,
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    // ✅ surfaceVariant deprecated → surfaceContainerHighest
+                    // ✅ withOpacity deprecated → withValues(alpha: ...)
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest
+                        .withValues(alpha: 0.60),
+                  ),
+                  child: Text(
+                    d.toString(),
+                    style: const TextStyle(fontSize: 12),
+                  ),
                 ),
-                maxLines: 3,
-              ),
-            ],
+              ],
+            ),
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('更新')),
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: doc.id));
+              if (!mounted) return;
+              _snack('已複製訂單 ID');
+            },
+            child: const Text('複製訂單ID'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('關閉'),
+          ),
         ],
       ),
     );
-
-    if (ok == true) {
-      await _updateOrderStatus(orderId: orderId, newStatus: status, note: noteCtrl.text);
-    }
-
-    noteCtrl.dispose();
   }
 
-  // ---------------- export csv ----------------
-  Future<void> _exportCsv(List<Map<String, dynamic>> orders) async {
-    if (orders.isEmpty) return;
-
-    final headers = [
-      'orderId',
-      'status',
-      'paymentStatus',
-      'total',
-      'createdAt',
-      'buyerEmail',
-      'buyer',
-      'vendorIds',
-      'vendorId_legacy',
-    ];
-
-    final buffer = StringBuffer()..writeln(headers.join(','));
-
-    for (final o in orders) {
-      final id = _s(o['id']);
-      final data = (o['data'] is Map<String, dynamic>) ? (o['data'] as Map<String, dynamic>) : <String, dynamic>{};
-
-      final createdAt = _toDate(data['createdAt']);
-      final vendorIds = _extractVendorIds(data).join('|');
-
-      final row = [
-        id,
-        _s(data['status']),
-        _s(data['paymentStatus']),
-        _toNum(data['total'] ?? data['amount'] ?? data['priceTotal']).toString(),
-        createdAt?.toIso8601String() ?? '',
-        _s(data['buyerEmail']),
-        _s(data['buyer']),
-        vendorIds,
-        _s(data['vendorId']),
-      ].map((e) => e.toString().replaceAll(',', '，')).join(',');
-
-      buffer.writeln(row);
-    }
-
-    await downloadCsv('orders_export.csv', buffer.toString());
-    _snack('已匯出 orders_export.csv');
-  }
-
-  // ---------------- detail sheet/panel ----------------
-  Future<void> _openDetailDialog({
-    required bool isAdmin,
-    required String orderId,
-    required Map<String, dynamic> data,
-  }) async {
-    await showDialog(
-      context: context,
-      builder: (_) => Dialog(
-        insetPadding: const EdgeInsets.all(18),
-        child: SizedBox(
-          width: 520,
-          child: _OrderDetail(
-            isAdmin: isAdmin,
-            orderId: orderId,
-            data: data,
-            onCopy: _copy,
-            onGoPayment: () => Navigator.pushReplacementNamed(context, '/payment_status', arguments: orderId),
-            onEditStatus: () => _openStatusDialog(orderId: orderId, currentStatus: _s(data['status'])),
+  Widget _kv(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(k, style: const TextStyle(fontWeight: FontWeight.w800)),
           ),
-        ),
+          Expanded(child: Text(v)),
+        ],
       ),
     );
   }
 
-  // ---------------- build ----------------
   @override
   Widget build(BuildContext context) {
-    final gate = context.read<AdminGate>();
+    _primeRole();
 
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
@@ -341,237 +314,254 @@ class _OrdersPageState extends State<OrdersPage> {
         final user = authSnap.data;
 
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
+
         if (user == null) {
           return const Scaffold(body: Center(child: Text('請先登入')));
-        }
-
-        if (_roleFuture == null || _lastUid != user.uid) {
-          _lastUid = user.uid;
-          _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
-
-          // reset view state
-          _selectedId = null;
-          _q = '';
-          _status = 'all';
-          _searchCtrl.clear();
         }
 
         return FutureBuilder<RoleInfo>(
           future: _roleFuture,
           builder: (context, roleSnap) {
             if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
-            }
-            if (roleSnap.hasError) {
-              return Scaffold(
-                appBar: AppBar(title: const Text('訂單管理')),
-                body: Center(child: Text('讀取角色失敗：${roleSnap.error}')),
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
               );
             }
 
             final info = roleSnap.data;
-            final role = _s(info?.role).toLowerCase();
-            final isAdmin = role == 'admin';
-            final isVendor = role == 'vendor';
-            final vendorId = _s(info?.vendorId);
+            if (info == null) {
+              return const Scaffold(body: Center(child: Text('讀取角色失敗')));
+            }
 
-            if (!isAdmin && !isVendor) {
+            // ✅ 修正：RoleInfo.error 不存在 → 改用 hasError / errorMessage
+            if (info.hasError) {
               return Scaffold(
                 appBar: AppBar(title: const Text('訂單管理')),
-                body: Center(child: Text(_s(info?.error).isNotEmpty ? _s(info?.error) : '此帳號無後台權限')),
+                body: Center(
+                  child: Text(
+                    info.errorMessage.isEmpty ? '讀取角色失敗' : info.errorMessage,
+                  ),
+                ),
               );
             }
 
-            final stream = _queryStream(isAdmin: isAdmin, isVendor: isVendor, vendorId: vendorId);
+            final role = info.role.toLowerCase().trim();
+            final isAdmin = role == 'admin';
+            final isVendor = role == 'vendor';
+            final vendorId = info.vendorId.trim();
+
+            if (!isAdmin && !isVendor) {
+              return const Scaffold(
+                body: Center(child: Text('需要 Admin / Vendor 權限')),
+              );
+            }
+
+            if (isVendor && vendorId.isEmpty) {
+              return const Scaffold(
+                body: Center(
+                  child: Text(
+                    'Vendor 帳號缺少 vendorId，請在 users/{uid} 補上 vendorId',
+                  ),
+                ),
+              );
+            }
+
+            final query = _buildQuery(
+              isAdmin: isAdmin,
+              isVendor: isVendor,
+              vendorId: vendorId,
+              uid: user.uid,
+            );
 
             return Scaffold(
               appBar: AppBar(
-                title: Text(isAdmin ? '訂單管理（Admin）' : '訂單管理（Vendor）', overflow: TextOverflow.ellipsis),
+                title: Text(isAdmin ? '訂單管理（Admin）' : '訂單管理（Vendor）'),
                 actions: [
+                  if (isAdmin)
+                    Row(
+                      children: [
+                        const Text('只看我的', style: TextStyle(fontSize: 12)),
+                        Switch(
+                          value: _onlyMine,
+                          onChanged: (v) => setState(() => _onlyMine = v),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                    ),
                   IconButton(
-                    tooltip: '匯出 CSV（目前篩選）',
-                    onPressed: null, // 由下方拿到資料後再決定
-                    icon: const Icon(Icons.download_outlined),
+                    tooltip: '重新整理',
+                    icon: const Icon(Icons.refresh),
+                    onPressed: () => setState(() {}),
                   ),
-                  const SizedBox(width: 6),
                 ],
               ),
-              body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: stream,
-                builder: (context, snap) {
-                  if (snap.hasError) {
-                    return Center(child: Text('讀取失敗：${snap.error}'));
-                  }
-                  if (!snap.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
+              body: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                    child: _buildTopFilters(
+                      isAdmin: isAdmin,
+                      vendorId: vendorId,
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: query.snapshots(),
+                      builder: (context, snap) {
+                        if (!snap.hasData) {
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        }
+                        if (snap.hasError) {
+                          return Center(child: Text('載入失敗：${snap.error}'));
+                        }
 
-                  final docs = snap.data!.docs;
+                        final docs = snap.data!.docs;
+                        if (docs.isEmpty) {
+                          return const Center(child: Text('目前沒有訂單'));
+                        }
 
-                  // local filter（搜尋）
-                  final items = <Map<String, dynamic>>[];
-                  for (final d in docs) {
-                    final data = d.data();
-                    if (_match(data, d.id)) {
-                      items.add(<String, dynamic>{'id': d.id, 'data': data});
-                    }
-                  }
+                        final filtered = _filterClientSide(
+                          docs,
+                          isAdmin: isAdmin,
+                          isVendor: isVendor,
+                          uid: user.uid,
+                        );
 
-                  // 讓 AppBar 的匯出按鈕可用：用 Builder 重新包一層
-                  return Builder(
-                    builder: (context) {
-                      return Column(
-                        children: [
-                          _OrderFilters(
-                            qCtrl: _searchCtrl,
-                            status: _status,
-                            onQueryChanged: (v) => setState(() => _q = v),
-                            onClearQuery: () {
-                              _searchCtrl.clear();
-                              setState(() => _q = '');
-                            },
-                            onStatusChanged: (v) => setState(() => _status = v),
-                            countLabel: '${items.length} 筆',
-                            onExport: items.isEmpty ? null : () => _exportCsv(items),
-                            isVendor: isVendor,
-                            vendorId: vendorId,
-                          ),
-                          const Divider(height: 1),
+                        final statuses = _collectStatuses(docs).toList()
+                          ..sort();
+                        // 若目前 _statusFilter 不存在，強制回 all（避免 Dropdown assertion）
+                        if (!statuses.contains(_statusFilter)) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (!mounted) return;
+                            setState(() => _statusFilter = 'all');
+                          });
+                        }
 
-                          Expanded(
-                            child: LayoutBuilder(
-                              builder: (context, c) {
-                                final isWide = c.maxWidth >= 980;
-
-                                Widget list() => ListView.separated(
-                                      itemCount: items.length,
-                                      separatorBuilder: (_, __) => const Divider(height: 1),
-                                      itemBuilder: (_, i) {
-                                        final id = _s(items[i]['id']);
-                                        final data = (items[i]['data'] is Map<String, dynamic>)
-                                            ? (items[i]['data'] as Map<String, dynamic>)
-                                            : <String, dynamic>{};
-
-                                        final status = _s(data['status']);
-                                        final paymentStatus = _s(data['paymentStatus']);
-                                        final total = _toNum(data['total'] ?? data['amount'] ?? data['priceTotal']);
-                                        final createdAt = _toDate(data['createdAt']);
-                                        final buyer = _s(data['buyerEmail']).isNotEmpty ? _s(data['buyerEmail']) : _s(data['buyer']);
-
-                                        final selected = id == _selectedId;
-
-                                        return ListTile(
-                                          selected: selected,
-                                          onTap: () async {
-                                            setState(() => _selectedId = id);
-                                            if (!isWide) {
-                                              await _openDetailDialog(isAdmin: isAdmin, orderId: id, data: data);
-                                            }
-                                          },
-                                          title: Row(
-                                            children: [
-                                              Expanded(
-                                                child: Text(
-                                                  '訂單 $id',
-                                                  maxLines: 1,
-                                                  overflow: TextOverflow.ellipsis,
-                                                  style: const TextStyle(fontWeight: FontWeight.w900),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              _StatusChip(status: status),
-                                            ],
-                                          ),
-                                          subtitle: Padding(
-                                            padding: const EdgeInsets.only(top: 6),
-                                            child: Wrap(
-                                              spacing: 10,
-                                              runSpacing: 4,
-                                              children: [
-                                                Text('NT\$${total.toStringAsFixed(0)}'),
-                                                Text('建立：${_fmt(createdAt)}'),
-                                                if (buyer.isNotEmpty) Text('買家：$buyer'),
-                                                if (paymentStatus.isNotEmpty) Text('付款：$paymentStatus'),
-                                                Text('vendor：${_vendorShow(data)}'),
-                                              ],
+                        return Column(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                12,
+                                10,
+                                12,
+                                10,
+                              ),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    '共 ${filtered.length} 筆',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  DropdownButton<String>(
+                                    value: _statusFilter,
+                                    items: statuses
+                                        .map(
+                                          (s) => DropdownMenuItem(
+                                            value: s,
+                                            child: Text(
+                                              s == 'all' ? '全部狀態' : s,
                                             ),
                                           ),
-                                          trailing: Wrap(
-                                            spacing: 6,
-                                            children: [
-                                              IconButton(
-                                                tooltip: '複製訂單號',
-                                                onPressed: () => _copy(id, done: '已複製訂單號'),
-                                                icon: const Icon(Icons.copy, size: 20),
-                                              ),
-                                              IconButton(
-                                                tooltip: '付款狀態',
-                                                onPressed: () => Navigator.pushReplacementNamed(
-                                                  context,
-                                                  '/payment_status',
-                                                  arguments: id,
-                                                ),
-                                                icon: const Icon(Icons.verified_outlined, size: 20),
-                                              ),
-                                            ],
-                                          ),
-                                        );
-                                      },
-                                    );
-
-                                Widget detail() {
-                                  if (_selectedId == null) {
-                                    return const Center(child: Text('請在左側選擇訂單'));
-                                  }
-                                  final hit = items.firstWhere(
-                                    (e) => _s(e['id']) == _selectedId,
-                                    orElse: () => <String, dynamic>{},
-                                  );
-                                  if (hit.isEmpty) {
-                                    return const Center(child: Text('找不到選取的訂單資料'));
-                                  }
-                                  final data = (hit['data'] is Map<String, dynamic>)
-                                      ? (hit['data'] as Map<String, dynamic>)
-                                      : <String, dynamic>{};
-
-                                  return _OrderDetail(
-                                    isAdmin: isAdmin,
-                                    orderId: _s(hit['id']),
-                                    data: data,
-                                    onCopy: _copy,
-                                    onGoPayment: () => Navigator.pushReplacementNamed(
-                                      context,
-                                      '/payment_status',
-                                      arguments: _s(hit['id']),
+                                        )
+                                        .toList(),
+                                    onChanged: (v) => setState(
+                                      () => _statusFilter = v ?? 'all',
                                     ),
-                                    onEditStatus: isAdmin
-                                        ? () => _openStatusDialog(
-                                              orderId: _s(hit['id']),
-                                              currentStatus: _s(data['status']),
-                                            )
-                                        : null,
-                                  );
-                                }
-
-                                if (!isWide) return list();
-
-                                return Row(
-                                  children: [
-                                    Expanded(flex: 3, child: list()),
-                                    const VerticalDivider(width: 1),
-                                    Expanded(flex: 2, child: detail()),
-                                  ],
-                                );
-                              },
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                        ],
-                      );
-                    },
-                  );
-                },
+                            const Divider(height: 1),
+                            Expanded(
+                              child: ListView.separated(
+                                itemCount: filtered.length,
+                                separatorBuilder: (_, __) =>
+                                    const Divider(height: 1),
+                                itemBuilder: (context, i) {
+                                  final doc = filtered[i];
+                                  final d = doc.data();
+
+                                  final createdAt = _toDate(d['createdAt']);
+                                  final status = _s(d['status']).isEmpty
+                                      ? '-'
+                                      : _s(d['status']);
+                                  final vendor = _s(d['vendorId']).isEmpty
+                                      ? '-'
+                                      : _s(d['vendorId']);
+                                  final buyerName = _s(d['buyerName']);
+                                  final buyerEmail = _s(d['buyerEmail']);
+
+                                  final total = _toNum(
+                                    d['total'],
+                                    fallback: _toNum(d['amount'], fallback: 0),
+                                  );
+                                  final currency = _s(d['currency']).isEmpty
+                                      ? 'NT\$'
+                                      : _s(d['currency']);
+
+                                  return ListTile(
+                                    leading: CircleAvatar(
+                                      backgroundColor: _statusColor(
+                                        context,
+                                        status,
+                                      ),
+                                      child: const Icon(
+                                        Icons.receipt_long_outlined,
+                                      ),
+                                    ),
+                                    title: Text(
+                                      '訂單 ${doc.id}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      '${_fmtDateTime(createdAt)} ｜ '
+                                      '狀態：$status ｜ '
+                                      '金額：$currency${total.toStringAsFixed(0)}'
+                                      '${isAdmin ? ' ｜ vendorId：$vendor' : ''}'
+                                      '${(buyerName.isNotEmpty || buyerEmail.isNotEmpty) ? ' ｜ 買家：${buyerName.isNotEmpty ? buyerName : buyerEmail}' : ''}',
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    trailing: IconButton(
+                                      tooltip: '預覽',
+                                      icon: const Icon(
+                                        Icons.remove_red_eye_outlined,
+                                      ),
+                                      onPressed: () => _openPreview(
+                                        doc,
+                                        isAdmin: isAdmin,
+                                        isVendor: isVendor,
+                                      ),
+                                    ),
+                                    onTap: () => _openPreview(
+                                      doc,
+                                      isAdmin: isAdmin,
+                                      isVendor: isVendor,
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
             );
           },
@@ -579,393 +569,54 @@ class _OrdersPageState extends State<OrdersPage> {
       },
     );
   }
-}
 
-// ------------------------------------------------------------
-// Filters UI
-// ------------------------------------------------------------
-class _OrderFilters extends StatelessWidget {
-  const _OrderFilters({
-    required this.qCtrl,
-    required this.status,
-    required this.onQueryChanged,
-    required this.onClearQuery,
-    required this.onStatusChanged,
-    required this.countLabel,
-    required this.onExport,
-    required this.isVendor,
-    required this.vendorId,
-  });
+  Widget _buildTopFilters({required bool isAdmin, required String vendorId}) {
+    return LayoutBuilder(
+      builder: (context, c) {
+        final isNarrow = c.maxWidth < 760;
 
-  final TextEditingController qCtrl;
-  final String status;
-  final ValueChanged<String> onQueryChanged;
-  final VoidCallback onClearQuery;
-  final ValueChanged<String> onStatusChanged;
-  final String countLabel;
-  final VoidCallback? onExport;
-
-  final bool isVendor;
-  final String vendorId;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: LayoutBuilder(
-        builder: (context, c) {
-          final isNarrow = c.maxWidth < 720;
-
-          final search = TextField(
-            controller: qCtrl,
-            decoration: InputDecoration(
-              isDense: true,
-              prefixIcon: const Icon(Icons.search),
-              border: const OutlineInputBorder(),
-              hintText: '搜尋：訂單號 / 買家 / vendor',
-              suffixIcon: qCtrl.text.trim().isEmpty
-                  ? null
-                  : IconButton(
-                      tooltip: '清除',
-                      onPressed: onClearQuery,
-                      icon: const Icon(Icons.clear),
-                    ),
-            ),
-            onChanged: onQueryChanged,
-          );
-
-          final statusDd = DropdownButtonFormField<String>(
-            value: status,
-            isExpanded: true,
-            decoration: const InputDecoration(
-              isDense: true,
-              border: OutlineInputBorder(),
-              labelText: '狀態',
-            ),
-            items: const [
-              DropdownMenuItem(value: 'all', child: Text('全部')),
-              DropdownMenuItem(value: 'created', child: Text('created')),
-              DropdownMenuItem(value: 'pending_payment', child: Text('pending_payment')),
-              DropdownMenuItem(value: 'paid', child: Text('paid')),
-              DropdownMenuItem(value: 'processing', child: Text('processing')),
-              DropdownMenuItem(value: 'shipping', child: Text('shipping')),
-              DropdownMenuItem(value: 'completed', child: Text('completed')),
-              DropdownMenuItem(value: 'cancelled', child: Text('cancelled')),
-              DropdownMenuItem(value: 'failed', child: Text('failed')),
-            ],
-            onChanged: (v) => onStatusChanged(v ?? 'all'),
-          );
-
-          final exportBtn = OutlinedButton.icon(
-            onPressed: onExport,
-            icon: const Icon(Icons.download_outlined),
-            label: const Text('匯出 CSV'),
-          );
-
-          final hint = Text(
-            isVendor
-                ? (vendorId.trim().isEmpty
-                    ? 'Vendor：尚未設定 vendorId（將無法查到訂單）'
-                    : 'Vendor：只顯示 vendorIds 包含 $vendorId 的訂單')
-                : 'Admin：顯示全部訂單',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-          );
-
-          if (isNarrow) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                search,
-                const SizedBox(height: 10),
-                statusDd,
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    exportBtn,
-                    Text('共 $countLabel', style: const TextStyle(color: Colors.black54)),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                hint,
-              ],
-            );
-          }
-
-          return Row(
-            children: [
-              Expanded(flex: 3, child: search),
-              const SizedBox(width: 10),
-              SizedBox(width: 220, child: statusDd),
-              const SizedBox(width: 10),
-              exportBtn,
-              const SizedBox(width: 10),
-              Text('共 $countLabel', style: const TextStyle(color: Colors.black54)),
-              const SizedBox(width: 10),
-              Expanded(child: hint),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// Detail UI
-// ------------------------------------------------------------
-class _OrderDetail extends StatelessWidget {
-  const _OrderDetail({
-    required this.isAdmin,
-    required this.orderId,
-    required this.data,
-    required this.onCopy,
-    required this.onGoPayment,
-    required this.onEditStatus,
-  });
-
-  final bool isAdmin;
-  final String orderId;
-  final Map<String, dynamic> data;
-
-  final Future<void> Function(String text, {String done}) onCopy;
-  final VoidCallback onGoPayment;
-  final VoidCallback? onEditStatus;
-
-  String _s(dynamic v) => (v ?? '').toString().trim();
-
-  num _toNum(dynamic v) {
-    if (v is num) return v;
-    return num.tryParse((v ?? '').toString().trim()) ?? 0;
-  }
-
-  DateTime? _toDate(dynamic v) {
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
-    return null;
-  }
-
-  String _fmt(DateTime? d) {
-    if (d == null) return '-';
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
-  }
-
-  List<String> _vendorIds(Map<String, dynamic> d) {
-    final raw = d['vendorIds'];
-    if (raw is List) {
-      return raw.map((e) => _s(e)).where((e) => e.isNotEmpty).toList();
-    }
-    final legacy = _s(d['vendorId']);
-    return legacy.isEmpty ? <String>[] : <String>[legacy];
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    final status = _s(data['status']);
-    final paymentStatus = _s(data['paymentStatus']);
-    final total = _toNum(data['total'] ?? data['amount'] ?? data['priceTotal']);
-    final createdAt = _toDate(data['createdAt']);
-    final buyer = _s(data['buyerEmail']).isNotEmpty ? _s(data['buyerEmail']) : _s(data['buyer']);
-    final vendorShow = _vendorIds(data).isEmpty ? '-' : _vendorIds(data).join(', ');
-
-    // items（可選）
-    final rawItems = data['items'];
-    final items = <Map<String, dynamic>>[];
-    if (rawItems is List) {
-      for (final it in rawItems) {
-        if (it is Map) items.add(it.cast<String, dynamic>());
-      }
-    }
-
-    return Padding(
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '訂單詳情 $orderId',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-                ),
-              ),
-              IconButton(
-                tooltip: '複製訂單號',
-                onPressed: () => onCopy(orderId, done: '已複製訂單號'),
-                icon: const Icon(Icons.copy),
-              ),
-              IconButton(
-                tooltip: '付款狀態',
-                onPressed: onGoPayment,
-                icon: const Icon(Icons.verified_outlined),
-              ),
-            ],
+        final search = TextField(
+          controller: _searchCtrl,
+          onChanged: (_) => setState(() {}),
+          decoration: const InputDecoration(
+            prefixIcon: Icon(Icons.search),
+            hintText: '搜尋：訂單ID / 狀態 / vendorId / 買家姓名 / Email',
+            border: OutlineInputBorder(),
+            isDense: true,
           ),
-          const SizedBox(height: 8),
+        );
 
-          Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              _StatusChip(status: status),
-              Text('NT\$${total.toStringAsFixed(0)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-              if (paymentStatus.isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: cs.secondaryContainer.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: cs.secondary.withOpacity(0.25)),
-                  ),
-                  child: Text('付款：$paymentStatus', style: TextStyle(color: cs.secondary, fontWeight: FontWeight.w800)),
-                ),
-            ],
+        final vendorFilter = TextField(
+          controller: _vendorFilterCtrl,
+          onChanged: (_) => setState(() {}),
+          decoration: InputDecoration(
+            prefixIcon: const Icon(Icons.store_mall_directory_outlined),
+            hintText: 'vendorId 篩選（Admin）',
+            border: const OutlineInputBorder(),
+            isDense: true,
+            helperText: isAdmin ? '留空 = 全部廠商' : '你的 vendorId：$vendorId',
           ),
+          enabled: isAdmin,
+        );
 
-          const SizedBox(height: 12),
-          _kv('狀態', status.isEmpty ? '-' : status),
-          const SizedBox(height: 6),
-          _kv('建立', _fmt(createdAt)),
-          const SizedBox(height: 6),
-          _kv('買家', buyer.isEmpty ? '-' : buyer),
-          const SizedBox(height: 6),
-          _kv('vendor', vendorShow),
+        if (isNarrow) {
+          return Column(
+            children: [
+              search,
+              const SizedBox(height: 10),
+              if (isAdmin) vendorFilter,
+            ],
+          );
+        }
 
-          const SizedBox(height: 12),
-          if (items.isNotEmpty) ...[
-            const Text('品項', style: TextStyle(fontWeight: FontWeight.w900)),
-            const SizedBox(height: 6),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: cs.surfaceContainerHighest.withOpacity(0.25),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                children: items.map((it) {
-                  final name = _s(it['name']).isNotEmpty ? _s(it['name']) : _s(it['title']);
-                  final qty = _s(it['qty']).isNotEmpty ? _s(it['qty']) : _s(it['quantity']);
-                  final price = _s(it['price']).isNotEmpty ? _s(it['price']) : _s(it['amount']);
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(name.isEmpty ? '（未命名）' : name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        ),
-                        const SizedBox(width: 10),
-                        Text('x${qty.isEmpty ? '1' : qty}'),
-                        const SizedBox(width: 10),
-                        Text(price.isEmpty ? '' : 'NT\$$price'),
-                      ],
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-            const SizedBox(height: 10),
+        return Row(
+          children: [
+            Expanded(flex: 3, child: search),
+            const SizedBox(width: 12),
+            if (isAdmin) Expanded(flex: 2, child: vendorFilter),
           ],
-
-          const Spacer(),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => onCopy(orderId, done: '已複製訂單號'),
-                  icon: const Icon(Icons.copy),
-                  label: const Text('複製訂單號'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: onGoPayment,
-                  icon: const Icon(Icons.verified_outlined),
-                  label: const Text('付款狀態'),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (isAdmin)
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: onEditStatus,
-                icon: const Icon(Icons.edit_outlined),
-                label: const Text('更新訂單狀態（Admin）'),
-              ),
-            )
-          else
-            Text(
-              'Vendor 為只讀檢視（避免觸發 rules 限制）',
-              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _kv(String k, String v) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(width: 70, child: Text(k, style: const TextStyle(color: Colors.black54, fontSize: 12))),
-        Expanded(child: Text(v, style: const TextStyle(fontWeight: FontWeight.w800))),
-      ],
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// Status chip
-// ------------------------------------------------------------
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.status});
-  final String status;
-
-  Color _color(BuildContext context, String s) {
-    final cs = Theme.of(context).colorScheme;
-    final x = s.trim().toLowerCase();
-    if (x.contains('paid') || x == 'completed') return cs.primary;
-    if (x.contains('pending') || x.contains('processing')) return Colors.orange;
-    if (x.contains('ship')) return Colors.blueGrey;
-    if (x.contains('cancel') || x.contains('fail') || x.contains('error')) return cs.error;
-    return cs.onSurfaceVariant;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = _color(context, status);
-    final label = status.trim().isEmpty ? 'unknown' : status.trim();
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: c.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: c.withOpacity(0.25)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(color: c, fontWeight: FontWeight.w900, fontSize: 12),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
+        );
+      },
     );
   }
 }

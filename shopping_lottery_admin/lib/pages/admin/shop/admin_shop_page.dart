@@ -1,6 +1,6 @@
 // lib/pages/admin/shop/admin_shop_page.dart
 //
-// ✅ AdminShopPage（完整版）
+// ✅ AdminShopPage（完整版｜已修正 unnecessary_to_list_in_spreads + use_build_context_synchronously）
 // ------------------------------------------------------------
 // - 商品列表（即時 Firestore 同步）
 // - 搜尋 / 篩選 / 標籤 / 上架下架切換
@@ -27,15 +27,25 @@ class _AdminShopPageState extends State<AdminShopPage> {
   bool _showOnlyActive = true;
 
   @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('商城管理', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '商城管理',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
             tooltip: '新增商品',
             icon: const Icon(Icons.add),
-            onPressed: () => Navigator.pushNamed(context, '/admin_products/edit'),
+            onPressed: () =>
+                Navigator.pushNamed(context, '/admin_products/edit'),
           ),
           IconButton(
             tooltip: '重新整理',
@@ -67,7 +77,9 @@ class _AdminShopPageState extends State<AdminShopPage> {
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search),
               hintText: '搜尋商品（名稱 / 描述）',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
               isDense: true,
             ),
             onChanged: (_) => setState(() {}),
@@ -120,10 +132,14 @@ class _AdminShopPageState extends State<AdminShopPage> {
     Query<Map<String, dynamic>> q = _db.collection('products');
 
     // 狀態篩選
-    if (_showOnlyActive) q = q.where('status', isEqualTo: 'active');
+    if (_showOnlyActive) {
+      q = q.where('status', isEqualTo: 'active');
+    }
 
     // 類別篩選
-    if (_categoryFilter != '全部') q = q.where('category', isEqualTo: _categoryFilter);
+    if (_categoryFilter != '全部') {
+      q = q.where('category', isEqualTo: _categoryFilter);
+    }
 
     // 排序
     if (_sortMode == '最新') {
@@ -146,14 +162,19 @@ class _AdminShopPageState extends State<AdminShopPage> {
           return const Center(child: Text('目前無商品'));
         }
 
+        final searchText = _search.text.trim();
         final docs = snap.data!.docs.where((d) {
-          final name = (d['name'] ?? '').toString();
-          final desc = (d['description'] ?? '').toString();
-          final searchText = _search.text.trim();
+          final data = d.data();
+          final name = (data['name'] ?? '').toString();
+          final desc = (data['description'] ?? '').toString();
           return searchText.isEmpty ||
               name.contains(searchText) ||
               desc.contains(searchText);
         }).toList();
+
+        if (docs.isEmpty) {
+          return const Center(child: Text('目前無商品'));
+        }
 
         return ListView.separated(
           padding: const EdgeInsets.all(12),
@@ -169,14 +190,22 @@ class _AdminShopPageState extends State<AdminShopPage> {
   // 商品卡片
   // ======================================================
   Widget _buildProductTile(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
-    final img = (d['images'] is List && d['images'].isNotEmpty) ? d['images'][0] : null;
-    final name = d['name'] ?? '';
-    final price = d['price'] ?? 0;
-    final category = d['category'] ?? '未分類';
-    final status = d['status'] ?? 'inactive';
+    final d = doc.data() ?? <String, dynamic>{};
+
+    final images = (d['images'] is List) ? (d['images'] as List) : const [];
+    final img = images.isNotEmpty ? images.first : null;
+
+    final name = (d['name'] ?? '').toString();
+    final priceRaw = d['price'];
+    final price = (priceRaw is num) ? priceRaw : num.tryParse('$priceRaw') ?? 0;
+
+    final category = (d['category'] ?? '未分類').toString();
+    final status = (d['status'] ?? 'inactive').toString();
     final isActive = status == 'active';
-    final tags = (d['tags'] as List?)?.cast<String>() ?? [];
+
+    final tags =
+        (d['tags'] as List?)?.map((e) => e.toString()).toList() ??
+        const <String>[];
 
     return Card(
       child: InkWell(
@@ -193,7 +222,12 @@ class _AdminShopPageState extends State<AdminShopPage> {
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: img != null
-                    ? Image.network(img, width: 80, height: 80, fit: BoxFit.cover)
+                    ? Image.network(
+                        img.toString(),
+                        width: 80,
+                        height: 80,
+                        fit: BoxFit.cover,
+                      )
                     : Container(
                         width: 80,
                         height: 80,
@@ -206,13 +240,23 @@ class _AdminShopPageState extends State<AdminShopPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(name,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(
+                      name.isEmpty ? '（未命名商品）' : name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     const SizedBox(height: 4),
-                    Text('NT\$${price.toStringAsFixed(0)}',
-                        style: const TextStyle(
-                            color: Colors.orange, fontWeight: FontWeight.w700)),
+                    Text(
+                      'NT\$${price.toStringAsFixed(0)}',
+                      style: const TextStyle(
+                        color: Colors.orange,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                     const SizedBox(height: 4),
                     Wrap(
                       spacing: 4,
@@ -223,13 +267,14 @@ class _AdminShopPageState extends State<AdminShopPage> {
                           backgroundColor: Colors.blue.shade50,
                           visualDensity: VisualDensity.compact,
                         ),
-                        ...tags
-                            .map((t) => Chip(
-                                  label: Text(t),
-                                  backgroundColor: Colors.teal.shade50,
-                                  visualDensity: VisualDensity.compact,
-                                ))
-                            .toList(),
+                        // ✅ FIX: unnecessary_to_list_in_spreads（移除 .toList()）
+                        ...tags.map(
+                          (t) => Chip(
+                            label: Text(t),
+                            backgroundColor: Colors.teal.shade50,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
                       ],
                     ),
                   ],
@@ -238,7 +283,9 @@ class _AdminShopPageState extends State<AdminShopPage> {
               Switch(
                 value: isActive,
                 onChanged: (v) async {
-                  await doc.reference.update({'status': v ? 'active' : 'inactive'});
+                  await doc.reference.update({
+                    'status': v ? 'active' : 'inactive',
+                  });
                 },
               ),
               IconButton(
@@ -254,31 +301,45 @@ class _AdminShopPageState extends State<AdminShopPage> {
   }
 
   // ======================================================
-  // 刪除確認
+  // 刪除確認（✅ FIX: use_build_context_synchronously）
   // ======================================================
-  Future<void> _confirmDelete(DocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _confirmDelete(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
+    final data = doc.data() ?? <String, dynamic>{};
+    final name = (data['name'] ?? '').toString();
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('確認刪除？'),
-        content: Text('確定要刪除商品「${doc['name']}」嗎？'),
+        content: Text('確定要刪除商品「$name」嗎？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              style: FilledButton.styleFrom(backgroundColor: Colors.red),
-              child: const Text('刪除')),
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
 
-    if (ok == true) {
-      await doc.reference.delete();
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('商品已刪除')),
-        );
-      }
+    if (ok != true) {
+      return;
     }
+
+    await doc.reference.delete();
+
+    // ✅ 對 State.context：用 mounted 檢查（避免 lint）
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('商品已刪除')));
   }
 }

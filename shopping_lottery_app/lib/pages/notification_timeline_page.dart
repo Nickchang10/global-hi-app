@@ -1,11 +1,22 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
-import 'package:provider/provider.dart';
-import '../services/notification_service.dart';
 
-/// 📈 通知分析儀表板頁面（含圓餅圖、折線圖、來源排行榜）
+/// ✅ NotificationTimelinePage（通知時間軸｜最終完整版｜可直接使用｜可編譯）
+/// ------------------------------------------------------------
+/// - Firestore 結構建議：users/{uid}/notifications/{docId}
+///   - title: String
+///   - body: String
+///   - type: String (system/order/promo/health/sos)
+///   - read: bool
+///   - createdAt: Timestamp (serverTimestamp)
+///
+/// - ✅ 修正：unnecessary_null_in_if_null_operators
+///   任何 `xx ?? null` 都不需要，直接用 `xx` 即可。
 class NotificationTimelinePage extends StatefulWidget {
   const NotificationTimelinePage({super.key});
+
+  static const routeName = '/notifications';
 
   @override
   State<NotificationTimelinePage> createState() =>
@@ -13,422 +24,381 @@ class NotificationTimelinePage extends StatefulWidget {
 }
 
 class _NotificationTimelinePageState extends State<NotificationTimelinePage> {
-  bool _onlyUnread = false;
+  final _auth = FirebaseAuth.instance;
+  final _fs = FirebaseFirestore.instance;
+
+  User? get _user => _auth.currentUser;
+
+  CollectionReference<Map<String, dynamic>> _notiRef(String uid) =>
+      _fs.collection('users').doc(uid).collection('notifications');
+
+  Query<Map<String, dynamic>> _query(String uid) {
+    // 依 createdAt 由新到舊
+    return _notiRef(uid).orderBy('createdAt', descending: true).limit(100);
+  }
+
+  Future<void> _seedDemoIfEmpty(String uid) async {
+    final snap = await _notiRef(uid).limit(1).get();
+    if (snap.docs.isNotEmpty) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final batch = _fs.batch();
+
+    final demo = <Map<String, dynamic>>[
+      {
+        'title': '歡迎加入 Osmile',
+        'body': '開始探索商城、抽獎、健康追蹤與 SOS 守護功能。',
+        'type': 'system',
+        'read': false,
+        'createdAt': Timestamp.fromDate(
+          now.subtract(const Duration(minutes: 5)),
+        ),
+      },
+      {
+        'title': '訂單已成立',
+        'body': '你的訂單已成立，稍後可在「我的訂單」查看物流狀態。',
+        'type': 'order',
+        'read': false,
+        'createdAt': Timestamp.fromDate(now.subtract(const Duration(hours: 2))),
+      },
+      {
+        'title': '活動通知',
+        'body': '你有一張新的優惠券可使用，結帳時記得套用！',
+        'type': 'promo',
+        'read': true,
+        'createdAt': Timestamp.fromDate(now.subtract(const Duration(days: 1))),
+      },
+    ];
+
+    for (final n in demo) {
+      final doc = _notiRef(uid).doc();
+      batch.set(doc, n, SetOptions(merge: true));
+    }
+    await batch.commit();
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已建立通知示範資料（原本為空）')));
+  }
+
+  Future<void> _markAllRead(String uid) async {
+    final snap = await _notiRef(uid).where('read', isEqualTo: false).get();
+    if (snap.docs.isEmpty) {
+      return;
+    }
+
+    final batch = _fs.batch();
+    for (final d in snap.docs) {
+      batch.update(d.reference, {
+        'read': true,
+        'readAt': FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已標記已讀：${snap.docs.length} 則')));
+  }
+
+  Future<void> _toggleRead(
+    String uid,
+    DocumentSnapshot<Map<String, dynamic>> d,
+  ) async {
+    final data = d.data() ?? const <String, dynamic>{};
+    final cur = (data['read'] == true);
+    await d.reference.update({
+      'read': !cur,
+      if (!cur) 'readAt': FieldValue.serverTimestamp(),
+      if (cur) 'readAt': FieldValue.delete(),
+    });
+  }
+
+  Future<void> _deleteOne(DocumentSnapshot<Map<String, dynamic>> d) async {
+    await d.reference.delete();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final notifier = Provider.of<NotificationService>(context);
-    final all = notifier.notifications;
-
-    final filtered =
-        _onlyUnread ? all.where((n) => n["unread"] == true).toList() : all;
-
-    // 日期分組
-    final now = DateTime.now();
-    final today = <Map<String, dynamic>>[];
-    final yesterday = <Map<String, dynamic>>[];
-    final earlier = <Map<String, dynamic>>[];
-
-    for (final n in filtered) {
-      final t = n["time"] as DateTime;
-      final d = DateTime(t.year, t.month, t.day);
-      final todayDate = DateTime(now.year, now.month, now.day);
-      final yestDate = todayDate.subtract(const Duration(days: 1));
-
-      if (d == todayDate) {
-        today.add(n);
-      } else if (d == yestDate) {
-        yesterday.add(n);
-      } else {
-        earlier.add(n);
-      }
-    }
-
-    final sections = [
-      if (today.isNotEmpty) ("今天", today),
-      if (yesterday.isNotEmpty) ("昨天", yesterday),
-      if (earlier.isNotEmpty) ("更早以前", earlier),
-    ];
+    final u = _user;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("通知分析儀表板"),
-        backgroundColor: const Color(0xFF007BFF),
-        foregroundColor: Colors.white,
+        title: const Text('通知中心'),
         actions: [
-          TextButton(
-            onPressed: () => setState(() => _onlyUnread = !_onlyUnread),
-            child: Text(
-              _onlyUnread ? "顯示全部" : "只看未讀",
-              style: const TextStyle(color: Colors.white),
-            ),
+          IconButton(
+            tooltip: '建立示範資料（空集合時）',
+            onPressed: u == null ? null : () => _seedDemoIfEmpty(u.uid),
+            icon: const Icon(Icons.auto_awesome),
+          ),
+          IconButton(
+            tooltip: '全部標記已讀',
+            onPressed: u == null ? null : () => _markAllRead(u.uid),
+            icon: const Icon(Icons.done_all),
           ),
         ],
       ),
-      body: filtered.isEmpty
-          ? Center(
-              child: Text(
-                _onlyUnread ? "目前沒有未讀通知" : "目前沒有通知記錄",
-                style: const TextStyle(color: Colors.black54, fontSize: 16),
-              ),
-            )
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                _buildStatsChart(filtered),
-                const SizedBox(height: 16),
-                _buildTrendChart(filtered),
-                const SizedBox(height: 16),
-                _buildSourceRanking(filtered),
-                const SizedBox(height: 24),
-                for (final (title, list) in sections) ...[
-                  Padding(
-                    padding:
-                        const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF007BFF),
-                      ),
-                    ),
-                  ),
-                  ...list.map(
-                      (n) => _buildNotificationItem(context, notifier, n)),
-                ],
-              ],
-            ),
-    );
-  }
-
-  /// 📊 圓餅統計圖（類型比例）
-  Widget _buildStatsChart(List<Map<String, dynamic>> list) {
-    final Map<String, int> counts = {
-      "優惠": 0,
-      "出貨": 0,
-      "公告": 0,
-      "其他": 0,
-    };
-
-    for (final n in list) {
-      final title = n["title"]?.toString() ?? "";
-      if (title.contains("優惠") || title.contains("折扣")) {
-        counts["優惠"] = counts["優惠"]! + 1;
-      } else if (title.contains("出貨") || title.contains("物流")) {
-        counts["出貨"] = counts["出貨"]! + 1;
-      } else if (title.contains("公告") || title.contains("通知")) {
-        counts["公告"] = counts["公告"]! + 1;
-      } else {
-        counts["其他"] = counts["其他"]! + 1;
-      }
-    }
-
-    final total = counts.values.fold<int>(0, (a, b) => a + b);
-    if (total == 0) return const SizedBox();
-
-    final sections = counts.entries
-        .where((e) => e.value > 0)
-        .map(
-          (e) => PieChartSectionData(
-            color: _getColor(e.key),
-            value: e.value.toDouble(),
-            title: "${e.key}\n${e.value}",
-            radius: 60,
-            titleStyle: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        )
-        .toList();
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: _boxDecoration(),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "推播類型統計",
-            style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF007BFF)),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            height: 200,
-            child: PieChart(
-              PieChartData(
-                sections: sections,
-                centerSpaceRadius: 40,
-                sectionsSpace: 2,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 📈 推播趨勢折線圖
-  Widget _buildTrendChart(List<Map<String, dynamic>> list) {
-    final now = DateTime.now();
-    final Map<String, int> daily = {};
-
-    for (int i = 6; i >= 0; i--) {
-      final d = now.subtract(Duration(days: i));
-      final key = "${d.month}/${d.day}";
-      daily[key] = 0;
-    }
-
-    for (final n in list) {
-      final t = n["time"] as DateTime;
-      final key = "${t.month}/${t.day}";
-      if (daily.containsKey(key)) daily[key] = daily[key]! + 1;
-    }
-
-    final spots = <FlSpot>[];
-    var index = 0;
-    for (final e in daily.entries) {
-      spots.add(FlSpot(index.toDouble(), e.value.toDouble()));
-      index++;
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: _boxDecoration(),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "近 7 日推播趨勢",
-            style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF007BFF)),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            height: 220,
-            child: LineChart(
-              LineChartData(
-                gridData: FlGridData(show: false),
-                borderData: FlBorderData(show: false),
-                titlesData: FlTitlesData(
-                  leftTitles:
-                      AxisTitles(sideTitles: SideTitles(showTitles: true)),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      getTitlesWidget: (value, _) {
-                        final i = value.toInt();
-                        if (i < 0 || i >= daily.keys.length) {
-                          return const SizedBox();
-                        }
-                        return Text(
-                          daily.keys.elementAt(i),
-                          style:
-                              const TextStyle(fontSize: 10, color: Colors.black54),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-                lineBarsData: [
-                  LineChartBarData(
-                    isCurved: true,
-                    spots: spots,
-                    color: const Color(0xFF007BFF),
-                    barWidth: 3,
-                    dotData: FlDotData(show: true),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 🏆 通知來源排行榜
-  Widget _buildSourceRanking(List<Map<String, dynamic>> list) {
-    final Map<String, int> sources = {
-      "行銷中心": 0,
-      "物流部門": 0,
-      "系統公告": 0,
-      "其他": 0,
-    };
-
-    for (final n in list) {
-      final msg = n["message"]?.toString() ?? "";
-      if (msg.contains("折扣") || msg.contains("優惠")) {
-        sources["行銷中心"] = sources["行銷中心"]! + 1;
-      } else if (msg.contains("出貨") || msg.contains("物流")) {
-        sources["物流部門"] = sources["物流部門"]! + 1;
-      } else if (msg.contains("公告") || msg.contains("更新")) {
-        sources["系統公告"] = sources["系統公告"]! + 1;
-      } else {
-        sources["其他"] = sources["其他"]! + 1;
-      }
-    }
-
-    final sorted = sources.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-
-    final data = sorted.take(3).toList();
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: _boxDecoration(),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "通知來源排行榜 (Top 3)",
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF007BFF),
-            ),
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            height: 200,
-            child: BarChart(
-              BarChartData(
-                borderData: FlBorderData(show: false),
-                titlesData: FlTitlesData(
-                  leftTitles:
-                      AxisTitles(sideTitles: SideTitles(showTitles: true)),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      getTitlesWidget: (v, _) {
-                        final i = v.toInt();
-                        if (i >= data.length) return const SizedBox();
-                        return Text(
-                          data[i].key,
-                          style: const TextStyle(fontSize: 12),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-                barGroups: List.generate(data.length, (i) {
-                  final e = data[i];
-                  return BarChartGroupData(
-                    x: i,
-                    barRods: [
-                      BarChartRodData(
-                        toY: e.value.toDouble(),
-                        color: const Color(0xFF007BFF),
-                        width: 24,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    ],
+      body: u == null
+          ? _needLogin(context)
+          : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _query(u.uid).snapshots(),
+              builder: (context, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                    child: CircularProgressIndicator.adaptive(),
                   );
-                }),
+                }
+                if (snap.hasError) {
+                  return _empty('讀取失敗：${snap.error}');
+                }
+                final docs = snap.data?.docs ?? [];
+                if (docs.isEmpty) {
+                  return _empty('目前沒有通知');
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
+                  itemCount: docs.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (_, i) => _notiCard(u.uid, docs[i]),
+                );
+              },
+            ),
+    );
+  }
+
+  Widget _needLogin(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lock_outline, size: 52, color: Colors.grey),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '請先登入才能查看通知',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                      rootNavigator: true,
+                    ).pushNamed('/login'),
+                    child: const Text('前往登入'),
+                  ),
+                ],
               ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }
 
-  BoxDecoration _boxDecoration() => BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black12.withOpacity(0.06),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      );
+  Widget _notiCard(String uid, DocumentSnapshot<Map<String, dynamic>> d) {
+    final data = d.data() ?? const <String, dynamic>{};
 
-  Color _getColor(String category) {
-    switch (category) {
-      case "優惠":
-        return Colors.blue;
-      case "出貨":
-        return Colors.green;
-      case "公告":
-        return Colors.purple;
+    final title = (data['title'] ?? '').toString();
+    final body = (data['body'] ?? '').toString();
+    final type = (data['type'] ?? 'system').toString();
+    final read = (data['read'] == true);
+
+    // ✅ 不要寫：createdAt ?? null（lint 會噴）
+    final ts = data['createdAt'];
+    final createdAt = ts is Timestamp ? ts.toDate() : null;
+
+    final icon = _typeIcon(type);
+    final color = _typeColor(type);
+
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => _toggleRead(uid, d),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: color),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title.isEmpty ? '(無標題)' : title,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 15,
+                              color: read ? Colors.black87 : Colors.black,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        if (!read)
+                          Container(
+                            width: 10,
+                            height: 10,
+                            decoration: BoxDecoration(
+                              color: color,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    if (body.isNotEmpty)
+                      Text(
+                        body,
+                        style: TextStyle(
+                          color: Colors.grey.shade700,
+                          height: 1.35,
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Text(
+                          _typeLabel(type),
+                          style: TextStyle(
+                            color: color,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          createdAt == null ? '' : _fmt(createdAt),
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: 12,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          tooltip: read ? '改為未讀' : '標記已讀',
+                          onPressed: () => _toggleRead(uid, d),
+                          icon: Icon(
+                            read ? Icons.mark_chat_unread : Icons.done,
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: '刪除',
+                          onPressed: () => _deleteOne(d),
+                          icon: const Icon(Icons.delete_outline),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _empty(String text) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.notifications_none, size: 52, color: Colors.grey),
+            const SizedBox(height: 10),
+            Text(text, style: const TextStyle(color: Colors.grey)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _fmt(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    final hh = d.hour.toString().padLeft(2, '0');
+    final mm = d.minute.toString().padLeft(2, '0');
+    return '$y-$m-$day $hh:$mm';
+  }
+
+  String _typeLabel(String type) {
+    switch (type) {
+      case 'order':
+        return '訂單';
+      case 'promo':
+        return '活動';
+      case 'health':
+        return '健康';
+      case 'sos':
+        return 'SOS';
       default:
-        return Colors.grey;
+        return '系統';
     }
   }
 
-  Widget _buildNotificationItem(
-      BuildContext context, NotificationService notifier, Map<String, dynamic> n) {
-    final unread = n["unread"] == true;
-    final DateTime time = n["time"];
-
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color:
-              unread ? const Color(0xFF007BFF).withOpacity(0.6) : Colors.grey[200]!,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black12.withOpacity(0.06),
-            blurRadius: 6,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          CircleAvatar(
-            radius: 20,
-            backgroundColor: const Color(0xFF007BFF).withOpacity(0.1),
-            child: Icon(n["icon"] ?? Icons.notifications,
-                color: const Color(0xFF007BFF), size: 22),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  n["title"] ?? "",
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
-                    color: unread ? const Color(0xFF007BFF) : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  n["message"] ?? "",
-                  style: const TextStyle(fontSize: 13, color: Colors.black87),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  _formatTime(time),
-                  style: const TextStyle(fontSize: 11, color: Colors.grey),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
+  IconData _typeIcon(String type) {
+    switch (type) {
+      case 'order':
+        return Icons.receipt_long;
+      case 'promo':
+        return Icons.local_offer_outlined;
+      case 'health':
+        return Icons.favorite_border;
+      case 'sos':
+        return Icons.sos;
+      default:
+        return Icons.notifications_none;
+    }
   }
 
-  String _formatTime(DateTime time) {
-    return "${time.month}/${time.day} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}";
+  Color _typeColor(String type) {
+    switch (type) {
+      case 'order':
+        return Colors.deepPurple;
+      case 'promo':
+        return Colors.orange;
+      case 'health':
+        return Colors.pink;
+      case 'sos':
+        return Colors.redAccent;
+      default:
+        return Colors.blue;
+    }
   }
 }

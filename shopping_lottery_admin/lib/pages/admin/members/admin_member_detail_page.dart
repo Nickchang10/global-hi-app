@@ -9,50 +9,16 @@
 // - 相容 Web/桌面/手機
 //
 // ------------------------------------------------------------
-// Firestore 建議：
-// users/{uid} {
-//   displayName/name, phone, email,
-//   createdAt, lastLoginAt, updatedAt: Timestamp,
-//   blocked: bool,
-//   blockedReason: string,
-//   adminNote: string,
-//   tags: array<string>,
-//   pointsBalance: num,
-//   lifetimeSpend: num,
-//   orderCount: num
-// }
-//
-// users/{uid}/pointsLedger/{ledgerId} {
-//   delta: num,                 // +10 / -10
-//   reason: string,
-//   createdAt: Timestamp,
-//   balanceAfter: num
-// }
-//
-// orders/{orderId} {
-//   userId: uid,
-//   status: string,
-//   finalAmount/total/amount: num,
-//   createdAt: Timestamp,
-//   items: [...]
-//
-// ⚠️ 訂單查詢：where(userId==uid) + orderBy(createdAt) 可能需要複合索引
-// ------------------------------------------------------------
-//
-// ✅ 路由註冊建議：
-// routes: {
-//   '/admin_member_detail': (_) => const AdminMemberDetailPage(),
-// }
-//
-// ✅ 呼叫方式：
-// Navigator.pushNamed(context, '/admin_member_detail', arguments: {'uid': uid});
-// 或 arguments: uid (String)
-//
-// ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+
+/// ✅ FIX: withOpacity deprecated → withValues(alpha: double 0~1)
+Color _withOpacity(Color c, double opacity01) {
+  final o = opacity01.clamp(0.0, 1.0).toDouble();
+  return c.withValues(alpha: o);
+}
 
 class AdminMemberDetailPage extends StatefulWidget {
   const AdminMemberDetailPage({super.key});
@@ -70,29 +36,38 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_uid != null || _argError != null) return;
+    if (_uid != null || _argError != null) {
+      return;
+    }
 
     final args = ModalRoute.of(context)?.settings.arguments;
 
     String? uid;
-    if (args is String) uid = args.trim();
+    if (args is String) {
+      uid = args.trim();
+    }
     if (args is Map) {
       final v = args['uid'] ?? args['userId'] ?? args['id'];
-      if (v != null) uid = v.toString().trim();
+      if (v != null) {
+        uid = v.toString().trim();
+      }
     }
 
     if (uid == null || uid.isEmpty) {
-      setState(() => _argError = '缺少 uid 參數，請用 Navigator.pushNamed(..., arguments: {\'uid\': uid})');
+      setState(() {
+        _argError =
+            '缺少 uid 參數，請用 Navigator.pushNamed(..., arguments: {\'uid\': uid})';
+      });
       return;
     }
     setState(() => _uid = uid);
   }
 
   DocumentReference<Map<String, dynamic>> get _userRef =>
-      _db.collection('users').doc(_uid);
+      _db.collection('users').doc(_uid!);
 
   CollectionReference<Map<String, dynamic>> get _ledgerCol =>
-      _db.collection('users').doc(_uid).collection('pointsLedger');
+      _db.collection('users').doc(_uid!).collection('pointsLedger');
 
   // ===========================================================
   // UI
@@ -122,7 +97,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
       length: 3,
       child: Scaffold(
         appBar: AppBar(
-          title: Text('會員詳情：$_uid', style: const TextStyle(fontWeight: FontWeight.w900)),
+          title: Text(
+            '會員詳情：$_uid',
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
           bottom: const TabBar(
             tabs: [
               Tab(text: '基本資料'),
@@ -189,11 +167,17 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
     final fmtDateTime = DateFormat('yyyy/MM/dd HH:mm');
 
     final badgeColor = vm.blocked ? cs.errorContainer : cs.primaryContainer;
-    final badgeTextColor = vm.blocked ? cs.onErrorContainer : cs.onPrimaryContainer;
+    final badgeTextColor = vm.blocked
+        ? cs.onErrorContainer
+        : cs.onPrimaryContainer;
     final badgeText = vm.blocked ? '停權中' : '正常';
 
-    final createdText = vm.createdAt == null ? '—' : fmtDateTime.format(vm.createdAt!);
-    final loginText = vm.lastLoginAt == null ? '—' : fmtDateTime.format(vm.lastLoginAt!);
+    final createdText = vm.createdAt == null
+        ? '—'
+        : fmtDateTime.format(vm.createdAt!);
+    final loginText = vm.lastLoginAt == null
+        ? '—'
+        : fmtDateTime.format(vm.lastLoginAt!);
 
     return Card(
       margin: const EdgeInsets.all(12),
@@ -207,7 +191,11 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                   backgroundColor: badgeColor,
                   child: Text(
                     badgeText,
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: badgeTextColor),
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      color: badgeTextColor,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -217,7 +205,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                     children: [
                       Text(
                         vm.displayName.isEmpty ? '（未命名）' : vm.displayName,
-                        style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text(
@@ -225,7 +216,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                           if (vm.phone.isNotEmpty) '電話：${vm.phone}',
                           if (vm.email.isNotEmpty) 'Email：${vm.email}',
                         ].join('  •  '),
-                        style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                        style: TextStyle(
+                          color: cs.onSurfaceVariant,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
@@ -234,11 +228,17 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                   tooltip: '操作',
                   onSelected: (v) => _handleHeaderAction(vm, v),
                   itemBuilder: (_) => [
-                    PopupMenuItem(value: 'toggle_block', child: Text(vm.blocked ? '解除停權' : '停權')),
+                    PopupMenuItem(
+                      value: 'toggle_block',
+                      child: Text(vm.blocked ? '解除停權' : '停權'),
+                    ),
                     const PopupMenuItem(value: 'note', child: Text('編輯備註')),
                     const PopupMenuItem(value: 'tags', child: Text('管理標籤')),
                     const PopupMenuDivider(),
-                    const PopupMenuItem(value: 'edit_basic', child: Text('編輯基本資料')),
+                    const PopupMenuItem(
+                      value: 'edit_basic',
+                      child: Text('編輯基本資料'),
+                    ),
                   ],
                 ),
               ],
@@ -255,6 +255,8 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                 _pill('點數', '${vm.pointsBalance.toInt()}'),
               ],
             ),
+
+            // ✅ FIX: _Tag 真的用在畫面上 → 不會再 unused_element
             if (vm.tags.isNotEmpty) ...[
               const SizedBox(height: 10),
               Align(
@@ -264,24 +266,27 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                   runSpacing: 8,
                   children: [
                     for (final t in vm.tags.take(12))
-                      Chip(
-                        label: Text(t),
-                        visualDensity: VisualDensity.compact,
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
+                      _Tag(text: t, color: cs.primary),
                     if (vm.tags.length > 12)
-                      Text('...+${vm.tags.length - 12}', style: TextStyle(color: cs.onSurfaceVariant)),
+                      Text(
+                        '...+${vm.tags.length - 12}',
+                        style: TextStyle(color: cs.onSurfaceVariant),
+                      ),
                   ],
                 ),
               ),
             ],
+
             if (vm.blocked && vm.blockedReason.isNotEmpty) ...[
               const SizedBox(height: 10),
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
                   '停權原因：${vm.blockedReason}',
-                  style: TextStyle(color: cs.error, fontWeight: FontWeight.w800),
+                  style: TextStyle(
+                    color: cs.error,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
             ],
@@ -289,7 +294,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
               const SizedBox(height: 10),
               Align(
                 alignment: Alignment.centerLeft,
-                child: Text('備註：${vm.adminNote}', style: TextStyle(color: cs.onSurfaceVariant)),
+                child: Text(
+                  '備註：${vm.adminNote}',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
               ),
             ],
             const SizedBox(height: 10),
@@ -328,7 +336,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
         borderRadius: BorderRadius.circular(999),
         color: Colors.white,
       ),
-      child: Text('$k：$v', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+      child: Text(
+        '$k：$v',
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+      ),
     );
   }
 
@@ -361,11 +372,16 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(width: 100, child: Text(k, style: const TextStyle(color: Colors.black54))),
+            SizedBox(
+              width: 100,
+              child: Text(k, style: const TextStyle(color: Colors.black54)),
+            ),
             Expanded(
               child: Text(
                 v.isEmpty ? '—' : v,
-                style: TextStyle(fontWeight: bold ? FontWeight.w900 : FontWeight.w600),
+                style: TextStyle(
+                  fontWeight: bold ? FontWeight.w900 : FontWeight.w600,
+                ),
               ),
             ),
           ],
@@ -382,16 +398,30 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('基本資訊', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                const Text(
+                  '基本資訊',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                ),
                 const SizedBox(height: 12),
                 kv('UID', vm.uid, bold: true),
                 kv('名稱', vm.displayName),
                 kv('電話', vm.phone),
                 kv('Email', vm.email),
                 kv('狀態', vm.blocked ? '停權' : '正常'),
-                kv('註冊時間', vm.createdAt == null ? '' : fmtDateTime.format(vm.createdAt!)),
-                kv('最近登入', vm.lastLoginAt == null ? '' : fmtDateTime.format(vm.lastLoginAt!)),
-                kv('更新時間', vm.updatedAt == null ? '' : fmtDateTime.format(vm.updatedAt!)),
+                kv(
+                  '註冊時間',
+                  vm.createdAt == null ? '' : fmtDateTime.format(vm.createdAt!),
+                ),
+                kv(
+                  '最近登入',
+                  vm.lastLoginAt == null
+                      ? ''
+                      : fmtDateTime.format(vm.lastLoginAt!),
+                ),
+                kv(
+                  '更新時間',
+                  vm.updatedAt == null ? '' : fmtDateTime.format(vm.updatedAt!),
+                ),
                 const SizedBox(height: 10),
                 Row(
                   children: [
@@ -403,7 +433,9 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                     const SizedBox(width: 10),
                     OutlinedButton.icon(
                       onPressed: () => _toggleBlock(vm),
-                      icon: Icon(vm.blocked ? Icons.lock_open : Icons.lock_outline),
+                      icon: Icon(
+                        vm.blocked ? Icons.lock_open : Icons.lock_outline,
+                      ),
                       label: Text(vm.blocked ? '解除停權' : '停權'),
                     ),
                   ],
@@ -418,10 +450,15 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('客服備註 / Tag', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                const Text(
+                  '客服備註 / Tag',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                ),
                 const SizedBox(height: 10),
                 kv('備註', vm.adminNote),
                 const SizedBox(height: 8),
+
+                // ✅ FIX: 這裡也用 _Tag（避免只在 Header 用到）
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
@@ -429,14 +466,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                     if (vm.tags.isEmpty)
                       Text('—', style: TextStyle(color: cs.onSurfaceVariant))
                     else
-                      for (final t in vm.tags)
-                        Chip(
-                          label: Text(t),
-                          visualDensity: VisualDensity.compact,
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
+                      for (final t in vm.tags) _Tag(text: t, color: cs.primary),
                   ],
                 ),
+
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -486,14 +519,13 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
             onRetry: () => setState(() {}),
           );
         }
-        if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
 
         final docs = snap.data!.docs;
         if (docs.isEmpty) {
-          return const _EmptyView(
-            title: '尚無訂單',
-            message: '此會員目前沒有訂單紀錄。',
-          );
+          return const _EmptyView(title: '尚無訂單', message: '此會員目前沒有訂單紀錄。');
         }
 
         return ListView.builder(
@@ -505,12 +537,18 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
 
             final status = (d['status'] ?? '').toString();
             final createdAt = _toDateTime(d['createdAt']);
-            final createdText = createdAt == null ? '—' : fmtDateTime.format(createdAt);
+            final createdText = createdAt == null
+                ? '—'
+                : fmtDateTime.format(createdAt);
 
-            final amount = _asNum(d['finalAmount'] ?? d['total'] ?? d['amount'] ?? 0);
+            final amount = _asNum(
+              d['finalAmount'] ?? d['total'] ?? d['amount'] ?? 0,
+            );
             final amountText = fmtMoney.format(amount);
 
-            final items = (d['items'] is List) ? (d['items'] as List).length : 0;
+            final items = (d['items'] is List)
+                ? (d['items'] as List).length
+                : 0;
 
             return Card(
               margin: const EdgeInsets.only(bottom: 10),
@@ -519,10 +557,16 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                   backgroundColor: cs.primaryContainer,
                   child: Text(
                     '$items',
-                    style: TextStyle(color: cs.onPrimaryContainer, fontWeight: FontWeight.w900),
+                    style: TextStyle(
+                      color: cs.onPrimaryContainer,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
-                title: Text('訂單 ${doc.id}', style: const TextStyle(fontWeight: FontWeight.w900)),
+                title: Text(
+                  '訂單 ${doc.id}',
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
                 subtitle: Text(
                   [
                     if (status.isNotEmpty) '狀態：$status',
@@ -534,13 +578,17 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                 ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () {
-                  // 你若有訂單詳情頁，可註冊路由 '/admin_order_detail'
-                  // 並傳 orderId
                   try {
-                    Navigator.pushNamed(context, '/admin_order_detail', arguments: {'orderId': doc.id});
+                    Navigator.pushNamed(
+                      context,
+                      '/admin_order_detail',
+                      arguments: {'orderId': doc.id},
+                    );
                   } catch (_) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('尚未註冊路由：/admin_order_detail（之後做訂單詳情頁再補）')),
+                      const SnackBar(
+                        content: Text('尚未註冊路由：/admin_order_detail（之後做訂單詳情頁再補）'),
+                      ),
                     );
                   }
                 },
@@ -557,7 +605,6 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
   // ===========================================================
   Widget _tabPoints(ColorScheme cs, _MemberDetailVM vm) {
     final fmtDateTime = DateFormat('yyyy/MM/dd HH:mm');
-
     final q = _ledgerCol.orderBy('createdAt', descending: true).limit(120);
 
     return ListView(
@@ -569,10 +616,19 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('點數操作', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                const Text(
+                  '點數操作',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                ),
                 const SizedBox(height: 10),
-                Text('目前點數：${vm.pointsBalance.toInt()}',
-                    style: TextStyle(fontWeight: FontWeight.w900, color: cs.primary, fontSize: 18)),
+                Text(
+                  '目前點數：${vm.pointsBalance.toInt()}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: cs.primary,
+                    fontSize: 18,
+                  ),
+                ),
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 10,
@@ -606,7 +662,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('點數紀錄（Ledger）', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                const Text(
+                  '點數紀錄（Ledger）',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                ),
                 const SizedBox(height: 10),
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: q.snapshots(),
@@ -614,7 +673,8 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                     if (snap.hasError) {
                       return _ErrorInline(
                         message: snap.error.toString(),
-                        hint: '請確認 pointsLedger 子集合存在，且 createdAt 欄位為 Timestamp。',
+                        hint:
+                            '請確認 pointsLedger 子集合存在，且 createdAt 欄位為 Timestamp。',
                       );
                     }
                     if (!snap.hasData) {
@@ -628,8 +688,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
                     if (docs.isEmpty) {
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 10),
-                        child: Text('尚無點數紀錄（pointsLedger 為空）',
-                            style: TextStyle(color: cs.onSurfaceVariant)),
+                        child: Text(
+                          '尚無點數紀錄（pointsLedger 為空）',
+                          style: TextStyle(color: cs.onSurfaceVariant),
+                        ),
                       );
                     }
 
@@ -676,9 +738,11 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
       dense: true,
       contentPadding: const EdgeInsets.symmetric(horizontal: 6),
       leading: CircleAvatar(
-        backgroundColor: (isAdd ? cs.primaryContainer : cs.errorContainer),
-        child: Icon(isAdd ? Icons.add : Icons.remove,
-            color: isAdd ? cs.onPrimaryContainer : cs.onErrorContainer),
+        backgroundColor: isAdd ? cs.primaryContainer : cs.errorContainer,
+        child: Icon(
+          isAdd ? Icons.add : Icons.remove,
+          color: isAdd ? cs.onPrimaryContainer : cs.onErrorContainer,
+        ),
       ),
       title: Text(
         '$sign${delta.toInt()} 點',
@@ -701,7 +765,9 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
   // Actions
   // ===========================================================
   Future<void> _toggleBlock(_MemberDetailVM vm) async {
-    if (_uid == null) return;
+    if (_uid == null) {
+      return;
+    }
 
     if (!vm.blocked) {
       final reason = await _askText(
@@ -711,7 +777,9 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
         confirmText: '停權',
         isDanger: true,
       );
-      if (reason == null) return;
+      if (reason == null) {
+        return;
+      }
 
       try {
         await _userRef.update({
@@ -720,11 +788,19 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
           'blockedAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已停權')));
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已停權')));
       } catch (e) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('停權失敗：$e')));
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('停權失敗：$e')));
       }
     } else {
       final ok = await _confirm(
@@ -732,7 +808,9 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
         message: '確定要解除停權此會員嗎？\nUID：${vm.uid}',
         confirmText: '解除',
       );
-      if (ok != true) return;
+      if (ok != true) {
+        return;
+      }
 
       try {
         await _userRef.update({
@@ -741,11 +819,19 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
           'unblockedAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已解除停權')));
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已解除停權')));
       } catch (e) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('解除停權失敗：$e')));
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('解除停權失敗：$e')));
       }
     }
   }
@@ -757,43 +843,59 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
       initial: vm.adminNote,
       confirmText: '儲存',
     );
-    if (text == null) return;
+    if (text == null) {
+      return;
+    }
 
     try {
       await _userRef.update({
         'adminNote': text.trim(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('備註已更新')));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('備註已更新')));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
   Future<void> _manageTags(_MemberDetailVM vm) async {
-    // 這裡用簡易 Tag Editor（可加/可刪），不依賴全站 tag 字典
     final result = await showDialog<List<String>>(
       context: context,
-      builder: (_) => _TagEditorDialog(
-        title: '管理標籤',
-        uid: vm.uid,
-        initial: vm.tags,
-      ),
+      builder: (_) =>
+          _TagEditorDialog(title: '管理標籤', uid: vm.uid, initial: vm.tags),
     );
-    if (result == null) return;
+    if (result == null) {
+      return;
+    }
 
     try {
       await _userRef.update({
         'tags': result,
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('標籤已更新')));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('標籤已更新')));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新標籤失敗：$e')));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新標籤失敗：$e')));
     }
   }
 
@@ -807,7 +909,9 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
         email: vm.email,
       ),
     );
-    if (res == null) return;
+    if (res == null) {
+      return;
+    }
 
     try {
       await _userRef.update({
@@ -816,20 +920,33 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
         'email': res.email.trim(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('基本資料已更新')));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('基本資料已更新')));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
-  Future<void> _applyPointsDelta(_MemberDetailVM vm, {required bool isAdd}) async {
+  Future<void> _applyPointsDelta(
+    _MemberDetailVM vm, {
+    required bool isAdd,
+  }) async {
     final res = await showDialog<_PointsDeltaResult>(
       context: context,
       builder: (_) => _PointsDeltaDialog(isAdd: isAdd),
     );
-    if (res == null) return;
+    if (res == null) {
+      return;
+    }
 
     final delta = isAdd ? res.amount : -res.amount;
     final reason = res.reason.trim();
@@ -856,13 +973,21 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
         });
       });
 
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(isAdd ? '已加點：+${res.amount}' : '已扣點：-${res.amount}')),
+        SnackBar(
+          content: Text(isAdd ? '已加點：+${res.amount}' : '已扣點：-${res.amount}'),
+        ),
       );
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('點數更新失敗：$e')));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('點數更新失敗：$e')));
     }
   }
 
@@ -897,7 +1022,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
         content: Text(message),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: isDanger ? cs.error : null,
@@ -934,7 +1062,10 @@ class _AdminMemberDetailPageState extends State<AdminMemberDetailPage> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text('取消'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: isDanger ? cs.error : null,
@@ -991,31 +1122,48 @@ class _MemberDetailVM {
     required this.orderCount,
   });
 
-  static _MemberDetailVM fromMap({required String uid, required Map<String, dynamic> data}) {
+  static _MemberDetailVM fromMap({
+    required String uid,
+    required Map<String, dynamic> data,
+  }) {
     String s(dynamic v) => (v ?? '').toString().trim();
     bool b(dynamic v) => v == true;
 
     List<String> strList(dynamic v) {
-      if (v is! List) return const [];
+      if (v is! List) {
+        return const [];
+      }
       final out = <String>[];
       for (final x in v) {
         final t = (x ?? '').toString().trim();
-        if (t.isNotEmpty) out.add(t);
+        if (t.isNotEmpty) {
+          out.add(t);
+        }
       }
       return out;
     }
 
     num n(dynamic v) {
-      if (v is num) return v;
+      if (v is num) {
+        return v;
+      }
       final p = num.tryParse((v ?? '').toString());
       return p ?? 0;
     }
 
     DateTime? dt(dynamic v) {
-      if (v == null) return null;
-      if (v is Timestamp) return v.toDate();
-      if (v is DateTime) return v;
-      if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+      if (v == null) {
+        return null;
+      }
+      if (v is Timestamp) {
+        return v.toDate();
+      }
+      if (v is DateTime) {
+        return v;
+      }
+      if (v is int) {
+        return DateTime.fromMillisecondsSinceEpoch(v);
+      }
       return null;
     }
 
@@ -1040,16 +1188,26 @@ class _MemberDetailVM {
 }
 
 num _asNum(dynamic v) {
-  if (v is num) return v;
+  if (v is num) {
+    return v;
+  }
   final p = num.tryParse((v ?? '').toString());
   return p ?? 0;
 }
 
 DateTime? _toDateTime(dynamic v) {
-  if (v == null) return null;
-  if (v is Timestamp) return v.toDate();
-  if (v is DateTime) return v;
-  if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+  if (v == null) {
+    return null;
+  }
+  if (v is Timestamp) {
+    return v.toDate();
+  }
+  if (v is DateTime) {
+    return v;
+  }
+  if (v is int) {
+    return DateTime.fromMillisecondsSinceEpoch(v);
+  }
   return null;
 }
 
@@ -1098,7 +1256,9 @@ class _PointsDeltaDialogState extends State<_PointsDeltaDialog> {
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 labelText: '點數數量（正整數）',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
             ),
             const SizedBox(height: 10),
@@ -1107,7 +1267,9 @@ class _PointsDeltaDialogState extends State<_PointsDeltaDialog> {
               maxLines: 3,
               decoration: InputDecoration(
                 labelText: '原因（建議填寫）',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
             ),
             const SizedBox(height: 8),
@@ -1122,15 +1284,23 @@ class _PointsDeltaDialogState extends State<_PointsDeltaDialog> {
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('取消')),
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('取消'),
+        ),
         FilledButton.icon(
           onPressed: () {
             final a = int.tryParse(_amount.text.trim()) ?? 0;
             if (a <= 0) {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('點數必須為正整數')));
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('點數必須為正整數')));
               return;
             }
-            Navigator.pop(context, _PointsDeltaResult(amount: a, reason: _reason.text));
+            Navigator.pop(
+              context,
+              _PointsDeltaResult(amount: a, reason: _reason.text),
+            );
           },
           icon: Icon(widget.isAdd ? Icons.add : Icons.remove),
           label: const Text('套用'),
@@ -1144,7 +1314,11 @@ class _BasicEditResult {
   final String name;
   final String phone;
   final String email;
-  _BasicEditResult({required this.name, required this.phone, required this.email});
+  _BasicEditResult({
+    required this.name,
+    required this.phone,
+    required this.email,
+  });
 }
 
 class _EditBasicDialog extends StatefulWidget {
@@ -1165,9 +1339,15 @@ class _EditBasicDialog extends StatefulWidget {
 }
 
 class _EditBasicDialogState extends State<_EditBasicDialog> {
-  late final TextEditingController _name = TextEditingController(text: widget.name);
-  late final TextEditingController _phone = TextEditingController(text: widget.phone);
-  late final TextEditingController _email = TextEditingController(text: widget.email);
+  late final TextEditingController _name = TextEditingController(
+    text: widget.name,
+  );
+  late final TextEditingController _phone = TextEditingController(
+    text: widget.phone,
+  );
+  late final TextEditingController _email = TextEditingController(
+    text: widget.email,
+  );
 
   @override
   void dispose() {
@@ -1180,19 +1360,27 @@ class _EditBasicDialogState extends State<_EditBasicDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('編輯基本資料', style: TextStyle(fontWeight: FontWeight.w900)),
+      title: const Text(
+        '編輯基本資料',
+        style: TextStyle(fontWeight: FontWeight.w900),
+      ),
       content: SizedBox(
         width: 560,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('UID：${widget.uid}', style: const TextStyle(color: Colors.black54)),
+            Text(
+              'UID：${widget.uid}',
+              style: const TextStyle(color: Colors.black54),
+            ),
             const SizedBox(height: 10),
             TextField(
               controller: _name,
               decoration: InputDecoration(
                 labelText: '名稱',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
             ),
             const SizedBox(height: 10),
@@ -1200,7 +1388,9 @@ class _EditBasicDialogState extends State<_EditBasicDialog> {
               controller: _phone,
               decoration: InputDecoration(
                 labelText: '電話',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
             ),
             const SizedBox(height: 10),
@@ -1208,18 +1398,27 @@ class _EditBasicDialogState extends State<_EditBasicDialog> {
               controller: _email,
               decoration: InputDecoration(
                 labelText: 'Email',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
             ),
           ],
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('取消')),
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('取消'),
+        ),
         FilledButton.icon(
           onPressed: () => Navigator.pop(
             context,
-            _BasicEditResult(name: _name.text, phone: _phone.text, email: _email.text),
+            _BasicEditResult(
+              name: _name.text,
+              phone: _phone.text,
+              email: _email.text,
+            ),
           ),
           icon: const Icon(Icons.check),
           label: const Text('儲存'),
@@ -1251,7 +1450,8 @@ class _TagEditorDialogState extends State<_TagEditorDialog> {
   @override
   void initState() {
     super.initState();
-    tags = [...widget.initial]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    tags = [...widget.initial]
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
   }
 
   @override
@@ -1262,8 +1462,12 @@ class _TagEditorDialogState extends State<_TagEditorDialog> {
 
   void _addTag(String t) {
     final s = t.trim();
-    if (s.isEmpty) return;
-    if (tags.map((e) => e.toLowerCase()).contains(s.toLowerCase())) return;
+    if (s.isEmpty) {
+      return;
+    }
+    if (tags.map((e) => e.toLowerCase()).contains(s.toLowerCase())) {
+      return;
+    }
     setState(() {
       tags.add(s);
       tags.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
@@ -1271,20 +1475,28 @@ class _TagEditorDialogState extends State<_TagEditorDialog> {
   }
 
   void _removeTag(String t) {
-    setState(() => tags.removeWhere((e) => e.toLowerCase() == t.toLowerCase()));
+    setState(() {
+      tags.removeWhere((e) => e.toLowerCase() == t.toLowerCase());
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontWeight: FontWeight.w900)),
+      title: Text(
+        widget.title,
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
       content: SizedBox(
         width: 560,
         child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('UID：${widget.uid}', style: const TextStyle(color: Colors.black54)),
+              Text(
+                'UID：${widget.uid}',
+                style: const TextStyle(color: Colors.black54),
+              ),
               const SizedBox(height: 10),
               Row(
                 children: [
@@ -1294,7 +1506,9 @@ class _TagEditorDialogState extends State<_TagEditorDialog> {
                       decoration: InputDecoration(
                         hintText: '新增 Tag（例如：VIP / 需關懷 / 問題單）',
                         isDense: true,
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
                       onSubmitted: (v) {
                         _addTag(v);
@@ -1324,10 +1538,7 @@ class _TagEditorDialogState extends State<_TagEditorDialog> {
                   runSpacing: 8,
                   children: [
                     for (final t in tags)
-                      InputChip(
-                        label: Text(t),
-                        onDeleted: () => _removeTag(t),
-                      ),
+                      InputChip(label: Text(t), onDeleted: () => _removeTag(t)),
                   ],
                 ),
             ],
@@ -1335,7 +1546,10 @@ class _TagEditorDialogState extends State<_TagEditorDialog> {
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('取消')),
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('取消'),
+        ),
         FilledButton.icon(
           onPressed: () => Navigator.pop(context, tags),
           icon: const Icon(Icons.check),
@@ -1364,7 +1578,10 @@ class _EmptyView extends StatelessWidget {
           children: [
             Icon(Icons.info_outline, size: 44, color: cs.onSurfaceVariant),
             const SizedBox(height: 10),
-            Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+            Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+            ),
             const SizedBox(height: 6),
             Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
           ],
@@ -1386,14 +1603,17 @@ class _ErrorInline extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        border: Border.all(color: cs.error.withOpacity(0.3)),
+        border: Border.all(color: _withOpacity(cs.error, 0.30)),
         borderRadius: BorderRadius.circular(12),
-        color: cs.errorContainer.withOpacity(0.35),
+        color: _withOpacity(cs.errorContainer, 0.35),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('錯誤：$message', style: TextStyle(color: cs.error, fontWeight: FontWeight.w800)),
+          Text(
+            '錯誤：$message',
+            style: TextStyle(color: cs.error, fontWeight: FontWeight.w800),
+          ),
           if (hint != null) ...[
             const SizedBox(height: 6),
             Text(hint!, style: TextStyle(color: cs.onSurfaceVariant)),
@@ -1437,7 +1657,13 @@ class _ErrorView extends StatelessWidget {
                 children: [
                   Icon(Icons.error_outline, size: 44, color: cs.error),
                   const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                   const SizedBox(height: 10),
                   Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
                   if (hint != null) ...[
@@ -1455,6 +1681,30 @@ class _ErrorView extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// ✅ 這次「真的有用到」→ 不會再 unused_element
+class _Tag extends StatelessWidget {
+  const _Tag({required this.text, this.color});
+  final String text;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = color ?? Colors.black54;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: _withOpacity(c, 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: _withOpacity(c, 0.35)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 12, color: c, fontWeight: FontWeight.w800),
       ),
     );
   }

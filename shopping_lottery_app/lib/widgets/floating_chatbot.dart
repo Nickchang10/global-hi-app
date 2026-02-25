@@ -2,7 +2,7 @@
 import 'package:flutter/material.dart';
 
 class FloatingChatbot extends StatefulWidget {
-  const FloatingChatbot({Key? key}) : super(key: key);
+  const FloatingChatbot({super.key});
 
   @override
   State<FloatingChatbot> createState() => _FloatingChatbotState();
@@ -11,9 +11,7 @@ class FloatingChatbot extends StatefulWidget {
 class _FloatingChatbotState extends State<FloatingChatbot> {
   bool _isOpen = false;
 
-  void _toggleChat() {
-    setState(() => _isOpen = !_isOpen);
-  }
+  void _toggleChat() => setState(() => _isOpen = !_isOpen);
 
   @override
   Widget build(BuildContext context) {
@@ -26,10 +24,10 @@ class _FloatingChatbotState extends State<FloatingChatbot> {
             child: Container(
               width: 280,
               height: 380,
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: const [
+                borderRadius: BorderRadius.all(Radius.circular(16)),
+                boxShadow: <BoxShadow>[
                   BoxShadow(
                     color: Colors.black26,
                     blurRadius: 8,
@@ -37,14 +35,16 @@ class _FloatingChatbotState extends State<FloatingChatbot> {
                   ),
                 ],
               ),
-              child: Column(
-                children: const [
+              child: const Column(
+                children: <Widget>[
                   Padding(
                     padding: EdgeInsets.all(12),
                     child: Text(
                       'Osmile 智能客服',
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                   Divider(height: 1),

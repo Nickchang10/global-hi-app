@@ -1,7 +1,10 @@
 // lib/pages/admin_dashboard_page.dart
 //
-// ✅ AdminDashboardPage（最終完整版｜Firestore 實時統計 + fl_chart 圓餅 / 折線圖 + KPI 指標）
+// ✅ AdminDashboardPage（最終完整版｜Firestore 統計 + fl_chart 圓餅 / 折線圖 + KPI 指標）
 // ------------------------------------------------------------
+// ✅ 修正：deprecated withOpacity → withValues(alpha: ...)
+// ✅ 保留：手動 RefreshIndicator 重新抓 products 統計
+//
 // Firestore 結構建議：
 // products/{productId}
 //   - title: String
@@ -42,6 +45,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   int activeCount = 0;
   int inactiveCount = 0;
   double totalValue = 0.0;
+
+  // 可留作未來顯示（目前不影響編譯）
   Map<String, int> categoryCounts = {};
   Map<String, int> monthlyNewProducts = {};
 
@@ -57,18 +62,26 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
 
       int active = 0, inactive = 0;
       double totalVal = 0;
-      Map<String, int> catCount = {};
-      Map<String, int> monthly = {};
+      final Map<String, int> catCount = {};
+      final Map<String, int> monthly = {};
 
-      for (var doc in snap.docs) {
+      for (final doc in snap.docs) {
         final data = doc.data();
-        final bool isActive = data['isActive'] == true;
-        final num price = (data['price'] ?? 0) as num;
-        final String? cat = data['categoryId'];
-        final Timestamp? createdAt = data['createdAt'];
 
-        if (isActive) active++;
-        else inactive++;
+        final bool isActive = data['isActive'] == true;
+        final num price = (data['price'] is num) ? data['price'] as num : 0;
+
+        final String? cat = (data['categoryId'] ?? '').toString().trim().isEmpty
+            ? null
+            : (data['categoryId'] as String?);
+
+        final createdAt = data['createdAt'];
+
+        if (isActive) {
+          active++;
+        } else {
+          inactive++;
+        }
 
         totalVal += price.toDouble();
 
@@ -76,13 +89,14 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           catCount[cat] = (catCount[cat] ?? 0) + 1;
         }
 
-        if (createdAt != null) {
+        if (createdAt is Timestamp) {
           final dt = createdAt.toDate();
           final key = DateFormat('yyyy-MM').format(dt);
           monthly[key] = (monthly[key] ?? 0) + 1;
         }
       }
 
+      if (!mounted) return;
       setState(() {
         totalCount = snap.size;
         activeCount = active;
@@ -94,6 +108,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       });
     } catch (e) {
       debugPrint('Load stats error: $e');
+      if (!mounted) return;
       setState(() => _loading = false);
     }
   }
@@ -103,14 +118,13 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('儀表板分析'),
-      ),
+      appBar: AppBar(title: const Text('儀表板分析')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _loadStats,
               child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -120,6 +134,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     _buildPieChartSection(cs),
                     const SizedBox(height: 20),
                     _buildLineChartSection(cs),
+                    const SizedBox(height: 24),
                   ],
                 ),
               ),
@@ -175,9 +190,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       width: 260,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
+        color: color.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.3)),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -188,7 +203,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             label,
             style: TextStyle(
               fontWeight: FontWeight.w700,
-              color: color.withOpacity(0.8),
+              color: color.withValues(alpha: 0.8),
               fontSize: 14,
             ),
           ),
@@ -198,7 +213,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             style: TextStyle(
               fontWeight: FontWeight.w900,
               fontSize: 18,
-              color: color.withOpacity(0.9),
+              color: color.withValues(alpha: 0.9),
             ),
           ),
         ],
@@ -221,14 +236,20 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         color: Colors.green,
         title: '上架',
         radius: 60,
-        titleStyle: const TextStyle(fontWeight: FontWeight.w900, color: Colors.white),
+        titleStyle: const TextStyle(
+          fontWeight: FontWeight.w900,
+          color: Colors.white,
+        ),
       ),
       PieChartSectionData(
         value: inactiveCount.toDouble(),
         color: Colors.redAccent,
         title: '下架',
         radius: 60,
-        titleStyle: const TextStyle(fontWeight: FontWeight.w900, color: Colors.white),
+        titleStyle: const TextStyle(
+          fontWeight: FontWeight.w900,
+          color: Colors.white,
+        ),
       ),
     ];
 
@@ -239,15 +260,20 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            const Text('商品啟用比例', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+            const Text(
+              '商品啟用比例',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+            ),
             const SizedBox(height: 20),
             SizedBox(
               height: 220,
-              child: PieChart(PieChartData(
-                sections: data,
-                centerSpaceRadius: 40,
-                sectionsSpace: 4,
-              )),
+              child: PieChart(
+                PieChartData(
+                  sections: data,
+                  centerSpaceRadius: 40,
+                  sectionsSpace: 4,
+                ),
+              ),
             ),
           ],
         ),
@@ -267,7 +293,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     final spots = <FlSpot>[];
     for (int i = 0; i < sortedKeys.length; i++) {
       final key = sortedKeys[i];
-      spots.add(FlSpot(i.toDouble(), monthlyNewProducts[key]!.toDouble()));
+      spots.add(
+        FlSpot(i.toDouble(), (monthlyNewProducts[key] ?? 0).toDouble()),
+      );
     }
 
     return Card(
@@ -277,48 +305,61 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            const Text('每月新增商品數', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+            const Text(
+              '每月新增商品數',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+            ),
             const SizedBox(height: 20),
             SizedBox(
               height: 250,
-              child: LineChart(LineChartData(
-                gridData: FlGridData(show: true, horizontalInterval: 1),
-                borderData: FlBorderData(show: true),
-                titlesData: FlTitlesData(
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      getTitlesWidget: (v, meta) {
-                        final i = v.toInt();
-                        if (i < 0 || i >= sortedKeys.length) return const SizedBox();
-                        return Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            sortedKeys[i].substring(5), // 顯示月份
-                            style: const TextStyle(fontSize: 10),
-                          ),
-                        );
-                      },
+              child: LineChart(
+                LineChartData(
+                  gridData: const FlGridData(show: true, horizontalInterval: 1),
+                  borderData: FlBorderData(show: true),
+                  titlesData: FlTitlesData(
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        getTitlesWidget: (v, meta) {
+                          final i = v.toInt();
+                          if (i < 0 || i >= sortedKeys.length) {
+                            return const SizedBox.shrink();
+                          }
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              sortedKeys[i].substring(5), // 顯示月份
+                              style: const TextStyle(fontSize: 10),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    leftTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: true, interval: 1),
+                    ),
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
                     ),
                   ),
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(showTitles: true, interval: 1),
-                  ),
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: spots,
+                      isCurved: true,
+                      barWidth: 3,
+                      color: cs.primary,
+                      belowBarData: BarAreaData(
+                        show: true,
+                        color: cs.primary.withValues(alpha: 0.2),
+                      ),
+                      dotData: const FlDotData(show: true),
+                    ),
+                  ],
                 ),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: spots,
-                    isCurved: true,
-                    barWidth: 3,
-                    color: cs.primary,
-                    belowBarData: BarAreaData(
-                      show: true,
-                      color: cs.primary.withOpacity(0.2),
-                    ),
-                    dotData: FlDotData(show: true),
-                  ),
-                ],
-              )),
+              ),
             ),
           ],
         ),

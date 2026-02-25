@@ -1,781 +1,1052 @@
 // lib/pages/admin/shop/admin_shop_home_settings_page.dart
 //
-// ✅ AdminShopHomeSettingsPage（最終完整版）
-// - 可獨立使用（有返回鍵 AppBar）
-// - 可嵌入 AdminShell（內容本體不使用 Scaffold）
-// - 可新增/編輯/刪除/拖曳排序區塊
-// - Firestore：shop_config/home
+// ✅ AdminShopHomeSettingsPage（正式版｜完整版｜可直接編譯）
+// ------------------------------------------------------------
+// ✅ 修正重點（本次）
+// - 修正 deprecated_member_use：DropdownButtonFormField 的 value 已 deprecated
+//   → 改用 initialValue
 //
-// Doc Example:
-// {
-//   enabled: true,
-//   sections: [
-//     {
-//       id: "1700000000000",
-//       type: "rich_text",
-//       enabled: true,
-//       title: "公告",
-//       ids: [],
-//       limit: 12,
-//       layout: "carousel",
-//       body: "..."
-///    }
-//   ],
-//   updatedAt: Timestamp
-// }
+// ✅ 功能：商店首頁設定（公告列、主視覺 Banner、首頁區塊 Sections）CRUD + 重新排序 + 啟用/停用 + Firestore 儲存
+// 預設 Firestore 路徑：site_settings/shop_home（可自行改 _docRef）
+// ------------------------------------------------------------
 
-import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-/// ============================================================
-/// 對外入口（有返回鍵）
-/// ============================================================
-class AdminShopHomeSettingsPage extends StatelessWidget {
+class AdminShopHomeSettingsPage extends StatefulWidget {
   const AdminShopHomeSettingsPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        leading: const BackButton(),
-        title: const Text(
-          '商城首頁設定',
-          style: TextStyle(fontWeight: FontWeight.w900),
-        ),
-      ),
-      body: const AdminShopHomeSettingsBody(),
+  State<AdminShopHomeSettingsPage> createState() =>
+      _AdminShopHomeSettingsPageState();
+}
+
+class _AdminShopHomeSettingsPageState extends State<AdminShopHomeSettingsPage> {
+  DocumentReference<Map<String, dynamic>> get _docRef =>
+      FirebaseFirestore.instance.collection('site_settings').doc('shop_home');
+
+  bool _busy = false;
+  bool _didSyncOnce = false;
+
+  // Notice
+  bool _noticeEnabled = true;
+  final _noticeTextCtrl = TextEditingController();
+  final _noticeLinkCtrl = TextEditingController();
+
+  // Banners / Sections
+  final List<HomeBannerItem> _banners = [];
+  final List<HomeSectionItem> _sections = [];
+
+  @override
+  void dispose() {
+    _noticeTextCtrl.dispose();
+    _noticeLinkCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadFromSnapshot(Map<String, dynamic>? data) async {
+    final m = data ?? <String, dynamic>{};
+
+    final noticeRaw = m['notice'];
+    final notice = noticeRaw is Map
+        ? Map<String, dynamic>.from(noticeRaw)
+        : <String, dynamic>{};
+
+    _noticeEnabled = notice['enabled'] == true;
+    _noticeTextCtrl.text = (notice['text'] ?? '').toString();
+    _noticeLinkCtrl.text = (notice['linkUrl'] ?? '').toString();
+
+    _banners
+      ..clear()
+      ..addAll(HomeBannerItem.listFromAny(m['heroBanners']));
+    _sections
+      ..clear()
+      ..addAll(HomeSectionItem.listFromAny(m['sections']));
+
+    _banners.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    _sections.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+  }
+
+  Future<void> _save() async {
+    setState(() => _busy = true);
+    try {
+      for (int i = 0; i < _banners.length; i++) {
+        _banners[i] = _banners[i].copyWith(sortOrder: i * 10);
+      }
+      for (int i = 0; i < _sections.length; i++) {
+        _sections[i] = _sections[i].copyWith(sortOrder: i * 10);
+      }
+
+      final payload = <String, dynamic>{
+        'notice': {
+          'enabled': _noticeEnabled,
+          'text': _noticeTextCtrl.text.trim(),
+          'linkUrl': _noticeLinkCtrl.text.trim(),
+        },
+        'heroBanners': _banners.map((e) => e.toMap()).toList(),
+        'sections': _sections.map((e) => e.toMap()).toList(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      await _docRef.set(payload, SetOptions(merge: true));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已保存首頁設定')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  // ===========================
+  // Banner CRUD
+  // ===========================
+
+  Future<void> _addBanner() async {
+    final result = await showModalBottomSheet<HomeBannerItem>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _BannerEditorSheet(initial: const HomeBannerItem()),
+    );
+    if (result == null) return;
+    setState(
+      () => _banners.add(result.copyWith(sortOrder: _banners.length * 10)),
     );
   }
-}
 
-/// ============================================================
-/// 內容本體（可嵌入 AdminShell：不使用 Scaffold）
-/// ============================================================
-class AdminShopHomeSettingsBody extends StatefulWidget {
-  const AdminShopHomeSettingsBody({super.key});
+  Future<void> _editBanner(int index) async {
+    final current = _banners[index];
+    final result = await showModalBottomSheet<HomeBannerItem>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _BannerEditorSheet(initial: current),
+    );
+    if (result == null) return;
+    setState(
+      () => _banners[index] = result.copyWith(sortOrder: current.sortOrder),
+    );
+  }
 
-  @override
-  State<AdminShopHomeSettingsBody> createState() =>
-      _AdminShopHomeSettingsBodyState();
-}
+  void _deleteBanner(int index) => setState(() => _banners.removeAt(index));
+  void _toggleBanner(int index, bool next) =>
+      setState(() => _banners[index] = _banners[index].copyWith(enabled: next));
 
-class _AdminShopHomeSettingsBodyState extends State<AdminShopHomeSettingsBody> {
-  final _db = FirebaseFirestore.instance;
-  DocumentReference<Map<String, dynamic>> get _ref =>
-      _db.collection('shop_config').doc('home');
+  // ===========================
+  // Section CRUD
+  // ===========================
 
-  static const _defaults = <String, dynamic>{
-    'enabled': true,
-    'sections': <dynamic>[],
-  };
+  Future<void> _addSection() async {
+    final result = await showModalBottomSheet<HomeSectionItem>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _SectionEditorSheet(initial: const HomeSectionItem()),
+    );
+    if (result == null) return;
+    setState(
+      () => _sections.add(result.copyWith(sortOrder: _sections.length * 10)),
+    );
+  }
 
-  bool _hydrated = false;
-  bool _dirty = false;
-  bool _saving = false;
+  Future<void> _editSection(int index) async {
+    final current = _sections[index];
+    final result = await showModalBottomSheet<HomeSectionItem>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _SectionEditorSheet(initial: current),
+    );
+    if (result == null) return;
+    setState(
+      () => _sections[index] = result.copyWith(sortOrder: current.sortOrder),
+    );
+  }
 
-  bool _enabled = true;
-  List<_HomeSection> _sections = [];
+  void _deleteSection(int index) => setState(() => _sections.removeAt(index));
+  void _toggleSection(int index, bool next) => setState(
+    () => _sections[index] = _sections[index].copyWith(enabled: next),
+  );
+
+  // ===========================
+  // UI
+  // ===========================
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: _ref.snapshots(),
+      stream: _docRef.snapshots(),
       builder: (context, snap) {
-        // loading
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        // error
         if (snap.hasError) {
-          return _ErrorView(
-            title: '載入失敗',
-            message: snap.error.toString(),
-            onRetry: () => setState(() {}),
+          return Scaffold(
+            appBar: AppBar(title: const Text('商城首頁設定')),
+            body: _ErrorView(message: '讀取失敗：${snap.error}'),
           );
         }
 
-        final exists = snap.data?.exists == true;
-
-        final raw = <String, dynamic>{
-          ..._defaults,
-          ...(snap.data?.data() ?? <String, dynamic>{}),
-        };
-
-        // 只在第一次 or 未編輯狀態下同步遠端（避免你在編輯時被 stream 覆蓋）
-        if (!_hydrated || !_dirty) {
-          _enabled = raw['enabled'] == true;
-
-          final list = (raw['sections'] as List? ?? const <dynamic>[])
-              .whereType<Map>()
-              .map((e) => _HomeSection.fromMap(Map<String, dynamic>.from(e)))
-              .toList();
-
-          _sections = list;
-          _hydrated = true;
+        if (!snap.hasData) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('商城首頁設定')),
+            body: const Center(child: CircularProgressIndicator()),
+          );
         }
 
-        final updatedAt = _toDateTime(raw['updatedAt']);
-        final updatedText = updatedAt == null
-            ? '—'
-            : '${updatedAt.year}/${updatedAt.month.toString().padLeft(2, '0')}/${updatedAt.day.toString().padLeft(2, '0')} '
-                '${updatedAt.hour.toString().padLeft(2, '0')}:${updatedAt.minute.toString().padLeft(2, '0')}';
+        final data = snap.data!.data();
 
-        return Stack(
-          children: [
-            ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
-              children: [
-                // ===== 狀態卡 =====
-                Card(
-                  elevation: 0,
-                  child: Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Row(
-                      children: [
-                        CircleAvatar(
-                          backgroundColor: cs.primaryContainer,
-                          child: Icon(Icons.home, color: cs.onPrimaryContainer),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                '商城首頁設定',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                '更新時間：$updatedText',
-                                style: TextStyle(
-                                  color: cs.onSurfaceVariant,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              Row(
-                                children: [
-                                  const Text('總開關：'),
-                                  Switch(
-                                    value: _enabled,
-                                    onChanged: (v) => setState(() {
-                                      _enabled = v;
-                                      _dirty = true;
-                                    }),
-                                  ),
-                                  Text(_enabled ? 'enabled=true' : 'enabled=false'),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        if (!exists)
-                          OutlinedButton.icon(
-                            onPressed: _saving ? null : _initIfMissing,
-                            icon: const Icon(Icons.add),
-                            label: const Text('初始化'),
-                          ),
-                        const SizedBox(width: 8),
-                        FilledButton.icon(
-                          onPressed: _saving ? null : _save,
-                          icon: _saving
-                              ? SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: cs.onPrimary,
-                                  ),
-                                )
-                              : const Icon(Icons.save),
-                          label: Text(_saving ? '儲存中' : '儲存'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+        if (!_didSyncOnce) {
+          _didSyncOnce = true;
+          Future.microtask(() async {
+            await _loadFromSnapshot(data);
+            if (!mounted) return;
+            setState(() {});
+          });
+        }
 
-                const SizedBox(height: 12),
-
-                // ===== 區塊列表（含拖曳排序）=====
-                Card(
-                  elevation: 0,
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: _sections.isEmpty
-                        ? const Padding(
-                            padding: EdgeInsets.all(8),
-                            child: Text('目前沒有任何區塊，請按右下角新增。'),
-                          )
-                        : ReorderableListView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: _sections.length,
-                            onReorder: (oldIndex, newIndex) {
-                              setState(() {
-                                if (newIndex > oldIndex) newIndex -= 1;
-                                final item = _sections.removeAt(oldIndex);
-                                _sections.insert(newIndex, item);
-                                _dirty = true;
-                              });
-                            },
-                            itemBuilder: (context, i) {
-                              final s = _sections[i];
-                              return _SectionRow(
-                                key: ValueKey(s.id.isEmpty ? 'idx_$i' : s.id),
-                                index: i,
-                                section: s,
-                                onToggle: (v) => setState(() {
-                                  _sections[i] = s.copyWith(enabled: v);
-                                  _dirty = true;
-                                }),
-                                onEdit: () => _openEditor(editIndex: i),
-                                onDelete: () => _deleteSection(i),
-                              );
-                            },
-                          ),
-                  ),
-                ),
-
-                const SizedBox(height: 12),
-
-                // ===== JSON 預覽 =====
-                ExpansionTile(
-                  title: const Text(
-                    'JSON 預覽',
-                    style: TextStyle(fontWeight: FontWeight.w900),
-                  ),
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: SelectableText(
-                        const JsonEncoder.withIndent('  ').convert(_buildDoc()),
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-
-            // ===== 右下角新增 =====
-            Positioned(
-              right: 16,
-              bottom: 16,
-              child: FloatingActionButton.extended(
-                onPressed: _saving ? null : () => _openEditor(),
-                icon: const Icon(Icons.add),
-                label: const Text('新增區塊'),
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('商城首頁設定'),
+            actions: [
+              IconButton(
+                tooltip: '重新載入（覆蓋本地未保存變更）',
+                onPressed: _busy
+                    ? null
+                    : () async {
+                        final messenger = ScaffoldMessenger.of(context);
+                        await _loadFromSnapshot(data);
+                        if (!mounted) return;
+                        setState(() {});
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('已重新載入')),
+                        );
+                      },
+                icon: const Icon(Icons.refresh),
               ),
-            ),
-          ],
+              const SizedBox(width: 6),
+              FilledButton.icon(
+                onPressed: _busy ? null : _save,
+                icon: _busy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save),
+                label: const Text('保存'),
+              ),
+              const SizedBox(width: 12),
+            ],
+          ),
+          body: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              _NoticeCard(
+                enabled: _noticeEnabled,
+                onEnabledChanged: (v) => setState(() => _noticeEnabled = v),
+                noticeTextCtrl: _noticeTextCtrl,
+                noticeLinkCtrl: _noticeLinkCtrl,
+              ),
+              const SizedBox(height: 12),
+              _BannersCard(
+                banners: _banners,
+                onAdd: _addBanner,
+                onEdit: _editBanner,
+                onDelete: _deleteBanner,
+                onToggle: _toggleBanner,
+                onReorder: (oldIndex, newIndex) {
+                  setState(() {
+                    if (newIndex > oldIndex) newIndex -= 1;
+                    final item = _banners.removeAt(oldIndex);
+                    _banners.insert(newIndex, item);
+                  });
+                },
+              ),
+              const SizedBox(height: 12),
+              _SectionsCard(
+                sections: _sections,
+                onAdd: _addSection,
+                onEdit: _editSection,
+                onDelete: _deleteSection,
+                onToggle: _toggleSection,
+                onReorder: (oldIndex, newIndex) {
+                  setState(() {
+                    if (newIndex > oldIndex) newIndex -= 1;
+                    final item = _sections.removeAt(oldIndex);
+                    _sections.insert(newIndex, item);
+                  });
+                },
+              ),
+              const SizedBox(height: 80),
+            ],
+          ),
         );
       },
     );
   }
-
-  // ----------------------------
-  // Firestore Doc Build
-  // ----------------------------
-  Map<String, dynamic> _buildDoc() => <String, dynamic>{
-        'enabled': _enabled,
-        'sections': _sections.map((e) => e.toMap()).toList(),
-      };
-
-  Future<void> _initIfMissing() async {
-    setState(() => _saving = true);
-    await _ref.set(
-      {..._defaults, 'updatedAt': FieldValue.serverTimestamp()},
-      SetOptions(merge: true),
-    );
-    if (!mounted) return;
-    setState(() {
-      _saving = false;
-      _dirty = false;
-      _hydrated = false;
-    });
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('已初始化設定文件')));
-  }
-
-  Future<void> _save() async {
-    setState(() => _saving = true);
-    await _ref.set(
-      {..._buildDoc(), 'updatedAt': FieldValue.serverTimestamp()},
-      SetOptions(merge: true),
-    );
-    if (!mounted) return;
-    setState(() {
-      _saving = false;
-      _dirty = false;
-    });
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('已儲存')));
-  }
-
-  Future<void> _deleteSection(int i) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除區塊？'),
-        content: const Text('刪除後無法復原。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    setState(() {
-      _sections.removeAt(i);
-      _dirty = true;
-    });
-  }
-
-  // ----------------------------
-  // Editor (新增/編輯共用)
-  // ----------------------------
-  Future<void> _openEditor({int? editIndex}) async {
-    final isEdit = editIndex != null;
-    final initial = isEdit ? _sections[editIndex!] : _HomeSection.newOf('rich_text');
-
-    final result = await showDialog<_HomeSection>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => _SectionEditorDialog(initial: initial),
-    );
-
-    if (result == null) return;
-
-    setState(() {
-      if (isEdit) {
-        _sections[editIndex!] = result;
-      } else {
-        _sections.add(result);
-      }
-      _dirty = true;
-    });
-  }
-
-  static DateTime? _toDateTime(dynamic v) {
-    if (v == null) return null;
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
-    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
-    return null;
-  }
 }
 
-/// ============================================================
-/// Model
-/// ============================================================
+// ============================================================
+// Models
+// ============================================================
 
-class _HomeSection {
-  final String id;
-  final String type;
+class HomeBannerItem {
+  const HomeBannerItem({
+    this.enabled = true,
+    this.title = '',
+    this.subtitle = '',
+    this.imageUrl = '',
+    this.linkType = 'url',
+    this.linkValue = '',
+    this.sortOrder = 0,
+  });
+
   final bool enabled;
   final String title;
-  final List<String> ids;
-  final int limit;
-  final String layout;
-  final String body;
+  final String subtitle;
+  final String imageUrl;
+  final String linkType;
+  final String linkValue;
+  final int sortOrder;
 
-  const _HomeSection({
-    required this.id,
-    required this.type,
-    required this.enabled,
-    required this.title,
-    required this.ids,
-    required this.limit,
-    required this.layout,
-    required this.body,
-  });
-
-  factory _HomeSection.newOf(String type) => _HomeSection(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        type: type,
-        enabled: true,
-        title: '',
-        ids: const [],
-        limit: 12,
-        layout: 'carousel',
-        body: '',
-      );
-
-  factory _HomeSection.fromMap(Map<String, dynamic> m) => _HomeSection(
-        id: (m['id'] ?? '').toString(),
-        type: (m['type'] ?? 'rich_text').toString(),
-        enabled: m['enabled'] == true,
-        title: (m['title'] ?? '').toString(),
-        ids: (m['ids'] is List)
-            ? List<String>.from((m['ids'] as List).map((e) => e.toString()))
-            : const <String>[],
-        limit: (m['limit'] is int) ? (m['limit'] as int) : 12,
-        layout: (m['layout'] ?? 'carousel').toString(),
-        body: (m['body'] ?? '').toString(),
-      );
-
-  Map<String, dynamic> toMap() => <String, dynamic>{
-        'id': id,
-        'type': type,
-        'enabled': enabled,
-        'title': title,
-        'ids': ids,
-        'limit': limit,
-        'layout': layout,
-        'body': body,
-      };
-
-  _HomeSection copyWith({
-    String? id,
-    String? type,
+  HomeBannerItem copyWith({
     bool? enabled,
     String? title,
-    List<String>? ids,
-    int? limit,
-    String? layout,
-    String? body,
-  }) =>
-      _HomeSection(
-        id: id ?? this.id,
-        type: type ?? this.type,
-        enabled: enabled ?? this.enabled,
-        title: title ?? this.title,
-        ids: ids ?? this.ids,
-        limit: limit ?? this.limit,
-        layout: layout ?? this.layout,
-        body: body ?? this.body,
-      );
+    String? subtitle,
+    String? imageUrl,
+    String? linkType,
+    String? linkValue,
+    int? sortOrder,
+  }) {
+    return HomeBannerItem(
+      enabled: enabled ?? this.enabled,
+      title: title ?? this.title,
+      subtitle: subtitle ?? this.subtitle,
+      imageUrl: imageUrl ?? this.imageUrl,
+      linkType: linkType ?? this.linkType,
+      linkValue: linkValue ?? this.linkValue,
+      sortOrder: sortOrder ?? this.sortOrder,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'enabled': enabled,
+      'title': title,
+      'subtitle': subtitle,
+      'imageUrl': imageUrl,
+      'linkType': linkType,
+      'linkValue': linkValue,
+      'sortOrder': sortOrder,
+    };
+  }
+
+  static HomeBannerItem fromMap(Map<String, dynamic> m) {
+    return HomeBannerItem(
+      enabled: m['enabled'] == true,
+      title: (m['title'] ?? '').toString(),
+      subtitle: (m['subtitle'] ?? '').toString(),
+      imageUrl: (m['imageUrl'] ?? '').toString(),
+      linkType: (m['linkType'] ?? 'url').toString(),
+      linkValue: (m['linkValue'] ?? '').toString(),
+      sortOrder: _Num.asInt(m['sortOrder']),
+    );
+  }
+
+  static List<HomeBannerItem> listFromAny(dynamic v) {
+    if (v is List) {
+      return v.map((e) {
+        if (e is Map) {
+          return HomeBannerItem.fromMap(Map<String, dynamic>.from(e));
+        }
+        return const HomeBannerItem();
+      }).toList();
+    }
+    return <HomeBannerItem>[];
+  }
 }
 
-/// ============================================================
-/// Row UI
-/// ============================================================
-
-class _SectionRow extends StatelessWidget {
-  final int index;
-  final _HomeSection section;
-  final ValueChanged<bool> onToggle;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-
-  const _SectionRow({
-    super.key,
-    required this.index,
-    required this.section,
-    required this.onToggle,
-    required this.onEdit,
-    required this.onDelete,
+class HomeSectionItem {
+  const HomeSectionItem({
+    this.enabled = true,
+    this.type = 'featuredProducts',
+    this.title = '',
+    this.subtitle = '',
+    this.itemIds = const <String>[],
+    this.imageUrl = '',
+    this.linkUrl = '',
+    this.sortOrder = 0,
   });
+
+  final bool enabled;
+  final String type;
+  final String title;
+  final String subtitle;
+  final List<String> itemIds;
+  final String imageUrl;
+  final String linkUrl;
+  final int sortOrder;
+
+  HomeSectionItem copyWith({
+    bool? enabled,
+    String? type,
+    String? title,
+    String? subtitle,
+    List<String>? itemIds,
+    String? imageUrl,
+    String? linkUrl,
+    int? sortOrder,
+  }) {
+    return HomeSectionItem(
+      enabled: enabled ?? this.enabled,
+      type: type ?? this.type,
+      title: title ?? this.title,
+      subtitle: subtitle ?? this.subtitle,
+      itemIds: itemIds ?? this.itemIds,
+      imageUrl: imageUrl ?? this.imageUrl,
+      linkUrl: linkUrl ?? this.linkUrl,
+      sortOrder: sortOrder ?? this.sortOrder,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'enabled': enabled,
+      'type': type,
+      'title': title,
+      'subtitle': subtitle,
+      'itemIds': itemIds,
+      'imageUrl': imageUrl,
+      'linkUrl': linkUrl,
+      'sortOrder': sortOrder,
+    };
+  }
+
+  static HomeSectionItem fromMap(Map<String, dynamic> m) {
+    final ids = <String>[];
+    final raw = m['itemIds'];
+    if (raw is List) {
+      for (final x in raw) {
+        final s = x.toString().trim();
+        if (s.isNotEmpty) ids.add(s);
+      }
+    }
+    return HomeSectionItem(
+      enabled: m['enabled'] == true,
+      type: (m['type'] ?? 'featuredProducts').toString(),
+      title: (m['title'] ?? '').toString(),
+      subtitle: (m['subtitle'] ?? '').toString(),
+      itemIds: ids,
+      imageUrl: (m['imageUrl'] ?? '').toString(),
+      linkUrl: (m['linkUrl'] ?? '').toString(),
+      sortOrder: _Num.asInt(m['sortOrder']),
+    );
+  }
+
+  static List<HomeSectionItem> listFromAny(dynamic v) {
+    if (v is List) {
+      return v.map((e) {
+        if (e is Map) {
+          return HomeSectionItem.fromMap(Map<String, dynamic>.from(e));
+        }
+        return const HomeSectionItem();
+      }).toList();
+    }
+    return <HomeSectionItem>[];
+  }
+}
+
+// ============================================================
+// Cards
+// ============================================================
+
+class _NoticeCard extends StatelessWidget {
+  const _NoticeCard({
+    required this.enabled,
+    required this.onEnabledChanged,
+    required this.noticeTextCtrl,
+    required this.noticeLinkCtrl,
+  });
+
+  final bool enabled;
+  final ValueChanged<bool> onEnabledChanged;
+  final TextEditingController noticeTextCtrl;
+  final TextEditingController noticeLinkCtrl;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    return _SectionCard(
+      title: '公告列 Notice',
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Switch(value: enabled, onChanged: onEnabledChanged),
+          Text(
+            enabled ? '啟用' : '停用',
+            style: TextStyle(color: Colors.grey[700]),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          TextField(
+            controller: noticeTextCtrl,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: '公告文字',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: noticeLinkCtrl,
+            decoration: const InputDecoration(
+              labelText: '點擊連結（可空）',
+              hintText: 'https://...',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
-    final title = section.title.trim().isEmpty ? '未命名區塊' : section.title.trim();
+class _BannersCard extends StatelessWidget {
+  const _BannersCard({
+    required this.banners,
+    required this.onAdd,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onToggle,
+    required this.onReorder,
+  });
 
+  final List<HomeBannerItem> banners;
+  final VoidCallback onAdd;
+  final void Function(int index) onEdit;
+  final void Function(int index) onDelete;
+  final void Function(int index, bool next) onToggle;
+  final void Function(int oldIndex, int newIndex) onReorder;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionCard(
+      title: '主視覺 Hero Banners',
+      trailing: FilledButton.icon(
+        onPressed: onAdd,
+        icon: const Icon(Icons.add),
+        label: const Text('新增 Banner'),
+      ),
+      child: banners.isEmpty
+          ? Text('尚未設定任何 Banner', style: TextStyle(color: Colors.grey[700]))
+          : ReorderableListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: banners.length,
+              onReorder: onReorder,
+              itemBuilder: (context, index) {
+                final b = banners[index];
+                return Card(
+                  key: ValueKey('banner_${index}_${b.sortOrder}'),
+                  elevation: 0.4,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: ListTile(
+                    leading: Icon(
+                      b.enabled ? Icons.image : Icons.image_not_supported,
+                    ),
+                    title: Text(
+                      b.title.trim().isEmpty ? '(未命名 Banner)' : b.title,
+                    ),
+                    subtitle: Text(
+                      'type=${b.linkType}  value=${b.linkValue}\n${b.imageUrl}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: Wrap(
+                      spacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Switch(
+                          value: b.enabled,
+                          onChanged: (v) => onToggle(index, v),
+                        ),
+                        IconButton(
+                          onPressed: () => onEdit(index),
+                          icon: const Icon(Icons.edit),
+                        ),
+                        IconButton(
+                          onPressed: () => onDelete(index),
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                        ),
+                        const Icon(Icons.drag_handle),
+                      ],
+                    ),
+                    onTap: () => onEdit(index),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _SectionsCard extends StatelessWidget {
+  const _SectionsCard({
+    required this.sections,
+    required this.onAdd,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onToggle,
+    required this.onReorder,
+  });
+
+  final List<HomeSectionItem> sections;
+  final VoidCallback onAdd;
+  final void Function(int index) onEdit;
+  final void Function(int index) onDelete;
+  final void Function(int index, bool next) onToggle;
+  final void Function(int oldIndex, int newIndex) onReorder;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionCard(
+      title: '首頁區塊 Sections',
+      trailing: FilledButton.icon(
+        onPressed: onAdd,
+        icon: const Icon(Icons.add),
+        label: const Text('新增區塊'),
+      ),
+      child: sections.isEmpty
+          ? Text('尚未設定任何區塊', style: TextStyle(color: Colors.grey[700]))
+          : ReorderableListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: sections.length,
+              onReorder: onReorder,
+              itemBuilder: (context, index) {
+                final s = sections[index];
+                final title = s.title.trim().isEmpty ? '(未命名區塊)' : s.title;
+                final ids = s.itemIds.isEmpty ? '-' : s.itemIds.join(', ');
+                return Card(
+                  key: ValueKey('section_${index}_${s.sortOrder}'),
+                  elevation: 0.4,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: ListTile(
+                    leading: Icon(
+                      s.enabled ? Icons.view_quilt : Icons.view_quilt_outlined,
+                    ),
+                    title: Text('$title  [${s.type}]'),
+                    subtitle: Text(
+                      'items=$ids\nimageUrl=${s.imageUrl}\nlinkUrl=${s.linkUrl}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: Wrap(
+                      spacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Switch(
+                          value: s.enabled,
+                          onChanged: (v) => onToggle(index, v),
+                        ),
+                        IconButton(
+                          onPressed: () => onEdit(index),
+                          icon: const Icon(Icons.edit),
+                        ),
+                        IconButton(
+                          onPressed: () => onDelete(index),
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                        ),
+                        const Icon(Icons.drag_handle),
+                      ],
+                    ),
+                    onTap: () => onEdit(index),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _SectionCard extends StatelessWidget {
+  const _SectionCard({required this.title, required this.child, this.trailing});
+
+  final String title;
+  final Widget child;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
     return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor:
-              section.enabled ? cs.primaryContainer : Colors.grey.shade200,
-          child: Icon(
-            Icons.drag_handle,
-            color: section.enabled ? cs.onPrimaryContainer : Colors.grey,
-          ),
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(fontWeight: FontWeight.w900),
-        ),
-        subtitle: Text(
-          'type=${section.type} • layout=${section.layout} • limit=${section.limit}',
-          style: TextStyle(color: cs.onSurfaceVariant),
-        ),
-        trailing: SizedBox(
-          width: 150,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              Switch(value: section.enabled, onChanged: onToggle),
-              IconButton(icon: const Icon(Icons.edit), onPressed: onEdit),
-              IconButton(icon: const Icon(Icons.delete), onPressed: onDelete),
-            ],
-          ),
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                ),
+                if (trailing != null) trailing!,
+              ],
+            ),
+            const SizedBox(height: 12),
+            child,
+          ],
         ),
       ),
     );
   }
 }
 
-/// ============================================================
-/// Editor Dialog（新增/編輯共用）
-/// ============================================================
+// ============================================================
+// Editors
+// ============================================================
 
-class _SectionEditorDialog extends StatefulWidget {
-  final _HomeSection initial;
-  const _SectionEditorDialog({required this.initial});
+class _BannerEditorSheet extends StatefulWidget {
+  const _BannerEditorSheet({required this.initial});
+  final HomeBannerItem initial;
 
   @override
-  State<_SectionEditorDialog> createState() => _SectionEditorDialogState();
+  State<_BannerEditorSheet> createState() => _BannerEditorSheetState();
 }
 
-class _SectionEditorDialogState extends State<_SectionEditorDialog> {
-  late bool enabled;
-  late String id;
-  late String type;
-  late String layout;
-
-  late TextEditingController titleCtl;
-  late TextEditingController idsCtl;
-  late TextEditingController limitCtl;
-  late TextEditingController bodyCtl;
-
+class _BannerEditorSheetState extends State<_BannerEditorSheet> {
   final _formKey = GlobalKey<FormState>();
 
-  static const _typeOptions = <String>[
-    'rich_text',
-    'products',
-    'categories',
-    'collection',
-    'custom',
-  ];
-
-  static const _layoutOptions = <String>[
-    'carousel',
-    'grid',
-    'list',
-  ];
+  late bool _enabled;
+  late final TextEditingController _title;
+  late final TextEditingController _subtitle;
+  late final TextEditingController _imageUrl;
+  late final TextEditingController _linkValue;
+  String _linkType = 'url';
 
   @override
   void initState() {
     super.initState();
-    final s = widget.initial;
-
-    enabled = s.enabled;
-    id = s.id;
-    type = _typeOptions.contains(s.type) ? s.type : 'custom';
-    layout = _layoutOptions.contains(s.layout) ? s.layout : 'carousel';
-
-    titleCtl = TextEditingController(text: s.title);
-    idsCtl = TextEditingController(text: s.ids.join(','));
-    limitCtl = TextEditingController(text: s.limit.toString());
-    bodyCtl = TextEditingController(text: s.body);
+    final i = widget.initial;
+    _enabled = i.enabled;
+    _title = TextEditingController(text: i.title);
+    _subtitle = TextEditingController(text: i.subtitle);
+    _imageUrl = TextEditingController(text: i.imageUrl);
+    _linkValue = TextEditingController(text: i.linkValue);
+    _linkType = i.linkType.trim().isNotEmpty ? i.linkType : 'url';
   }
 
   @override
   void dispose() {
-    titleCtl.dispose();
-    idsCtl.dispose();
-    limitCtl.dispose();
-    bodyCtl.dispose();
+    _title.dispose();
+    _subtitle.dispose();
+    _imageUrl.dispose();
+    _linkValue.dispose();
     super.dispose();
   }
 
-  List<String> _parseIds(String raw) {
-    final parts = raw
-        .split(RegExp(r'[,;\n]'))
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    return parts;
-  }
-
-  int _parseLimit(String raw) {
-    final v = int.tryParse(raw.trim());
-    if (v == null) return 12;
-    if (v < 1) return 1;
-    if (v > 200) return 200;
-    return v;
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    Navigator.pop(
+      context,
+      widget.initial.copyWith(
+        enabled: _enabled,
+        title: _title.text.trim(),
+        subtitle: _subtitle.text.trim(),
+        imageUrl: _imageUrl.text.trim(),
+        linkType: _linkType,
+        linkValue: _linkValue.text.trim(),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return AlertDialog(
-      title: const Text('編輯區塊', style: TextStyle(fontWeight: FontWeight.w900)),
-      content: SizedBox(
-        width: 520,
-        child: Form(
-          key: _formKey,
-          child: SingleChildScrollView(
+    final pad = MediaQuery.of(context).viewInsets;
+    return Padding(
+      padding: EdgeInsets.only(bottom: pad.bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Form(
+            key: _formKey,
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('啟用此區塊', style: TextStyle(fontWeight: FontWeight.w800)),
-                  value: enabled,
-                  onChanged: (v) => setState(() => enabled = v),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '編輯 Banner',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ),
+                    Switch(
+                      value: _enabled,
+                      onChanged: (v) => setState(() => _enabled = v),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                _readonlyRow('ID', id),
-                const SizedBox(height: 8),
-                TextFormField(
-                  controller: titleCtl,
-                  decoration: const InputDecoration(
-                    labelText: '標題（顯示名稱）',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
+                const SizedBox(height: 12),
+                _tf(_title, '標題（可空）'),
+                const SizedBox(height: 10),
+                _tf(_subtitle, '副標（可空）'),
+                const SizedBox(height: 10),
+                _tf(_imageUrl, '圖片 URL（必填）', required: true),
                 const SizedBox(height: 10),
                 DropdownButtonFormField<String>(
-                  value: type,
-                  items: _typeOptions
-                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                      .toList(),
-                  onChanged: (v) => setState(() => type = v ?? 'rich_text'),
+                  // ✅ value deprecated → initialValue
+                  initialValue: _linkType,
                   decoration: const InputDecoration(
-                    labelText: '區塊類型 type',
                     border: OutlineInputBorder(),
+                    labelText: 'LinkType',
                   ),
+                  items: const [
+                    DropdownMenuItem(value: 'url', child: Text('url（外部連結）')),
+                    DropdownMenuItem(
+                      value: 'product',
+                      child: Text('product（商品 ID）'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'category',
+                      child: Text('category（分類 ID）'),
+                    ),
+                  ],
+                  onChanged: (v) => setState(() => _linkType = (v ?? 'url')),
                 ),
                 const SizedBox(height: 10),
-                DropdownButtonFormField<String>(
-                  value: layout,
-                  items: _layoutOptions
-                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                      .toList(),
-                  onChanged: (v) => setState(() => layout = v ?? 'carousel'),
-                  decoration: const InputDecoration(
-                    labelText: '版型 layout',
-                    border: OutlineInputBorder(),
+                _tf(_linkValue, 'LinkValue（可空）'),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _submit,
+                    icon: const Icon(Icons.check),
+                    label: const Text('完成'),
                   ),
-                ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: limitCtl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'limit（1~200）',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: idsCtl,
-                  decoration: const InputDecoration(
-                    labelText: 'ids（用逗號/換行分隔）',
-                    helperText: '例如：商品ID、分類ID、集合ID…依你的前台解析規則使用',
-                    border: OutlineInputBorder(),
-                  ),
-                  minLines: 2,
-                  maxLines: 4,
-                ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: bodyCtl,
-                  decoration: InputDecoration(
-                    labelText: 'body（rich_text 用）',
-                    helperText: '只有 type=rich_text 時前台通常會用到',
-                    border: const OutlineInputBorder(),
-                    fillColor: cs.surface,
-                  ),
-                  minLines: 4,
-                  maxLines: 8,
                 ),
               ],
             ),
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () {
-            final result = widget.initial.copyWith(
-              enabled: enabled,
-              title: titleCtl.text.trim(),
-              type: type,
-              layout: layout,
-              limit: _parseLimit(limitCtl.text),
-              ids: _parseIds(idsCtl.text),
-              body: bodyCtl.text,
-            );
-            Navigator.pop(context, result);
-          },
-          child: const Text('確定'),
-        ),
-      ],
     );
   }
 
-  Widget _readonlyRow(String k, String v) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade300),
-        borderRadius: BorderRadius.circular(12),
+  Widget _tf(TextEditingController c, String label, {bool required = false}) {
+    return TextFormField(
+      controller: c,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
       ),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 70,
-            child: Text(k, style: const TextStyle(fontWeight: FontWeight.w900)),
-          ),
-          Expanded(
-            child: SelectableText(v, style: const TextStyle(fontFamily: 'monospace')),
-          ),
-        ],
-      ),
+      validator: required
+          ? (v) => (v ?? '').trim().isEmpty ? '必填' : null
+          : null,
     );
   }
 }
 
-/// ============================================================
-/// Error View
-/// ============================================================
+class _SectionEditorSheet extends StatefulWidget {
+  const _SectionEditorSheet({required this.initial});
+  final HomeSectionItem initial;
+
+  @override
+  State<_SectionEditorSheet> createState() => _SectionEditorSheetState();
+}
+
+class _SectionEditorSheetState extends State<_SectionEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+
+  late bool _enabled;
+  String _type = 'featuredProducts';
+
+  late final TextEditingController _title;
+  late final TextEditingController _subtitle;
+  late final TextEditingController _ids;
+  late final TextEditingController _imageUrl;
+  late final TextEditingController _linkUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final i = widget.initial;
+    _enabled = i.enabled;
+    _type = i.type.trim().isNotEmpty ? i.type : 'featuredProducts';
+    _title = TextEditingController(text: i.title);
+    _subtitle = TextEditingController(text: i.subtitle);
+    _ids = TextEditingController(text: i.itemIds.join(','));
+    _imageUrl = TextEditingController(text: i.imageUrl);
+    _linkUrl = TextEditingController(text: i.linkUrl);
+  }
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _subtitle.dispose();
+    _ids.dispose();
+    _imageUrl.dispose();
+    _linkUrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    final ids = _ids.text
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    Navigator.pop(
+      context,
+      widget.initial.copyWith(
+        enabled: _enabled,
+        type: _type,
+        title: _title.text.trim(),
+        subtitle: _subtitle.text.trim(),
+        itemIds: ids,
+        imageUrl: _imageUrl.text.trim(),
+        linkUrl: _linkUrl.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pad = MediaQuery.of(context).viewInsets;
+    return Padding(
+      padding: EdgeInsets.only(bottom: pad.bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '編輯區塊',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ),
+                    Switch(
+                      value: _enabled,
+                      onChanged: (v) => setState(() => _enabled = v),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  // ✅ value deprecated → initialValue
+                  initialValue: _type,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    labelText: 'Type',
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'featuredProducts',
+                      child: Text('featuredProducts（精選商品）'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'featuredCategories',
+                      child: Text('featuredCategories（精選分類）'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'custom',
+                      child: Text('custom（自訂）'),
+                    ),
+                  ],
+                  onChanged: (v) =>
+                      setState(() => _type = (v ?? 'featuredProducts')),
+                ),
+                const SizedBox(height: 10),
+                _tf(_title, 'Title（必填）', required: true),
+                const SizedBox(height: 10),
+                _tf(_subtitle, 'Subtitle（可空）'),
+                const SizedBox(height: 10),
+                _tf(_ids, 'Item IDs（逗號分隔，可空）'),
+                const SizedBox(height: 10),
+                _tf(_imageUrl, 'imageUrl（可空）'),
+                const SizedBox(height: 10),
+                _tf(_linkUrl, 'linkUrl（可空）'),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _submit,
+                    icon: const Icon(Icons.check),
+                    label: const Text('完成'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tf(TextEditingController c, String label, {bool required = false}) {
+    return TextFormField(
+      controller: c,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+      ),
+      validator: required
+          ? (v) => (v ?? '').trim().isEmpty ? '必填' : null
+          : null,
+    );
+  }
+}
+
+class _Num {
+  static int asInt(dynamic v) {
+    if (v == null) return 0;
+    if (v is int) return v;
+    if (v is double) return v.round();
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v.trim()) ?? 0;
+    return 0;
+  }
+}
 
 class _ErrorView extends StatelessWidget {
-  final String title;
+  const _ErrorView({required this.message});
   final String message;
-  final VoidCallback onRetry;
-
-  const _ErrorView({
-    required this.title,
-    required this.message,
-    required this.onRetry,
-  });
 
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Card(
-        margin: const EdgeInsets.all(24),
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 8),
-              Text(message, textAlign: TextAlign.center),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh),
-                label: const Text('重試'),
-              ),
-            ],
-          ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Text(message, style: const TextStyle(color: Colors.red)),
         ),
       ),
     );

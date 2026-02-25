@@ -25,6 +25,7 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
     _refreshAll();
     // 監聽 Auth state 變化
     FirebaseAuth.instance.authStateChanges().listen((u) {
+      if (!mounted) return;
       setState(() => _user = u);
     });
   }
@@ -32,7 +33,8 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
   void _append(String s) {
     setState(() {
       final ts = DateTime.now().toIso8601String();
-      _log = '[$ts] $s\n\n' + _log;
+      // ✅ 修正：用插值取代字串相加，避免 prefer_interpolation_to_compose_strings
+      _log = '[$ts] $s\n\n$_log';
     });
   }
 
@@ -43,7 +45,12 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
       setState(() {
         _options = app.options;
       });
-      _append('Firebase app: name=${app.name} projectId=${app.options.projectId} appId=${app.options.appId} apiKey=${app.options.apiKey}');
+      _append(
+        'Firebase app: name=${app.name} '
+        'projectId=${app.options.projectId} '
+        'appId=${app.options.appId} '
+        'apiKey=${app.options.apiKey}',
+      );
     } catch (e) {
       _append('Firebase.app() error: $e');
       setState(() {
@@ -64,7 +71,10 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
 
   Future<void> _fetchUserDoc(String uid) async {
     try {
-      final snap = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      final snap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
       if (snap.exists) {
         setState(() => _userDoc = snap.data());
         _append('users/$uid exists, data=${snap.data()}');
@@ -146,11 +156,16 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
       return;
     }
     try {
-      final q = FirebaseFirestore.instance.collection('orders').where('buyerUid', isEqualTo: uid).limit(10);
+      final q = FirebaseFirestore.instance
+          .collection('orders')
+          .where('buyerUid', isEqualTo: uid)
+          .limit(10);
       final snap = await q.get();
       _append('buyer list success: docs=${snap.size}');
       if (snap.docs.isNotEmpty) {
-        _append('First order id=${snap.docs.first.id} data=${snap.docs.first.data()}');
+        _append(
+          'First order id=${snap.docs.first.id} data=${snap.docs.first.data()}',
+        );
       }
     } catch (e, st) {
       _append('buyer list error: $e\n$st');
@@ -159,7 +174,10 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
 
   Future<void> _testUnfilteredList() async {
     try {
-      final snap = await FirebaseFirestore.instance.collection('orders').limit(1).get();
+      final snap = await FirebaseFirestore.instance
+          .collection('orders')
+          .limit(1)
+          .get();
       _append('unfiltered list success: docs=${snap.size}');
     } catch (e, st) {
       _append('unfiltered list error: $e\n$st');
@@ -173,7 +191,10 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
       return;
     }
     try {
-      final snap = await FirebaseFirestore.instance.collection('orders').doc(id).get();
+      final snap = await FirebaseFirestore.instance
+          .collection('orders')
+          .doc(id)
+          .get();
       if (snap.exists) {
         _append('get order $id success, data=${snap.data()}');
       } else {
@@ -199,71 +220,121 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(10),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Firebase App Info', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  if (options != null) ...[
-                    Text('projectId: ${options.projectId}'),
-                    Text('appId: ${options.appId}'),
-                    Text('apiKey: ${options.apiKey}'),
-                    Text('authDomain: ${options.authDomain}'),
-                    Text('storageBucket: ${options.storageBucket}'),
-                  ] else
-                    const Text('Firebase app not available'),
-                  const SizedBox(height: 8),
-                  ElevatedButton(onPressed: _refreshAll, child: const Text('Refresh Info')),
-                ]),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Auth / User', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  Text('Current user: ${user?.uid ?? "null"}'),
-                  Text('Anonymous?: ${user?.isAnonymous ?? false}'),
-                  const SizedBox(height: 8),
-                  Row(children: [
-                    ElevatedButton(onPressed: _signInAnonymously, child: const Text('Sign in Anon')),
-                    const SizedBox(width: 8),
-                    ElevatedButton(onPressed: _signOut, child: const Text('Sign out')),
-                    const SizedBox(width: 8),
-                    ElevatedButton(onPressed: _ensureSelfUserDoc, child: const Text('Ensure users/{uid}')),
-                  ]),
-                  const SizedBox(height: 8),
-                  if (userDoc != null) ...[
-                    const Text('users/{uid} doc:', style: TextStyle(fontWeight: FontWeight.w600)),
-                    Text(userDoc.toString()),
-                  ],
-                ]),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Firestore tests', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  Row(children: [
-                    ElevatedButton(onPressed: _testBuyerList, child: const Text('Test buyer list (where)')),
-                    const SizedBox(width: 8),
-                    ElevatedButton(onPressed: _testUnfilteredList, child: const Text('Test unfiltered list')),
-                  ]),
-                  const SizedBox(height: 8),
-                  Row(children: [
-                    Expanded(
-                      child: TextField(
-                        decoration: const InputDecoration(labelText: 'orderId (for get)'),
-                        onChanged: (v) => _orderIdForGet = v,
-                      ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Firebase App Info',
+                      style: TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(onPressed: _testGetOrderById, child: const Text('Get order by id')),
-                  ]),
-                ]),
+                    const SizedBox(height: 6),
+                    if (options != null) ...[
+                      Text('projectId: ${options.projectId}'),
+                      Text('appId: ${options.appId}'),
+                      Text('apiKey: ${options.apiKey}'),
+                      Text('authDomain: ${options.authDomain}'),
+                      Text('storageBucket: ${options.storageBucket}'),
+                    ] else
+                      const Text('Firebase app not available'),
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      onPressed: _refreshAll,
+                      child: const Text('Refresh Info'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Auth / User',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    Text('Current user: ${user?.uid ?? "null"}'),
+                    Text('Anonymous?: ${user?.isAnonymous ?? false}'),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        ElevatedButton(
+                          onPressed: _signInAnonymously,
+                          child: const Text('Sign in Anon'),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: _signOut,
+                          child: const Text('Sign out'),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: _ensureSelfUserDoc,
+                          child: const Text('Ensure users/{uid}'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (userDoc != null) ...[
+                      const Text(
+                        'users/{uid} doc:',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      Text(userDoc.toString()),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Firestore tests',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        ElevatedButton(
+                          onPressed: _testBuyerList,
+                          child: const Text('Test buyer list (where)'),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: _testUnfilteredList,
+                          child: const Text('Test unfiltered list'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            decoration: const InputDecoration(
+                              labelText: 'orderId (for get)',
+                            ),
+                            onChanged: (v) => _orderIdForGet = v,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: _testGetOrderById,
+                          child: const Text('Get order by id'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 8),
@@ -275,7 +346,10 @@ class _FirebaseDebugPageState extends State<FirebaseDebugPage> {
                     reverse: true,
                     child: Text(
                       _log,
-                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ),

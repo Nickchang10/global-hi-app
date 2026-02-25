@@ -20,10 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class GuestbookPage extends StatefulWidget {
-  const GuestbookPage({
-    super.key,
-    this.collectionPath = 'guestbook',
-  });
+  const GuestbookPage({super.key, this.collectionPath = 'guestbook'});
 
   static const String routeName = '/guestbook';
   final String collectionPath;
@@ -63,6 +60,9 @@ class _GuestbookPageState extends State<GuestbookPage> {
   DateTime? _toDate(dynamic v) {
     if (v is Timestamp) return v.toDate();
     if (v is DateTime) return v;
+    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+    if (v is num) return DateTime.fromMillisecondsSinceEpoch(v.toInt());
+    if (v is String) return DateTime.tryParse(v.trim());
     return null;
   }
 
@@ -104,7 +104,10 @@ class _GuestbookPageState extends State<GuestbookPage> {
     final msg = _s(d['message']).toLowerCase();
     final uid = _s(d['uid']).toLowerCase();
 
-    return id.contains(q) || name.contains(q) || msg.contains(q) || uid.contains(q);
+    return id.contains(q) ||
+        name.contains(q) ||
+        msg.contains(q) ||
+        uid.contains(q);
   }
 
   // -------------------------
@@ -131,14 +134,20 @@ class _GuestbookPageState extends State<GuestbookPage> {
     try {
       final uid = _auth.currentUser?.uid; // 允許 null（未登入）
 
-      await _col.add(<String, dynamic>{
+      final payload = <String, dynamic>{
         'name': name,
         'message': msg,
-        'uid': uid,
         'isHidden': false,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+      };
+
+      // ✅ 只有 uid != null 才寫入（避免某些 rules/型別期待 string 時出錯）
+      if (uid != null && uid.trim().isNotEmpty) {
+        payload['uid'] = uid.trim();
+      }
+
+      await _col.add(payload);
 
       _msgCtrl.clear();
       _snack('已送出');
@@ -150,6 +159,25 @@ class _GuestbookPageState extends State<GuestbookPage> {
   }
 
   Future<void> _delete(String id) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('刪除留言'),
+        content: const Text('確定要刪除此留言嗎？此操作不可復原。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('刪除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
     _setBusy(true, label: '刪除中...');
     try {
       await _col.doc(id).delete();
@@ -185,7 +213,10 @@ class _GuestbookPageState extends State<GuestbookPage> {
                     Expanded(
                       child: Text(
                         name,
-                        style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
                       ),
                     ),
                     IconButton(
@@ -225,17 +256,24 @@ class _GuestbookPageState extends State<GuestbookPage> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: Theme.of(context).colorScheme.outline.withOpacity(0.18),
-                    ),
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.22),
-                  ),
-                  child: Text(msg.isEmpty ? '（無內容）' : msg),
+                Builder(
+                  builder: (context) {
+                    final cs = Theme.of(context).colorScheme;
+                    return Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: cs.outline.withValues(alpha: 0.18),
+                        ),
+                        color: cs.surfaceContainerHighest.withValues(
+                          alpha: 0.22,
+                        ),
+                      ),
+                      child: Text(msg.isEmpty ? '（無內容）' : msg),
+                    );
+                  },
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -324,7 +362,10 @@ class _GuestbookPageState extends State<GuestbookPage> {
                             child: ElevatedButton.icon(
                               onPressed: _busy ? null : _create,
                               icon: const Icon(Icons.send),
-                              label: const Text('送出留言', style: TextStyle(fontWeight: FontWeight.w900)),
+                              label: const Text(
+                                '送出留言',
+                                style: TextStyle(fontWeight: FontWeight.w900),
+                              ),
                             ),
                           ),
                         ),
@@ -371,7 +412,10 @@ class _GuestbookPageState extends State<GuestbookPage> {
               // 清單
               Expanded(
                 child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _col.orderBy('createdAt', descending: true).limit(400).snapshots(),
+                  stream: _col
+                      .orderBy('createdAt', descending: true)
+                      .limit(400)
+                      .snapshots(),
                   builder: (context, snap) {
                     if (snap.hasError) {
                       return Center(child: Text('讀取失敗：${snap.error}'));
@@ -387,7 +431,10 @@ class _GuestbookPageState extends State<GuestbookPage> {
 
                     if (rows.isEmpty) {
                       return Center(
-                        child: Text('目前沒有留言', style: TextStyle(color: cs.onSurfaceVariant)),
+                        child: Text(
+                          '目前沒有留言',
+                          style: TextStyle(color: cs.onSurfaceVariant),
+                        ),
                       );
                     }
 
@@ -399,7 +446,9 @@ class _GuestbookPageState extends State<GuestbookPage> {
                         final r = rows[i];
                         final d = r.data;
 
-                        final name = _s(d['name']).isEmpty ? '（未填姓名）' : _s(d['name']);
+                        final name = _s(d['name']).isEmpty
+                            ? '（未填姓名）'
+                            : _s(d['name']);
                         final msg = _s(d['message']);
                         final createdAt = _toDate(d['createdAt']);
 
@@ -408,7 +457,9 @@ class _GuestbookPageState extends State<GuestbookPage> {
                           child: ListTile(
                             title: Text(
                               name,
-                              style: const TextStyle(fontWeight: FontWeight.w900),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
                             subtitle: Padding(
                               padding: const EdgeInsets.only(top: 6),
@@ -445,9 +496,18 @@ class _GuestbookPageState extends State<GuestbookPage> {
                                           }
                                         },
                                   itemBuilder: (_) => const [
-                                    PopupMenuItem(value: 'detail', child: Text('查看詳情')),
-                                    PopupMenuItem(value: 'copy', child: Text('複製留言')),
-                                    PopupMenuItem(value: 'delete', child: Text('刪除')),
+                                    PopupMenuItem(
+                                      value: 'detail',
+                                      child: Text('查看詳情'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'copy',
+                                      child: Text('複製留言'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'delete',
+                                      child: Text('刪除'),
+                                    ),
                                   ],
                                 ),
                               ],
@@ -468,7 +528,9 @@ class _GuestbookPageState extends State<GuestbookPage> {
               left: 0,
               right: 0,
               bottom: 0,
-              child: _BusyBar(label: _busyLabel.isEmpty ? '處理中...' : _busyLabel),
+              child: _BusyBar(
+                label: _busyLabel.isEmpty ? '處理中...' : _busyLabel,
+              ),
             ),
         ],
       ),
@@ -537,7 +599,10 @@ class _BusyBar extends StatelessWidget {
             Expanded(
               child: Text(
                 label,
-                style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800),
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
           ],

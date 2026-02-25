@@ -1,176 +1,211 @@
 // lib/pages/services_page.dart
 //
-// ✅ ServicesPage（最終穩定可編譯完整版）
+// ✅ ServicesPage（最終完整版｜可編譯｜移除 unused arguments 參數｜withOpacity → withValues(alpha:)）
 // ------------------------------------------------------------
-// - Route: /services
-// - Firestore：site_contents/services
-//   欄位建議：title(String), content(String)
-// - 若文件不存在或欄位空白：顯示預設內容
-// - 支援：重新整理、即時更新、錯誤顯示、空白防呆、Debug 提示（僅 Debug 模式）
-// ------------------------------------------------------------
+// - 支援搜尋
+// - 卡片式入口
+// - 不再使用 Color.withOpacity（deprecated）
+//   改用 Color.withValues(alpha: 0~255)
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 
 class ServicesPage extends StatefulWidget {
   const ServicesPage({super.key});
-
-  static const String routeName = '/services';
 
   @override
   State<ServicesPage> createState() => _ServicesPageState();
 }
 
 class _ServicesPageState extends State<ServicesPage> {
-  final DocumentReference<Map<String, dynamic>> _docRef =
-      FirebaseFirestore.instance.collection('site_contents').doc('services');
+  final _searchCtrl = TextEditingController();
 
-  static const String _fallbackTitle = '服務項目';
-  static const String _fallbackContent = '''
-這裡是「服務項目」頁面。
-
-你可以在 Firestore 的 site_contents/services 設定 title、content 來更新顯示內容。
-
-例如：
-- 智慧穿戴設備與緊急求助整合方案
-- 家庭安全守護系統
-- 雲端定位追蹤與通知平台
-- 客製化照護與售後支援服務
-''';
-
-  // -------------------------
-  // 工具方法
-  // -------------------------
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
-  String _asStr(dynamic v) => (v ?? '').toString().trim();
+  String _s(String v) => v.trim().toLowerCase();
 
-  String _safeTitle(Map<String, dynamic>? data) {
-    final t = _asStr(data?['title']);
-    return t.isEmpty ? _fallbackTitle : t;
+  void _clearSearch() {
+    _searchCtrl.clear();
+    FocusScope.of(context).unfocus();
+    setState(() {});
   }
 
-  String _safeContent(Map<String, dynamic>? data) {
-    final c = _asStr(data?['content']);
-    return c.isEmpty ? _fallbackContent : c;
-  }
-
-  Future<void> _refresh() async {
-    try {
-      await _docRef.get(const GetOptions(source: Source.server));
-      _snack('已重新整理');
-    } catch (e) {
-      _snack('重新整理失敗：$e');
-    } finally {
-      if (mounted) setState(() {});
-    }
-  }
-
-  // -------------------------
-  // Build
-  // -------------------------
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: _docRef.snapshots(),
-      builder: (context, snap) {
-        final bool loading =
-            snap.connectionState == ConnectionState.waiting && !snap.hasData;
+    final cs = Theme.of(context).colorScheme;
+    final q = _s(_searchCtrl.text);
 
-        final bool exists = snap.data?.exists == true;
-        final Map<String, dynamic>? data = snap.data?.data();
+    final items = <_ServiceItem>[
+      const _ServiceItem(
+        title: '公告管理',
+        subtitle: 'announcements collection（新增/編輯/上下架/置頂）',
+        icon: Icons.campaign_outlined,
+        routeName: '/announcements',
+      ),
+      const _ServiceItem(
+        title: '訂單管理',
+        subtitle: 'orders 列表與狀態更新',
+        icon: Icons.receipt_long_outlined,
+        routeName: '/orders',
+      ),
+      const _ServiceItem(
+        title: '新聞內容',
+        subtitle: 'site_contents category=news',
+        icon: Icons.newspaper_outlined,
+        routeName: '/news',
+      ),
+      const _ServiceItem(
+        title: '前台官網預覽',
+        subtitle: 'FrontSiteShell（site_contents）',
+        icon: Icons.public_outlined,
+        routeName: '/front_site',
+      ),
+    ];
 
-        final String title = exists ? _safeTitle(data) : _fallbackTitle;
-        final String content = exists ? _safeContent(data) : _fallbackContent;
+    final filtered = items.where((it) {
+      if (q.isEmpty) return true;
+      return _s(it.title).contains(q) || _s(it.subtitle).contains(q);
+    }).toList();
 
-        return Scaffold(
-          appBar: AppBar(
-            title: Text(title),
-            actions: [
-              IconButton(
-                tooltip: '重新整理',
-                icon: const Icon(Icons.refresh),
-                onPressed: _refresh,
-              ),
-              const SizedBox(width: 6),
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('服務中心'),
+        actions: [
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh),
           ),
-          body: loading
-              ? const Center(child: CircularProgressIndicator())
-              : (snap.hasError
-                  ? _Body(
-                      title: _fallbackTitle,
-                      content: '讀取失敗：${snap.error}\n\n請稍後再試或聯繫管理員。',
-                      debugHint:
-                          kDebugMode ? 'doc=site_contents/services' : null,
-                    )
-                  : _Body(
-                      title: title,
-                      content: content,
-                      debugHint: kDebugMode
-                          ? 'doc=site_contents/services exists=$exists'
-                          : null,
-                    )),
-        );
-      },
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+            child: TextField(
+              controller: _searchCtrl,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: '搜尋服務/功能…',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                suffixIcon: IconButton(
+                  tooltip: '清除',
+                  onPressed: _clearSearch,
+                  icon: const Icon(Icons.clear),
+                ),
+              ),
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: filtered.isEmpty
+                ? Center(
+                    child: Text(
+                      '沒有符合的項目',
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: filtered.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (_, i) => _ServiceCard(item: filtered[i]),
+                  ),
+          ),
+        ],
+      ),
+      backgroundColor: cs.surface,
     );
   }
 }
 
-// -------------------------
-// 主體內容元件
-// -------------------------
-class _Body extends StatelessWidget {
+class _ServiceItem {
   final String title;
-  final String content;
-  final String? debugHint;
+  final String subtitle;
+  final IconData icon;
+  final String routeName;
 
-  const _Body({
+  const _ServiceItem({
     required this.title,
-    required this.content,
-    this.debugHint,
+    required this.subtitle,
+    required this.icon,
+    required this.routeName,
   });
+}
+
+class _ServiceCard extends StatelessWidget {
+  const _ServiceCard({required this.item});
+  final _ServiceItem item;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text(
-          title,
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w900,
-              ),
+    // ✅ withOpacity(0.10) -> alpha ≈ 26
+    final bg = cs.primary.withValues(alpha: 26);
+
+    // ✅ withOpacity(0.14) -> alpha ≈ 36
+    final iconBg = cs.primary.withValues(alpha: 36);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () {
+        Navigator.pushNamed(context, item.routeName);
+      },
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: cs.outlineVariant),
         ),
-        const SizedBox(height: 12),
-        SelectableText(
-          content,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                height: 1.5,
-                fontSize: 15,
+        child: Row(
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: iconBg,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: cs.outlineVariant),
               ),
+              child: Icon(item.icon, color: cs.primary),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    item.subtitle,
+                    style: TextStyle(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
+          ],
         ),
-        if (debugHint != null) ...[
-          const SizedBox(height: 18),
-          Divider(color: cs.outline.withOpacity(0.25)),
-          Text(
-            debugHint!,
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: cs.onSurfaceVariant),
-          ),
-        ],
-        const SizedBox(height: 24),
-      ],
+      ),
     );
   }
 }

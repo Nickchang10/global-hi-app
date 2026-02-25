@@ -1,477 +1,468 @@
 // lib/pages/about_vision_page.dart
 //
-// ✅ AboutVisionPage（最終穩定可編譯完整版｜支援 imageUrl + 簡易排版｜Web+App）
+// ✅ AboutVisionPage（最終完整版｜可直接使用｜可編譯｜已移除 withOpacity）
 // ------------------------------------------------------------
-// Route: /about/vision
+// - Flutter 3.27+：Color.withOpacity() 已 deprecated → 改用 withValues(alpha: ...)
+// - 願景/使命/價值/里程碑/產品方向 的簡介頁
 //
-// Firestore：site_contents/about_vision
-// 建議欄位：
-//   - title: String
-//   - content: String
-//   - imageUrl: String?          (可選)
-//   - updatedAt: Timestamp?      (可選)
-//
-// 特性：
-// - doc 不存在 / 欄位空白：顯示預設內容
-// - 重新整理（強制 server）
-// - 支援即時更新、錯誤顯示、Debug 提示（僅 Debug）
-// - 支援複製：標題 / 內容 / doc 路徑
-// - content 簡易排版：
-//    # / ## / ### 標題行
-//    - 或 * 項目符號
-//    **粗體**、`行內碼`
-// ------------------------------------------------------------
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
-class AboutVisionPage extends StatefulWidget {
+class AboutVisionPage extends StatelessWidget {
   const AboutVisionPage({super.key});
 
-  static const String routeName = '/about/vision';
+  static const String routeName = '/about-vision';
 
-  @override
-  State<AboutVisionPage> createState() => _AboutVisionPageState();
-}
-
-class _AboutVisionPageState extends State<AboutVisionPage> {
-  final DocumentReference<Map<String, dynamic>> _docRef =
-      FirebaseFirestore.instance.collection('site_contents').doc('about_vision');
-
-  static const String _fallbackTitle = '品牌願景';
-  static const String _fallbackContent =
-      '這裡是「品牌願景」頁面。\n\n'
-      '你可以在 Firestore 的 site_contents/about_vision 設定 title、content（以及可選的 imageUrl）來更新顯示內容。';
-
-  bool _busy = false;
-
-  // -------------------------
-  // Utils
-  // -------------------------
-  String _s(dynamic v) => (v ?? '').toString().trim();
-
-  DateTime? _toDate(dynamic v) {
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
-    return null;
-  }
-
-  String _fmt(DateTime? d) {
-    if (d == null) return '';
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
-  }
-
-  Future<void> _copy(String text, {String done = '已複製'}) async {
-    final t = text.trim();
-    if (t.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: t));
-    _snack(done);
-  }
-
-  Future<void> _refresh() async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      await _docRef.get(const GetOptions(source: Source.server));
-      _snack('已重新整理');
-    } catch (e) {
-      _snack('重新整理失敗：$e');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  // -------------------------
-  // Content rendering (simple formatting)
-  // -------------------------
-  List<InlineSpan> _inlineSpans(
-    String line, {
-    required TextStyle base,
-    required TextStyle bold,
-    required TextStyle code,
-    required Color codeBg,
-  }) {
-    // 支援 **bold** 與 `code`
-    final spans = <InlineSpan>[];
-
-    int i = 0;
-    while (i < line.length) {
-      final boldStart = line.indexOf('**', i);
-      final codeStart = line.indexOf('`', i);
-
-      // 找最近的標記（bold 或 code）
-      int next = line.length;
-      String? type; // 'bold' | 'code'
-      if (boldStart >= 0 && boldStart < next) {
-        next = boldStart;
-        type = 'bold';
-      }
-      if (codeStart >= 0 && codeStart < next) {
-        next = codeStart;
-        type = 'code';
-      }
-
-      // 先加普通文字
-      if (next > i) {
-        spans.add(TextSpan(text: line.substring(i, next), style: base));
-        i = next;
-      }
-
-      if (type == null) break;
-
-      if (type == 'bold') {
-        final start = i + 2;
-        final end = line.indexOf('**', start);
-        if (end < 0) {
-          // 沒有閉合，視為普通文字
-          spans.add(TextSpan(text: line.substring(i), style: base));
-          break;
-        }
-        final txt = line.substring(start, end);
-        spans.add(TextSpan(text: txt, style: bold));
-        i = end + 2;
-      } else if (type == 'code') {
-        final start = i + 1;
-        final end = line.indexOf('`', start);
-        if (end < 0) {
-          spans.add(TextSpan(text: line.substring(i), style: base));
-          break;
-        }
-        final txt = line.substring(start, end);
-        spans.add(
-          WidgetSpan(
-            alignment: PlaceholderAlignment.middle,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              margin: const EdgeInsets.symmetric(horizontal: 2),
-              decoration: BoxDecoration(
-                color: codeBg,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: codeBg.withOpacity(0.6)),
-              ),
-              child: Text(txt, style: code),
-            ),
-          ),
-        );
-        i = end + 1;
-      }
-    }
-
-    return spans;
-  }
-
-  List<Widget> _renderContentBlocks(String content) {
-    final cs = Theme.of(context).colorScheme;
-    final base = Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.55) ??
-        const TextStyle(fontSize: 15, height: 1.55);
-    final bold = base.copyWith(fontWeight: FontWeight.w900);
-    final code = base.copyWith(
-      fontFamily: 'monospace',
-      fontSize: (base.fontSize ?? 15) - 1,
-      height: 1.2,
-    );
-
-    final lines = content.replaceAll('\r\n', '\n').split('\n');
-
-    final blocks = <Widget>[];
-    for (final raw in lines) {
-      final line = raw.trimRight();
-
-      // 空行：段落間距
-      if (line.trim().isEmpty) {
-        blocks.add(const SizedBox(height: 10));
-        continue;
-      }
-
-      // Heading: # / ## / ###
-      TextStyle? headingStyle;
-      String headingText = line;
-      if (line.startsWith('### ')) {
-        headingText = line.substring(4).trim();
-        headingStyle = Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w900,
-            );
-      } else if (line.startsWith('## ')) {
-        headingText = line.substring(3).trim();
-        headingStyle = Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w900,
-            );
-      } else if (line.startsWith('# ')) {
-        headingText = line.substring(2).trim();
-        headingStyle = Theme.of(context).textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w900,
-            );
-      }
-
-      if (headingStyle != null) {
-        blocks.add(const SizedBox(height: 4));
-        blocks.add(Text(headingText, style: headingStyle));
-        blocks.add(const SizedBox(height: 6));
-        continue;
-      }
-
-      // Bullet: - / *
-      final isBullet = line.startsWith('- ') || line.startsWith('* ');
-      if (isBullet) {
-        final txt = line.substring(2).trimLeft();
-        blocks.add(
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('•  ', style: bold.copyWith(color: cs.onSurfaceVariant)),
-                Expanded(
-                  child: RichText(
-                    text: TextSpan(
-                      children: _inlineSpans(
-                        txt,
-                        base: base,
-                        bold: bold,
-                        code: code,
-                        codeBg: cs.surfaceContainerHighest.withOpacity(0.55),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-        continue;
-      }
-
-      // Normal paragraph line
-      blocks.add(
-        Padding(
-          padding: const EdgeInsets.only(bottom: 6),
-          child: RichText(
-            text: TextSpan(
-              children: _inlineSpans(
-                line,
-                base: base,
-                bold: bold,
-                code: code,
-                codeBg: cs.surfaceContainerHighest.withOpacity(0.55),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    return blocks;
-  }
-
-  // -------------------------
-  // UI
-  // -------------------------
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    final border = cs.outlineVariant.withValues(alpha: 0.35);
+    final subtle = cs.onSurface.withValues(alpha: 0.08);
+    final shadow = cs.shadow.withValues(alpha: 0.08);
+    final subText = cs.onSurface.withValues(alpha: 0.72);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(_fallbackTitle),
-        actions: [
-          IconButton(
-            tooltip: '重新整理（Server）',
-            icon: _busy
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh),
-            onPressed: _busy ? null : _refresh,
-          ),
-          PopupMenuButton<String>(
-            tooltip: '更多',
-            onSelected: (v) async {
-              if (v == 'copy_path') {
-                await _copy('site_contents/about_vision', done: '已複製 doc 路徑');
-              }
-            },
-            itemBuilder: (_) => [
-              const PopupMenuItem(
-                value: 'copy_path',
-                child: Text('複製 Firestore 路徑'),
+      appBar: AppBar(title: const Text('品牌願景'), centerTitle: false),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _HeroCard(
+                border: border,
+                shadow: shadow,
+                subtle: subtle,
+                title: 'Osmile Vision',
+                subtitle: '用科技把「安心」變成日常',
+                chips: const ['智慧穿戴', '照護整合', '雲端平台'],
               ),
-            ],
-          ),
-          const SizedBox(width: 6),
-        ],
-      ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _docRef.snapshots(),
-        builder: (context, snap) {
-          final isFirstLoading = snap.connectionState == ConnectionState.waiting &&
-              !snap.hasData &&
-              !snap.hasError;
+              const SizedBox(height: 12),
 
-          if (isFirstLoading) {
-            return const Center(child: CircularProgressIndicator());
-          }
+              _SectionCard(
+                border: border,
+                title: '願景 Vision',
+                icon: Icons.visibility_outlined,
+                child: Text(
+                  '建立一個以人為核心的照護生態系，讓每個家庭與機構都能即時掌握狀態、'
+                  '快速求助、有效溝通，並用資料驅動更好的照護決策。',
+                  style: theme.textTheme.bodyMedium?.copyWith(height: 1.6),
+                ),
+              ),
+              const SizedBox(height: 12),
 
-          final exists = snap.data?.exists == true;
-          final data = snap.data?.data() ?? <String, dynamic>{};
-
-          // 內容（fallback 保底）
-          final title = exists ? _s(data['title']) : '';
-          final content = exists ? _s(data['content']) : '';
-          final imageUrl = exists ? _s(data['imageUrl']) : '';
-          final updatedAt = _toDate(data['updatedAt']);
-
-          final displayTitle = title.isEmpty ? _fallbackTitle : title;
-          final displayContent = content.isEmpty ? _fallbackContent : content;
-
-          // 錯誤狀態：仍顯示 fallback + 錯誤
-          final errorText = snap.hasError ? '讀取失敗：${snap.error}' : '';
-
-          return SelectionArea(
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                // error banner
-                if (errorText.isNotEmpty) ...[
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: cs.errorContainer.withOpacity(0.4),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: cs.error.withOpacity(0.25)),
-                    ),
-                    child: Text(
-                      '$errorText\n\n（仍顯示可用內容，避免空白）',
-                      style: TextStyle(
-                        color: cs.onErrorContainer,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-
-                // image
-                if (imageUrl.isNotEmpty) ...[
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: AspectRatio(
-                      aspectRatio: 16 / 9,
-                      child: Image.network(
-                        imageUrl,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
-                          color: cs.surfaceContainerHighest.withOpacity(0.25),
-                          child: const Center(
-                            child: Icon(Icons.broken_image_outlined),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-
-                // title
-                Row(
+              _SectionCard(
+                border: border,
+                title: '使命 Mission',
+                icon: Icons.flag_outlined,
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text(
-                        displayTitle,
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.w900,
-                            ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      tooltip: '複製標題',
-                      onPressed: () => _copy(displayTitle, done: '已複製標題'),
-                      icon: const Icon(Icons.copy),
-                    ),
+                    _Bullet(text: '以可靠的 SOS 求助與通知，縮短風險反應時間', color: subText),
+                    const SizedBox(height: 6),
+                    _Bullet(text: '整合定位、健康與行為資料，讓照護更有依據', color: subText),
+                    const SizedBox(height: 6),
+                    _Bullet(text: '提供透明的服務流程與可追溯紀錄，提升信任', color: subText),
                   ],
                 ),
+              ),
+              const SizedBox(height: 12),
 
-                // meta
-                if (updatedAt != null && _fmt(updatedAt).isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(
-                    '更新時間：${_fmt(updatedAt)}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                          fontWeight: FontWeight.w700,
-                        ),
-                  ),
-                ],
-
-                const SizedBox(height: 12),
-
-                // content blocks
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: cs.outline.withOpacity(0.18)),
-                    color: cs.surfaceContainerHighest.withOpacity(0.18),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: _renderContentBlocks(displayContent),
-                  ),
-                ),
-
-                const SizedBox(height: 12),
-
-                Wrap(
+              _SectionCard(
+                border: border,
+                title: '核心價值 Values',
+                icon: Icons.favorite_outline_rounded,
+                child: Wrap(
                   spacing: 10,
                   runSpacing: 10,
                   children: [
-                    OutlinedButton.icon(
-                      onPressed: () => _copy(displayContent, done: '已複製內容'),
-                      icon: const Icon(Icons.copy_all),
-                      label: const Text('複製內容'),
+                    _ValuePill(
+                      text: '安全 Safety',
+                      bg: cs.primary.withValues(alpha: 0.10),
+                      fg: cs.primary,
+                      bd: cs.primary.withValues(alpha: 0.22),
                     ),
-                    OutlinedButton.icon(
-                      onPressed: () => _copy(
-                        'site_contents/about_vision',
-                        done: '已複製 doc 路徑',
-                      ),
-                      icon: const Icon(Icons.link),
-                      label: const Text('複製路徑'),
+                    _ValuePill(
+                      text: '可信賴 Reliability',
+                      bg: cs.tertiary.withValues(alpha: 0.10),
+                      fg: cs.tertiary,
+                      bd: cs.tertiary.withValues(alpha: 0.22),
+                    ),
+                    _ValuePill(
+                      text: '同理 Empathy',
+                      bg: cs.secondary.withValues(alpha: 0.10),
+                      fg: cs.secondary,
+                      bd: cs.secondary.withValues(alpha: 0.22),
+                    ),
+                    _ValuePill(
+                      text: '效率 Efficiency',
+                      bg: cs.error.withValues(alpha: 0.08),
+                      fg: cs.error,
+                      bd: cs.error.withValues(alpha: 0.20),
                     ),
                   ],
                 ),
+              ),
+              const SizedBox(height: 12),
 
-                if (kDebugMode) ...[
-                  const SizedBox(height: 18),
-                  Divider(color: cs.outline.withOpacity(0.25)),
-                  Text(
-                    'Debug：doc=site_contents/about_vision exists=$exists',
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(color: cs.onSurfaceVariant),
+              _SectionCard(
+                border: border,
+                title: '產品方向 Product Direction',
+                icon: Icons.route_outlined,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _DirItem(
+                      title: '即時求助與通知',
+                      desc: '手錶一鍵 SOS、家長/管理端即時通知、事件追蹤閉環。',
+                      icon: Icons.sos_rounded,
+                    ),
+                    const SizedBox(height: 10),
+                    _DirItem(
+                      title: '定位與軌跡',
+                      desc: '地理圍欄、歷史軌跡、異常停留提醒。',
+                      icon: Icons.location_on_outlined,
+                    ),
+                    const SizedBox(height: 10),
+                    _DirItem(
+                      title: '健康與行為資料',
+                      desc: '以資料為基礎的照護洞察，支援報表與趨勢觀察。',
+                      icon: Icons.monitor_heart_outlined,
+                    ),
+                    const SizedBox(height: 10),
+                    _DirItem(
+                      title: '服務與工單流程',
+                      desc: '從問題回報到處理結案，透明、可追溯。',
+                      icon: Icons.support_agent_outlined,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              _SectionCard(
+                border: border,
+                title: '里程碑 Milestones',
+                icon: Icons.timeline_outlined,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: const [
+                    _Milestone(year: '2024', text: '完成核心照護模組整合（SOS/通知/定位）'),
+                    _Milestone(year: '2025', text: '導入管理後台與活動/優惠券系統'),
+                    _Milestone(year: '2026', text: '擴充機構端流程、報表與更完整的服務串接'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HeroCard extends StatelessWidget {
+  final Color border;
+  final Color shadow;
+  final Color subtle;
+  final String title;
+  final String subtitle;
+  final List<String> chips;
+
+  const _HeroCard({
+    required this.border,
+    required this.shadow,
+    required this.subtle,
+    required this.title,
+    required this.subtitle,
+    required this.chips,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: border),
+        boxShadow: [
+          BoxShadow(color: shadow, blurRadius: 18, offset: const Offset(0, 8)),
+        ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: subtle,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(Icons.auto_awesome_rounded, color: cs.primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: theme.textTheme.titleLarge),
+                const SizedBox(height: 6),
+                Text(
+                  subtitle,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: cs.onSurface.withValues(alpha: 0.75),
+                    height: 1.4,
                   ),
-                ],
-
-                const SizedBox(height: 24),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: chips
+                      .map(
+                        (c) => Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: cs.primary.withValues(alpha: 0.10),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: cs.primary.withValues(alpha: 0.22),
+                            ),
+                          ),
+                          child: Text(
+                            c,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: cs.primary,
+                            ),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
               ],
             ),
-          );
-        },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionCard extends StatelessWidget {
+  final Color border;
+  final String title;
+  final IconData icon;
+  final Widget child;
+
+  const _SectionCard({
+    required this.border,
+    required this.title,
+    required this.icon,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 20, color: cs.primary),
+              const SizedBox(width: 8),
+              Text(title, style: theme.textTheme.titleMedium),
+            ],
+          ),
+          const SizedBox(height: 12),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class _Bullet extends StatelessWidget {
+  final String text;
+  final Color color;
+
+  const _Bullet({required this.text, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(99),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            text,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: color,
+              height: 1.5,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ValuePill extends StatelessWidget {
+  final String text;
+  final Color bg;
+  final Color fg;
+  final Color bd;
+
+  const _ValuePill({
+    required this.text,
+    required this.bg,
+    required this.fg,
+    required this.bd,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: bd),
+      ),
+      child: Text(
+        text,
+        style: theme.textTheme.labelMedium?.copyWith(color: fg),
+      ),
+    );
+  }
+}
+
+class _DirItem extends StatelessWidget {
+  final String title;
+  final String desc;
+  final IconData icon;
+
+  const _DirItem({required this.title, required this.desc, required this.icon});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cs.onSurface.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: cs.primary.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: cs.primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: theme.textTheme.titleSmall),
+                const SizedBox(height: 4),
+                Text(
+                  desc,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: cs.onSurface.withValues(alpha: 0.75),
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Milestone extends StatelessWidget {
+  final String year;
+  final String text;
+
+  const _Milestone({required this.year, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: cs.primary.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: cs.primary.withValues(alpha: 0.22)),
+            ),
+            child: Text(
+              year,
+              style: theme.textTheme.labelMedium?.copyWith(color: cs.primary),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: cs.onSurface.withValues(alpha: 0.78),
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

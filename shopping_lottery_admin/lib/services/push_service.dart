@@ -8,13 +8,14 @@
 // - 前景收到推播：用 flutter_local_notifications 顯示
 // - 點擊推播：依 data.route / data.orderId / data.announcementId 自動導頁（Deep Link）
 //
-// ✅ 新增：
-// - route == '/announcement_detail' 時，支援從 data['announcementId'] 或 data['extra']['announcementId'] 取值
-// - 導頁 arguments: {'announcementId': xxx}
+// ✅ 修正：
+// - 移除區域函式底線命名（no_leading_underscores_for_local_identifiers）
+// - 修正 token.substring clamp 型別（避免 num 進 substring 參數）
 //
 // 依賴：firebase_messaging, flutter_local_notifications, cloud_firestore, firebase_auth
 
 import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -82,8 +83,10 @@ class PushService {
         final payload = resp.payload;
         if (payload == null || payload.trim().isEmpty) return;
         try {
-          final m = jsonDecode(payload) as Map<String, dynamic>;
-          await _routeByMap(m);
+          final m = jsonDecode(payload);
+          if (m is Map) {
+            await _routeByMap(Map<String, dynamic>.from(m));
+          }
         } catch (_) {}
       },
     );
@@ -98,7 +101,8 @@ class PushService {
 
     await _local
         .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
+          AndroidFlutterLocalNotificationsPlugin
+        >()
         ?.createNotificationChannel(channel);
   }
 
@@ -130,8 +134,11 @@ class PushService {
     final token = await _messaging.getToken();
     if (token == null || token.trim().isEmpty) return;
 
-    final ref =
-        _db.collection('users').doc(uid).collection('fcmTokens').doc(token);
+    final ref = _db
+        .collection('users')
+        .doc(uid)
+        .collection('fcmTokens')
+        .doc(token);
 
     await ref.set({
       'token': token,
@@ -140,7 +147,9 @@ class PushService {
       'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    _log('token saved: ${token.substring(0, token.length.clamp(0, 12))}...');
+    // ✅ 修正：substring 參數必須是 int（避免 clamp 回傳 num）
+    final cut = token.length < 12 ? token.length : 12;
+    _log('token saved: ${token.substring(0, cut)}...');
   }
 
   void _listenTokenRefresh() {
@@ -186,13 +195,11 @@ class PushService {
   Future<void> _showLocalNotificationFromMessage(RemoteMessage msg) async {
     final title =
         msg.notification?.title ?? (msg.data['title']?.toString() ?? '通知');
-    final body =
-        msg.notification?.body ?? (msg.data['body']?.toString() ?? '');
+    final body = msg.notification?.body ?? (msg.data['body']?.toString() ?? '');
 
-    final payloadMap = <String, dynamic>{};
-    payloadMap.addAll(msg.data);
+    final payloadMap = <String, dynamic>{}..addAll(msg.data);
 
-    // fallback：若沒 route，就不導頁
+    // fallback：若沒 route，就不導頁（routeByMap 會直接 return）
     final payload = jsonEncode(payloadMap);
 
     const androidDetails = AndroidNotificationDetails(
@@ -205,8 +212,10 @@ class PushService {
 
     const iOSDetails = DarwinNotificationDetails();
 
-    const details =
-        NotificationDetails(android: androidDetails, iOS: iOSDetails);
+    const details = NotificationDetails(
+      android: androidDetails,
+      iOS: iOSDetails,
+    );
 
     await _local.show(
       DateTime.now().millisecondsSinceEpoch ~/ 1000,
@@ -237,7 +246,8 @@ class PushService {
     // data: announcementId 或 extra.announcementId
     // ===============================
     if (route == '/announcement_detail') {
-      String _getAnnouncementId() {
+      // ✅ 修正：區域函式不可用底線開頭（no_leading_underscores_for_local_identifiers）
+      String getAnnouncementId() {
         final a = (data['announcementId'] ?? '').toString().trim();
         if (a.isNotEmpty) return a;
 
@@ -247,14 +257,14 @@ class PushService {
           if (b.isNotEmpty) return b;
         }
 
-        // 容錯：有些人會用 key = id
+        // 容錯：有人會用 key = id
         final c = (data['id'] ?? '').toString().trim();
         if (c.isNotEmpty) return c;
 
         return '';
       }
 
-      final announcementId = _getAnnouncementId();
+      final announcementId = getAnnouncementId();
       if (announcementId.isNotEmpty) {
         await AppNavigator.pushNamed(
           '/announcement_detail',

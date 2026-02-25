@@ -2,35 +2,6 @@
 //
 // ✅ VendorFeedbackPage（完整版｜可編譯｜Vendor Only｜顧客回饋中心｜即時同步｜搜尋/篩選｜回覆與標記已處理｜匯出CSV(複製剪貼簿)）
 //
-// 目的：
-// - 廠商後台查看「顧客回饋/評價/問答」並可回覆
-// - 與主後台共用同一份 Firestore 資料（同 collection）達到「連動」
-//
-// Firestore 建議：feedbacks/{feedbackId}
-//   - vendorId: String
-//   - userId: String (選用)
-//   - userName: String (選用)
-//   - userEmail: String (選用)
-//   - orderId: String (選用)
-//   - productId: String (選用)
-//   - productName: String (選用)
-//   - rating: num (1~5, 選用)
-//   - type: String (review/question/issue/other) (選用)
-//   - title: String (選用)
-//   - message: String
-//   - images: List<String> (選用)
-//   - status: String (open/replied/closed)  // 預設 open
-//   - reply: String (選用)
-//   - replyBy: String (uid 或 email, 選用)
-//   - replyAt: Timestamp (選用)
-//   - createdAt: Timestamp
-//   - updatedAt: Timestamp
-//
-// 索引建議：
-// - where(vendorId) + orderBy(createdAt desc)
-// - where(vendorId) + where(status) + orderBy(createdAt desc)
-// - where(vendorId) + where(type) + orderBy(createdAt desc)
-//
 // 依賴：cloud_firestore, flutter/material, flutter/services
 
 import 'dart:convert';
@@ -44,7 +15,7 @@ class VendorFeedbackPage extends StatefulWidget {
     super.key,
     required this.vendorId,
     this.collection = 'feedbacks',
-    this.replyBy, // 你也可以傳入登入者 uid/email 作為回覆者
+    this.replyBy,
   });
 
   final String vendorId;
@@ -71,7 +42,8 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
   String _busyLabel = '';
 
   String get _vid => widget.vendorId.trim();
-  CollectionReference<Map<String, dynamic>> get _col => _db.collection(widget.collection);
+  CollectionReference<Map<String, dynamic>> get _col =>
+      _db.collection(widget.collection);
 
   @override
   void dispose() {
@@ -116,6 +88,7 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
     final t = text.trim();
     if (t.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: t));
+    if (!mounted) return;
     _snack(done);
   }
 
@@ -141,34 +114,24 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
         .limit(800);
 
     if (_status != null && _status!.isNotEmpty) {
-      q = _col
-          .where('vendorId', isEqualTo: _vid)
-          .where('status', isEqualTo: _status)
-          .orderBy('createdAt', descending: true)
-          .limit(800);
+      q = q.where('status', isEqualTo: _status);
     }
 
-    // type 篩選（可與 status 同時存在，若 Firestore 索引不足會報錯，需加 composite index）
     if (_type != null && _type!.isNotEmpty) {
-      // 若 status 已用 where，這裡會變成 2 個 where，需要 composite index
       q = q.where('type', isEqualTo: _type);
     }
 
-    // minRating 不建議在 server-side 做 >=（會需要更多索引且可能與 orderBy 衝突）
-    // 這裡用本地過濾（_matchLocal）
     return q.snapshots();
   }
 
   bool _matchLocal(_FeedbackRow r) {
     final d = r.data;
 
-    // rating filter
     if (_minRating != null) {
       final rating = _toInt(d['rating']) ?? 0;
       if (rating < _minRating!) return false;
     }
 
-    // keyword filter
     final q = _q.trim().toLowerCase();
     if (q.isEmpty) return true;
 
@@ -217,23 +180,42 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _kv(context, 'feedbackId', id, copy: () => _copy(id, done: '已複製 feedbackId')),
+                  _kv(
+                    context,
+                    'feedbackId',
+                    id,
+                    copy: () => _copy(id, done: '已複製 feedbackId'),
+                  ),
                   const SizedBox(height: 6),
-                  _kv(context, '狀態', _s(data['status']).isEmpty ? 'open' : _s(data['status'])),
+                  _kv(
+                    context,
+                    '狀態',
+                    _s(data['status']).isEmpty ? 'open' : _s(data['status']),
+                  ),
                   const SizedBox(height: 6),
-                  _kv(context, '類型', _s(data['type']).isEmpty ? '-' : _s(data['type'])),
+                  _kv(
+                    context,
+                    '類型',
+                    _s(data['type']).isEmpty ? '-' : _s(data['type']),
+                  ),
                   const SizedBox(height: 6),
-                  _kv(context, '評分', _s(data['rating']).isEmpty ? '-' : _s(data['rating'])),
+                  _kv(
+                    context,
+                    '評分',
+                    _s(data['rating']).isEmpty ? '-' : _s(data['rating']),
+                  ),
                   const Divider(height: 22),
                   Text(
                     _s(data['title']).isEmpty ? '（無標題）' : _s(data['title']),
                     style: const TextStyle(fontWeight: FontWeight.w900),
                   ),
                   const SizedBox(height: 6),
-                  Text(_s(data['message']).isEmpty ? '（無內容）' : _s(data['message'])),
+                  Text(
+                    _s(data['message']).isEmpty ? '（無內容）' : _s(data['message']),
+                  ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
-                    value: status,
+                    initialValue: status, // ✅ value -> initialValue
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
                       isDense: true,
@@ -241,7 +223,10 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                     ),
                     items: const [
                       DropdownMenuItem(value: 'open', child: Text('open')),
-                      DropdownMenuItem(value: 'replied', child: Text('replied')),
+                      DropdownMenuItem(
+                        value: 'replied',
+                        child: Text('replied'),
+                      ),
                       DropdownMenuItem(value: 'closed', child: Text('closed')),
                     ],
                     onChanged: (v) => setSt(() => status = v ?? 'open'),
@@ -260,37 +245,51 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                   const SizedBox(height: 8),
                   Text(
                     '提示：儲存後會寫入 reply / replyAt / replyBy 並更新 status。',
-                    style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
                   ),
                 ],
               ),
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('儲存')),
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('儲存'),
+            ),
           ],
         ),
       ),
     );
+
+    if (!mounted) {
+      replyCtrl.dispose();
+      return;
+    }
 
     if (ok == true) {
       final text = replyCtrl.text.trim();
 
       await _setBusy(true, label: '儲存回覆中...');
       try {
-        await _col.doc(id).set(
-          <String, dynamic>{
-            'reply': text,
-            'status': status,
-            'replyAt': FieldValue.serverTimestamp(),
-            if ((widget.replyBy ?? '').trim().isNotEmpty) 'replyBy': widget.replyBy!.trim(),
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
-        );
+        await _col.doc(id).set(<String, dynamic>{
+          'reply': text,
+          'status': status,
+          'replyAt': FieldValue.serverTimestamp(),
+          if ((widget.replyBy ?? '').trim().isNotEmpty)
+            'replyBy': widget.replyBy!.trim(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+        if (!mounted) return;
         _snack('已更新回覆');
       } catch (e) {
+        if (!mounted) return;
         _snack('儲存失敗：$e');
       } finally {
         await _setBusy(false);
@@ -303,15 +302,14 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
   Future<void> _setStatus(String id, String status) async {
     await _setBusy(true, label: '更新狀態中...');
     try {
-      await _col.doc(id).set(
-        <String, dynamic>{
-          'status': status,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
+      await _col.doc(id).set(<String, dynamic>{
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (!mounted) return;
       _snack('已更新狀態：$status');
     } catch (e) {
+      if (!mounted) return;
       _snack('更新失敗：$e');
     } finally {
       await _setBusy(false);
@@ -325,19 +323,31 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
         title: const Text('刪除回饋'),
         content: Text('確定要刪除 feedback：$id 嗎？（不可復原）'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
+
+    if (!mounted) return;
     if (ok != true) return;
 
     await _setBusy(true, label: '刪除中...');
     try {
       await _col.doc(id).delete();
-      if (_selectedId == id) setState(() => _selectedId = null);
+      if (!mounted) return;
+      if (_selectedId == id) {
+        setState(() => _selectedId = null);
+      }
       _snack('已刪除');
     } catch (e) {
+      if (!mounted) return;
       _snack('刪除失敗：$e');
     } finally {
       await _setBusy(false);
@@ -393,6 +403,7 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
     }
 
     await Clipboard.setData(ClipboardData(text: buffer.toString()));
+    if (!mounted) return;
     _snack('已複製 CSV 到剪貼簿（可貼到 Excel）');
   }
 
@@ -407,23 +418,22 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('顧客回饋中心', style: TextStyle(fontWeight: FontWeight.w900)),
-        actions: [
-          IconButton(
-            tooltip: '匯出CSV(複製)',
-            onPressed: _busy ? null : null, // 在 filters 中依 rows 決定是否可點
-            icon: const Icon(Icons.download_outlined),
-          ),
-          const SizedBox(width: 6),
-        ],
+        title: const Text(
+          '顧客回饋中心',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
       ),
       body: Stack(
         children: [
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: _stream(),
             builder: (context, snap) {
-              if (snap.hasError) return Center(child: Text('讀取失敗：${snap.error}'));
-              if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+              if (snap.hasError) {
+                return Center(child: Text('讀取失敗：${snap.error}'));
+              }
+              if (!snap.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
 
               final rows = snap.data!.docs
                   .map((d) => _FeedbackRow(id: d.id, data: d.data()))
@@ -431,7 +441,9 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                   .toList();
 
               final ids = rows.map((e) => e.id).toSet();
-              if (_selectedId != null && !ids.contains(_selectedId)) _selectedId = null;
+              if (_selectedId != null && !ids.contains(_selectedId)) {
+                _selectedId = null;
+              }
 
               return Column(
                 children: [
@@ -449,7 +461,9 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                     onStatusChanged: (v) => setState(() => _status = v),
                     onTypeChanged: (v) => setState(() => _type = v),
                     onMinRatingChanged: (v) => setState(() => _minRating = v),
-                    onExport: rows.isEmpty || _busy ? null : () => _exportCsv(rows),
+                    onExport: rows.isEmpty || _busy
+                        ? null
+                        : () => _exportCsv(rows),
                   ),
                   const Divider(height: 1),
                   Expanded(
@@ -464,12 +478,24 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                             final r = rows[i];
                             final d = r.data;
 
-                            final status = _s(d['status']).isEmpty ? 'open' : _s(d['status']);
-                            final type = _s(d['type']).isEmpty ? 'other' : _s(d['type']);
+                            final status = _s(d['status']).isEmpty
+                                ? 'open'
+                                : _s(d['status']);
+                            final type = _s(d['type']).isEmpty
+                                ? 'other'
+                                : _s(d['type']);
                             final rating = _toInt(d['rating']);
-                            final title = _s(d['title']).isEmpty ? '（無標題）' : _s(d['title']);
-                            final msg = _s(d['message']).isEmpty ? '（無內容）' : _s(d['message']);
-                            final user = _s(d['userName']).isNotEmpty ? _s(d['userName']) : (_s(d['userEmail']).isNotEmpty ? _s(d['userEmail']) : '（匿名）');
+                            final title = _s(d['title']).isEmpty
+                                ? '（無標題）'
+                                : _s(d['title']);
+                            final msg = _s(d['message']).isEmpty
+                                ? '（無內容）'
+                                : _s(d['message']);
+                            final user = _s(d['userName']).isNotEmpty
+                                ? _s(d['userName'])
+                                : (_s(d['userEmail']).isNotEmpty
+                                      ? _s(d['userEmail'])
+                                      : '（匿名）');
                             final createdAt = _toDate(d['createdAt']);
 
                             return ListTile(
@@ -482,11 +508,16 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                                       title,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontWeight: FontWeight.w900),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                      ),
                                     ),
                                   ),
                                   const SizedBox(width: 8),
-                                  _Pill(label: status, color: _statusColor(context, status)),
+                                  _Pill(
+                                    label: status,
+                                    color: _statusColor(context, status),
+                                  ),
                                 ],
                               ),
                               subtitle: Padding(
@@ -499,9 +530,12 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                                       runSpacing: 4,
                                       children: [
                                         _MiniTag(label: type),
-                                        if (rating != null) _MiniTag(label: '★$rating'),
+                                        if (rating != null)
+                                          _MiniTag(label: '★$rating'),
                                         _MiniTag(label: user),
-                                        _MiniTag(label: _fmtDateTime(createdAt)),
+                                        _MiniTag(
+                                          label: _fmtDateTime(createdAt),
+                                        ),
                                       ],
                                     ),
                                     const SizedBox(height: 6),
@@ -509,7 +543,11 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                                       msg,
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -520,7 +558,10 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                                     ? null
                                     : (v) async {
                                         if (v == 'reply') {
-                                          await _openReplyDialog(id: r.id, data: d);
+                                          await _openReplyDialog(
+                                            id: r.id,
+                                            data: d,
+                                          );
                                         } else if (v == 'open') {
                                           await _setStatus(r.id, 'open');
                                         } else if (v == 'replied') {
@@ -528,24 +569,51 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                                         } else if (v == 'closed') {
                                           await _setStatus(r.id, 'closed');
                                         } else if (v == 'copy_id') {
-                                          await _copy(r.id, done: '已複製 feedbackId');
+                                          await _copy(
+                                            r.id,
+                                            done: '已複製 feedbackId',
+                                          );
                                         } else if (v == 'json') {
-                                          await _copy(jsonEncode(d), done: '已複製 JSON');
+                                          await _copy(
+                                            jsonEncode(d),
+                                            done: '已複製 JSON',
+                                          );
                                         } else if (v == 'delete') {
                                           await _delete(r.id);
                                         }
                                       },
                                 itemBuilder: (_) => const [
-                                  PopupMenuItem(value: 'reply', child: Text('回覆/處理')),
+                                  PopupMenuItem(
+                                    value: 'reply',
+                                    child: Text('回覆/處理'),
+                                  ),
                                   PopupMenuDivider(),
-                                  PopupMenuItem(value: 'open', child: Text('標記 open')),
-                                  PopupMenuItem(value: 'replied', child: Text('標記 replied')),
-                                  PopupMenuItem(value: 'closed', child: Text('標記 closed')),
+                                  PopupMenuItem(
+                                    value: 'open',
+                                    child: Text('標記 open'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'replied',
+                                    child: Text('標記 replied'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'closed',
+                                    child: Text('標記 closed'),
+                                  ),
                                   PopupMenuDivider(),
-                                  PopupMenuItem(value: 'copy_id', child: Text('複製 feedbackId')),
-                                  PopupMenuItem(value: 'json', child: Text('複製 JSON')),
+                                  PopupMenuItem(
+                                    value: 'copy_id',
+                                    child: Text('複製 feedbackId'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'json',
+                                    child: Text('複製 JSON'),
+                                  ),
                                   PopupMenuDivider(),
-                                  PopupMenuItem(value: 'delete', child: Text('刪除')),
+                                  PopupMenuItem(
+                                    value: 'delete',
+                                    child: Text('刪除'),
+                                  ),
                                 ],
                               ),
                               onTap: () {
@@ -559,7 +627,8 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                                       fmt: _fmtDateTime,
                                       toDate: _toDate,
                                       onCopy: _copy,
-                                      onReply: () => _openReplyDialog(id: r.id, data: d),
+                                      onReply: () =>
+                                          _openReplyDialog(id: r.id, data: d),
                                       onSetStatus: (s) => _setStatus(r.id, s),
                                       onDelete: () => _delete(r.id),
                                     ),
@@ -570,11 +639,15 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                           },
                         );
 
-                        if (!wide) return list;
+                        if (!wide) {
+                          return list;
+                        }
 
                         final selected = _selectedId == null
                             ? null
-                            : rows.where((e) => e.id == _selectedId).cast<_FeedbackRow?>().firstOrNull;
+                            : rows
+                                  .where((e) => e.id == _selectedId)
+                                  .firstOrNull;
 
                         return Row(
                           children: [
@@ -586,7 +659,11 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                                   ? Center(
                                       child: Text(
                                         '請選擇一筆回饋查看詳情',
-                                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                                        style: TextStyle(
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.onSurfaceVariant,
+                                        ),
                                       ),
                                     )
                                   : _DetailPanel(
@@ -595,8 +672,12 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
                                       fmt: _fmtDateTime,
                                       toDate: _toDate,
                                       onCopy: _copy,
-                                      onReply: () => _openReplyDialog(id: selected.id, data: selected.data),
-                                      onSetStatus: (s) => _setStatus(selected.id, s),
+                                      onReply: () => _openReplyDialog(
+                                        id: selected.id,
+                                        data: selected.data,
+                                      ),
+                                      onSetStatus: (s) =>
+                                          _setStatus(selected.id, s),
                                       onDelete: () => _delete(selected.id),
                                     ),
                             ),
@@ -614,7 +695,9 @@ class _VendorFeedbackPageState extends State<VendorFeedbackPage> {
               left: 0,
               right: 0,
               bottom: 0,
-              child: _BusyBar(label: _busyLabel.isEmpty ? '處理中...' : _busyLabel),
+              child: _BusyBar(
+                label: _busyLabel.isEmpty ? '處理中...' : _busyLabel,
+              ),
             ),
         ],
       ),
@@ -693,9 +776,13 @@ class _Filters extends StatelessWidget {
     );
 
     final ddStatus = DropdownButtonFormField<String?>(
-      value: status,
+      initialValue: status,
       isExpanded: true,
-      decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), labelText: '狀態'),
+      decoration: const InputDecoration(
+        isDense: true,
+        border: OutlineInputBorder(),
+        labelText: '狀態',
+      ),
       items: const [
         DropdownMenuItem(value: null, child: Text('全部')),
         DropdownMenuItem(value: 'open', child: Text('open')),
@@ -706,9 +793,13 @@ class _Filters extends StatelessWidget {
     );
 
     final ddType = DropdownButtonFormField<String?>(
-      value: type,
+      initialValue: type,
       isExpanded: true,
-      decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), labelText: '類型'),
+      decoration: const InputDecoration(
+        isDense: true,
+        border: OutlineInputBorder(),
+        labelText: '類型',
+      ),
       items: const [
         DropdownMenuItem(value: null, child: Text('全部')),
         DropdownMenuItem(value: 'review', child: Text('review')),
@@ -720,9 +811,13 @@ class _Filters extends StatelessWidget {
     );
 
     final ddMinRating = DropdownButtonFormField<int?>(
-      value: minRating,
+      initialValue: minRating,
       isExpanded: true,
-      decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), labelText: '最低評分'),
+      decoration: const InputDecoration(
+        isDense: true,
+        border: OutlineInputBorder(),
+        labelText: '最低評分',
+      ),
       items: const [
         DropdownMenuItem(value: null, child: Text('全部')),
         DropdownMenuItem(value: 5, child: Text('★5 以上')),
@@ -766,7 +861,10 @@ class _Filters extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 10),
-                Text('共 $countLabel', style: TextStyle(color: cs.onSurfaceVariant)),
+                Text(
+                  '共 $countLabel',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
               ],
             );
           }
@@ -787,7 +885,10 @@ class _Filters extends StatelessWidget {
                 label: const Text('匯出CSV'),
               ),
               const SizedBox(width: 10),
-              Text('共 $countLabel', style: TextStyle(color: cs.onSurfaceVariant)),
+              Text(
+                '共 $countLabel',
+                style: TextStyle(color: cs.onSurfaceVariant),
+              ),
             ],
           );
         },
@@ -854,7 +955,10 @@ class _DetailPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+          ),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
@@ -866,9 +970,18 @@ class _DetailPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          _InfoRow(label: 'feedbackId', value: id, onCopy: () => onCopy(id, done: '已複製 feedbackId')),
+          _InfoRow(
+            label: 'feedbackId',
+            value: id,
+            onCopy: () => onCopy(id, done: '已複製 feedbackId'),
+          ),
           const SizedBox(height: 6),
-          _InfoRow(label: 'user', value: userName.isNotEmpty ? userName : (userEmail.isNotEmpty ? userEmail : '（匿名）')),
+          _InfoRow(
+            label: 'user',
+            value: userName.isNotEmpty
+                ? userName
+                : (userEmail.isNotEmpty ? userEmail : '（匿名）'),
+          ),
           const SizedBox(height: 6),
           _InfoRow(label: 'product', value: productName),
           const SizedBox(height: 6),
@@ -878,11 +991,23 @@ class _DetailPanel extends StatelessWidget {
           const SizedBox(height: 6),
           _InfoRow(label: 'replyAt', value: fmt(replyAt)),
           const Divider(height: 24),
-          Text('內容', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w900)),
+          Text(
+            '內容',
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
           const SizedBox(height: 6),
           _box(context, message),
           const SizedBox(height: 12),
-          Text('回覆', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w900)),
+          Text(
+            '回覆',
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
           const SizedBox(height: 6),
           _box(context, reply.isEmpty ? '（尚未回覆）' : reply),
           const SizedBox(height: 12),
@@ -898,8 +1023,13 @@ class _DetailPanel extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () => onSetStatus(status == 'closed' ? 'open' : 'closed'),
-                  icon: Icon(status == 'closed' ? Icons.lock_open_outlined : Icons.lock_outline),
+                  onPressed: () =>
+                      onSetStatus(status == 'closed' ? 'open' : 'closed'),
+                  icon: Icon(
+                    status == 'closed'
+                        ? Icons.lock_open_outlined
+                        : Icons.lock_outline,
+                  ),
                   label: Text(status == 'closed' ? '重新開啟' : '關閉'),
                 ),
               ),
@@ -938,9 +1068,9 @@ class _DetailPanel extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.25),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.25),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: cs.outline.withOpacity(0.18)),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.18)),
       ),
       child: Text(text),
     );
@@ -989,7 +1119,15 @@ class _DetailDialog extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16))),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
                   _Pill(label: status, color: _statusColor(context, status)),
                   IconButton(
                     tooltip: '複製 feedbackId',
@@ -1001,7 +1139,9 @@ class _DetailDialog extends StatelessWidget {
               const SizedBox(height: 10),
               Align(
                 alignment: Alignment.centerLeft,
-                child: Text(_s(data['message']).isEmpty ? '（無內容）' : _s(data['message'])),
+                child: Text(
+                  _s(data['message']).isEmpty ? '（無內容）' : _s(data['message']),
+                ),
               ),
               const SizedBox(height: 12),
               Wrap(
@@ -1021,7 +1161,11 @@ class _DetailDialog extends StatelessWidget {
                       Navigator.pop(context);
                       onSetStatus(status == 'closed' ? 'open' : 'closed');
                     },
-                    icon: Icon(status == 'closed' ? Icons.lock_open_outlined : Icons.lock_outline),
+                    icon: Icon(
+                      status == 'closed'
+                          ? Icons.lock_open_outlined
+                          : Icons.lock_outline,
+                    ),
                     label: Text(status == 'closed' ? '重新開啟' : '關閉'),
                   ),
                   TextButton.icon(
@@ -1055,13 +1199,17 @@ class _Pill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.25)),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
       ),
       child: Text(
         label,
-        style: TextStyle(color: color, fontWeight: FontWeight.w900, fontSize: 12),
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w900,
+          fontSize: 12,
+        ),
       ),
     );
   }
@@ -1077,13 +1225,17 @@ class _MiniTag extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.22),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.22),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: cs.outline.withOpacity(0.12)),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.12)),
       ),
       child: Text(
         label,
-        style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800, fontSize: 12),
+        style: TextStyle(
+          color: cs.onSurfaceVariant,
+          fontWeight: FontWeight.w800,
+          fontSize: 12,
+        ),
       ),
     );
   }
@@ -1101,8 +1253,19 @@ class _InfoRow extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(width: 92, child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12))),
-        Expanded(child: Text(value.isEmpty ? '-' : value, style: const TextStyle(fontWeight: FontWeight.w800))),
+        SizedBox(
+          width: 92,
+          child: Text(
+            label,
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value.isEmpty ? '-' : value,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
         if (onCopy != null)
           IconButton(
             tooltip: '複製',
@@ -1128,10 +1291,20 @@ class _BusyBar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         child: Row(
           children: [
-            const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
             const SizedBox(width: 10),
             Expanded(
-              child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800)),
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
             ),
           ],
         ),
@@ -1147,8 +1320,19 @@ Widget _kv(BuildContext context, String k, String v, {VoidCallback? copy}) {
   final cs = Theme.of(context).colorScheme;
   return Row(
     children: [
-      SizedBox(width: 90, child: Text(k, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12))),
-      Expanded(child: Text(v.isEmpty ? '-' : v, style: const TextStyle(fontWeight: FontWeight.w800))),
+      SizedBox(
+        width: 90,
+        child: Text(
+          k,
+          style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+        ),
+      ),
+      Expanded(
+        child: Text(
+          v.isEmpty ? '-' : v,
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
+      ),
       if (copy != null)
         IconButton(
           tooltip: '複製',

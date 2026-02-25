@@ -16,11 +16,12 @@ class EditAddressPage extends StatefulWidget {
 class _EditAddressPageState extends State<EditAddressPage> {
   final _formKey = GlobalKey<FormState>();
 
-  late TextEditingController _title;
-  late TextEditingController _name;
-  late TextEditingController _phone;
-  late TextEditingController _detail;
+  late final TextEditingController _title;
+  late final TextEditingController _name;
+  late final TextEditingController _phone;
+  late final TextEditingController _detail;
 
+  // 先給預設值，initState 會依 data 修正
   String _selectedCity = "台北市";
   String _selectedDistrict = "中正區";
 
@@ -31,15 +32,34 @@ class _EditAddressPageState extends State<EditAddressPage> {
     super.initState();
     final d = widget.data;
 
-    _title = TextEditingController(text: d?['title'] ?? '');
-    _name = TextEditingController(text: d?['name'] ?? '');
-    _phone = TextEditingController(text: d?['phone'] ?? '');
-    _detail = TextEditingController(text: d?['detail'] ?? '');
+    _title = TextEditingController(text: (d?['title'] ?? '').toString());
+    _name = TextEditingController(text: (d?['name'] ?? '').toString());
+    _phone = TextEditingController(text: (d?['phone'] ?? '').toString());
+    _detail = TextEditingController(text: (d?['detail'] ?? '').toString());
 
-    _selectedCity = d?['city'] ?? "台北市";
-    _selectedDistrict = d?['district'] ?? "中正區";
+    // --- 縣市/區域安全初始化（避免 value 不存在於 items 而爆掉） ---
+    final cities = taiwanCityData.keys.toList();
+    final incomingCity = (d?['city'] ?? _selectedCity).toString();
+    _selectedCity = cities.contains(incomingCity)
+        ? incomingCity
+        : (cities.isNotEmpty ? cities.first : "台北市");
 
-    _isDefault = d?['isDefault'] ?? false;
+    final districts = taiwanCityData[_selectedCity] ?? <String>[];
+    final incomingDistrict = (d?['district'] ?? _selectedDistrict).toString();
+    _selectedDistrict = districts.contains(incomingDistrict)
+        ? incomingDistrict
+        : (districts.isNotEmpty ? districts.first : _selectedDistrict);
+
+    _isDefault = (d?['isDefault'] == true);
+  }
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _name.dispose();
+    _phone.dispose();
+    _detail.dispose();
+    super.dispose();
   }
 
   String? _validatePhone(String? v) {
@@ -55,7 +75,8 @@ class _EditAddressPageState extends State<EditAddressPage> {
   void _save() {
     if (!_formKey.currentState!.validate()) return;
 
-    final fullAddress = "$_selectedCity$_selectedDistrict${_detail.text.trim()}";
+    final fullAddress =
+        "$_selectedCity$_selectedDistrict${_detail.text.trim()}";
 
     Navigator.pop(context, {
       "title": _title.text.trim(),
@@ -71,14 +92,21 @@ class _EditAddressPageState extends State<EditAddressPage> {
 
   @override
   Widget build(BuildContext context) {
-    final districts = taiwanCityData[_selectedCity] ?? [];
+    final cityList = taiwanCityData.keys.toList();
+    final districts = taiwanCityData[_selectedCity] ?? <String>[];
+
+    // 再保險一次：如果縣市變更造成區域不存在，保證 UI 不會爆
+    final safeCity = cityList.contains(_selectedCity)
+        ? _selectedCity
+        : (cityList.isNotEmpty ? cityList.first : _selectedCity);
+    final safeDistrict = districts.contains(_selectedDistrict)
+        ? _selectedDistrict
+        : (districts.isNotEmpty ? districts.first : _selectedDistrict);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.data == null ? "新增地址" : "編輯地址"),
-        actions: [
-          IconButton(onPressed: _save, icon: const Icon(Icons.check)),
-        ],
+        actions: [IconButton(onPressed: _save, icon: const Icon(Icons.check))],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -92,7 +120,8 @@ class _EditAddressPageState extends State<EditAddressPage> {
                   labelText: "標籤（家、公司…）",
                   border: OutlineInputBorder(),
                 ),
-                validator: (v) => v!.trim().isEmpty ? "請輸入標籤名稱" : null,
+                validator: (v) =>
+                    (v?.trim().isEmpty ?? true) ? "請輸入標籤名稱" : null,
               ),
               const SizedBox(height: 14),
 
@@ -102,7 +131,8 @@ class _EditAddressPageState extends State<EditAddressPage> {
                   labelText: "收件人姓名",
                   border: OutlineInputBorder(),
                 ),
-                validator: (v) => v!.trim().isEmpty ? "請輸入收件人姓名" : null,
+                validator: (v) =>
+                    (v?.trim().isEmpty ?? true) ? "請輸入收件人姓名" : null,
               ),
               const SizedBox(height: 14),
 
@@ -117,33 +147,47 @@ class _EditAddressPageState extends State<EditAddressPage> {
               ),
               const SizedBox(height: 20),
 
+              // ✅ 修正：value -> initialValue（避免 deprecated_member_use）
               DropdownButtonFormField<String>(
-                value: _selectedCity,
+                key: ValueKey(
+                  'city_$safeCity',
+                ), // 避免 initialValue 因 rebuild 不更新造成怪狀態
+                initialValue: safeCity,
                 decoration: const InputDecoration(
                   labelText: "縣市",
                   border: OutlineInputBorder(),
                 ),
-                items: taiwanCityData.keys
-                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                items: cityList
+                    .map(
+                      (c) => DropdownMenuItem<String>(value: c, child: Text(c)),
+                    )
                     .toList(),
                 onChanged: (v) {
                   if (v == null) return;
                   setState(() {
                     _selectedCity = v;
-                    _selectedDistrict = taiwanCityData[_selectedCity]!.first;
+                    final newDistricts =
+                        taiwanCityData[_selectedCity] ?? <String>[];
+                    _selectedDistrict = newDistricts.isNotEmpty
+                        ? newDistricts.first
+                        : _selectedDistrict;
                   });
                 },
               ),
               const SizedBox(height: 14),
 
+              // ✅ 修正：value -> initialValue（避免 deprecated_member_use）
               DropdownButtonFormField<String>(
-                value: _selectedDistrict,
+                key: ValueKey('district_${_selectedCity}_$safeDistrict'),
+                initialValue: safeDistrict,
                 decoration: const InputDecoration(
                   labelText: "鄉鎮／區",
                   border: OutlineInputBorder(),
                 ),
                 items: districts
-                    .map((d) => DropdownMenuItem(value: d, child: Text(d)))
+                    .map(
+                      (d) => DropdownMenuItem<String>(value: d, child: Text(d)),
+                    )
                     .toList(),
                 onChanged: (v) {
                   if (v == null) return;
@@ -169,7 +213,8 @@ class _EditAddressPageState extends State<EditAddressPage> {
                   labelText: "詳細地址（路名、巷弄、門牌樓層…）",
                   border: OutlineInputBorder(),
                 ),
-                validator: (v) => v!.trim().isEmpty ? "請輸入詳細地址" : null,
+                validator: (v) =>
+                    (v?.trim().isEmpty ?? true) ? "請輸入詳細地址" : null,
               ),
               const SizedBox(height: 20),
 

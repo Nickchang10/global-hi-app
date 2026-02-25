@@ -1,386 +1,617 @@
 // lib/pages/admin/marketing/campaign_builder_page_v2.dart
 //
-// ✅ CampaignBuilderPage v2（支援節點連線與流程模擬｜完整版）
+// ✅ CampaignBuilderPageV2（行銷活動建立器 v2｜完整版｜可直接編譯）
 // ------------------------------------------------------------
-// - 節點類型：segment / auto_campaign / lottery / notify
-// - Firestore 集合：/campaign_flows, /campaign_links
-// - 功能：
-//   1. 拖曳節點
-//   2. 連線箭頭顯示上下游節點
-//   3. 編輯節點（名稱、描述、類型）
-//   4. 新增 / 刪除節點、連線
-//   5. 流程模擬（顯示執行順序）
+// ✅ FIX: use_build_context_synchronously
+// - 所有 await 之後會用到 context（SnackBar / Navigator / showDialog）
+//   都先做 if (!mounted) return;
+//
+// ✅ FIX: unnecessary_cast
+// - _loadPickLists() 改用 Future.wait<QuerySnapshot<Map<String,dynamic>>>()
+//   讓 results 直接是正確型別，移除不必要 cast
+// ------------------------------------------------------------
+//
+// 功能（通用版）
+// - 新增 / 編輯活動（collection: marketing_campaigns_v2，可自行改）
+// - 基本欄位：title / message / type / channel / segment / coupon / lottery
+// - 排程：sendAt（可空=立即）
+// - 狀態：isActive（可切換）
+// - 載入 segments / coupons / lotteries 下拉選單（各取前 500）
+//
+// 依賴：cloud_firestore, flutter/material, intl
 // ------------------------------------------------------------
 
-import 'dart:math';
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 class CampaignBuilderPageV2 extends StatefulWidget {
-  const CampaignBuilderPageV2({super.key});
+  const CampaignBuilderPageV2({
+    super.key,
+    this.campaignId,
+    this.collectionName = 'marketing_campaigns_v2',
+  });
+
+  final String? campaignId;
+  final String collectionName;
 
   @override
   State<CampaignBuilderPageV2> createState() => _CampaignBuilderPageV2State();
 }
 
 class _CampaignBuilderPageV2State extends State<CampaignBuilderPageV2> {
+  // UI
   bool _loading = true;
-  List<Map<String, dynamic>> _nodes = [];
-  List<Map<String, dynamic>> _links = [];
-  String? _linkStartNode;
-  String? _selectedNode;
+  bool _saving = false;
+
+  // form controllers
+  final _titleCtrl = TextEditingController();
+  final _messageCtrl = TextEditingController();
+
+  // selections
+  String _type = 'custom'; // custom/coupon/lottery/segment_blast
+  String _channel = 'push'; // push/line/email/inapp
+  String _segmentId = 'all';
+  String? _couponId;
+  String? _lotteryId;
+
+  bool _isActive = true;
+
+  // schedule
+  DateTime? _sendAt;
+
+  // pick lists
+  List<_PickItem> _segments = const [];
+  List<_PickItem> _coupons = const [];
+  List<_PickItem> _lotteries = const [];
+
+  String get _modeTitle => widget.campaignId == null ? '新增活動' : '編輯活動';
 
   @override
   void initState() {
     super.initState();
-    _loadFlows();
+    _bootstrap();
   }
 
-  Future<void> _loadFlows() async {
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _messageCtrl.dispose();
+    super.dispose();
+  }
+
+  // ============================================================
+  // Helpers
+  // ============================================================
+
+  String _s(dynamic v, {String fallback = ''}) {
+    if (v == null) return fallback;
+    return v.toString();
+  }
+
+  bool _b(dynamic v, {bool fallback = false}) {
+    if (v == true) return true;
+    if (v == false) return false;
+    return fallback;
+  }
+
+  DateTime? _dt(dynamic v) {
+    if (v == null) return null;
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+    if (v is String) return DateTime.tryParse(v);
+    return null;
+  }
+
+  // ============================================================
+  // Load
+  // ============================================================
+
+  Future<void> _bootstrap() async {
     setState(() => _loading = true);
     try {
-      final fs = FirebaseFirestore.instance;
-      final nodeSnap = await fs.collection('campaign_flows').get();
-      final linkSnap = await fs.collection('campaign_links').get();
-
-      setState(() {
-        _nodes = nodeSnap.docs.map((d) => {...d.data(), 'id': d.id}).toList();
-        _links = linkSnap.docs.map((d) => {...d.data(), 'id': d.id}).toList();
-        _loading = false;
-      });
-    } catch (e) {
+      await Future.wait([
+        _loadPickLists(),
+        if (widget.campaignId != null) _loadCampaign(widget.campaignId!),
+      ]);
+      if (!mounted) return;
       setState(() => _loading = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('載入失敗：$e')));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('初始化失敗：$e')));
     }
   }
 
-  Future<void> _saveNode(Map<String, dynamic> node) async {
-    final ref = FirebaseFirestore.instance.collection('campaign_flows');
-    if (node['id'] == null) {
-      await ref.add({
-        ...node,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    } else {
-      await ref.doc(node['id']).update({
-        ...node,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    }
-    _loadFlows();
-  }
-
-  Future<void> _deleteNode(String id) async {
+  Future<void> _loadPickLists() async {
     final fs = FirebaseFirestore.instance;
-    await fs.collection('campaign_flows').doc(id).delete();
-    final toDelete = _links.where((l) => l['from'] == id || l['to'] == id);
-    for (final l in toDelete) {
-      await fs.collection('campaign_links').doc(l['id']).delete();
-    }
-    _loadFlows();
+
+    final Future<QuerySnapshot<Map<String, dynamic>>> segFuture = fs
+        .collection('segments')
+        .orderBy('updatedAt', descending: true)
+        .limit(500)
+        .get();
+
+    final Future<QuerySnapshot<Map<String, dynamic>>> couponFuture = fs
+        .collection('coupons')
+        .orderBy('updatedAt', descending: true)
+        .limit(500)
+        .get();
+
+    final Future<QuerySnapshot<Map<String, dynamic>>> lotteryFuture = fs
+        .collection('lotteries')
+        .orderBy('updatedAt', descending: true)
+        .limit(500)
+        .get();
+
+    // ✅ FIX: 給 Future.wait 泛型，results 直接是正確型別 -> 不需要任何 cast
+    final List<QuerySnapshot<Map<String, dynamic>>> results =
+        await Future.wait<QuerySnapshot<Map<String, dynamic>>>([
+          segFuture,
+          couponFuture,
+          lotteryFuture,
+        ]);
+
+    final segSnap = results[0];
+    final couponSnap = results[1];
+    final lotterySnap = results[2];
+
+    final segs = <_PickItem>[
+      const _PickItem(id: 'all', label: '全部'),
+      ...segSnap.docs.map((d) {
+        final m = d.data();
+        final title = _s(m['title'], fallback: _s(m['name'], fallback: d.id));
+        return _PickItem(id: d.id, label: title);
+      }),
+    ];
+
+    final coupons = couponSnap.docs
+        .map((d) {
+          final m = d.data();
+          final title = _s(m['title'], fallback: _s(m['name'], fallback: d.id));
+          return _PickItem(id: d.id, label: title);
+        })
+        .toList(growable: false);
+
+    final lotteries = lotterySnap.docs
+        .map((d) {
+          final m = d.data();
+          final title = _s(m['title'], fallback: _s(m['name'], fallback: d.id));
+          return _PickItem(id: d.id, label: title);
+        })
+        .toList(growable: false);
+
+    if (!mounted) return;
+    setState(() {
+      _segments = segs;
+      _coupons = coupons;
+      _lotteries = lotteries;
+    });
   }
 
-  Future<void> _createLink(String from, String to) async {
-    if (from == to) return;
-    final exists = _links.any((l) => l['from'] == from && l['to'] == to);
-    if (exists) return;
-    await FirebaseFirestore.instance.collection('campaign_links').add({
-      'from': from,
-      'to': to,
-      'createdAt': FieldValue.serverTimestamp(),
+  Future<void> _loadCampaign(String id) async {
+    final doc = await FirebaseFirestore.instance
+        .collection(widget.collectionName)
+        .doc(id)
+        .get();
+
+    if (!doc.exists) return;
+
+    final m = doc.data() ?? <String, dynamic>{};
+
+    if (!mounted) return;
+    setState(() {
+      _titleCtrl.text = _s(m['title']);
+      _messageCtrl.text = _s(m['message']);
+
+      final t = _s(m['type'], fallback: 'custom').trim();
+      _type = t.isEmpty ? 'custom' : t;
+
+      final ch = _s(m['channel'], fallback: 'push').trim();
+      _channel = ch.isEmpty ? 'push' : ch;
+
+      final seg = _s(m['segmentId'], fallback: 'all').trim();
+      _segmentId = seg.isEmpty ? 'all' : seg;
+
+      final cId = _s(m['couponId']).trim();
+      _couponId = cId.isEmpty ? null : cId;
+
+      final lId = _s(m['lotteryId']).trim();
+      _lotteryId = lId.isEmpty ? null : lId;
+
+      _isActive = _b(m['isActive'], fallback: true);
+      _sendAt = _dt(m['sendAt']);
     });
-    _loadFlows();
   }
+
+  // ============================================================
+  // Pick date time
+  // ============================================================
+
+  Future<void> _pickSendAt() async {
+    final now = DateTime.now();
+    final base = _sendAt ?? now;
+
+    final d = await showDatePicker(
+      context: context,
+      initialDate: base,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 5),
+    );
+    if (d == null) return;
+
+    if (!mounted) return;
+    final t = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(base),
+    );
+    if (t == null) return;
+
+    final picked = DateTime(d.year, d.month, d.day, t.hour, t.minute);
+    if (!mounted) return;
+    setState(() => _sendAt = picked);
+  }
+
+  void _clearSendAt() => setState(() => _sendAt = null);
+
+  // ============================================================
+  // Validate & Save
+  // ============================================================
+
+  bool _validate() {
+    final title = _titleCtrl.text.trim();
+    if (title.isEmpty) {
+      _toast('請輸入活動標題');
+      return false;
+    }
+
+    if (_type == 'coupon' && (_couponId == null || _couponId!.trim().isEmpty)) {
+      _toast('類型為「優惠券」時，請選擇 coupon');
+      return false;
+    }
+    if (_type == 'lottery' &&
+        (_lotteryId == null || _lotteryId!.trim().isEmpty)) {
+      _toast('類型為「抽獎」時，請選擇 lottery');
+      return false;
+    }
+    return true;
+  }
+
+  void _toast(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    if (!_validate()) return;
+
+    setState(() => _saving = true);
+
+    try {
+      final fs = FirebaseFirestore.instance;
+      final ref = widget.campaignId == null
+          ? fs.collection(widget.collectionName).doc()
+          : fs.collection(widget.collectionName).doc(widget.campaignId);
+
+      final now = FieldValue.serverTimestamp();
+
+      final payload = <String, dynamic>{
+        'title': _titleCtrl.text.trim(),
+        'message': _messageCtrl.text.trim(),
+        'type': _type,
+        'channel': _channel,
+        'segmentId': _segmentId,
+        'couponId': _type == 'coupon' ? _couponId : null,
+        'lotteryId': _type == 'lottery' ? _lotteryId : null,
+        'isActive': _isActive,
+        'sendAt': _sendAt == null ? null : Timestamp.fromDate(_sendAt!),
+        'updatedAt': now,
+        if (widget.campaignId == null) 'createdAt': now,
+      };
+
+      payload.removeWhere((_, v) => v == null);
+
+      await ref.set(payload, SetOptions(merge: true));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已儲存：${ref.id}')));
+      Navigator.pop(context, {'id': ref.id});
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  // ============================================================
+  // Preview
+  // ============================================================
+
+  void _preview() {
+    final df = DateFormat('yyyy/MM/dd HH:mm');
+    final sendAtText = _sendAt == null ? '立即' : df.format(_sendAt!);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '預覽',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _kv('標題', _titleCtrl.text.trim()),
+                  _kv('訊息', _messageCtrl.text.trim()),
+                  _kv('類型', _type),
+                  _kv('渠道', _channel),
+                  _kv('Segment', _segmentId),
+                  _kv('Coupon', _couponId ?? '-'),
+                  _kv('Lottery', _lotteryId ?? '-'),
+                  _kv('排程', sendAtText),
+                  _kv('啟用', _isActive ? '是' : '否'),
+                  const SizedBox(height: 16),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('關閉'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    final vv = v.trim().isEmpty ? '-' : v.trim();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 88,
+            child: Text(k, style: const TextStyle(fontWeight: FontWeight.w800)),
+          ),
+          Expanded(child: Text(vv)),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // UI
+  // ============================================================
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    final df = DateFormat('yyyy/MM/dd HH:mm');
+    final sendAtText = _sendAt == null ? '立即' : df.format(_sendAt!);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('行銷流程設計器 v2'),
+        title: Text(_modeTitle),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadFlows),
-          IconButton(icon: const Icon(Icons.play_arrow), onPressed: _simulateFlow),
-          IconButton(icon: const Icon(Icons.add), onPressed: _openEditor),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Stack(
-              children: [
-                InteractiveViewer(
-                  boundaryMargin: const EdgeInsets.all(300),
-                  minScale: 0.5,
-                  maxScale: 2.5,
-                  child: Stack(
-                    children: [
-                      CustomPaint(
-                        painter: _FlowLinkPainter(_nodes, _links),
-                        child: Container(),
-                      ),
-                      for (final node in _nodes) _buildNode(node),
-                    ],
-                  ),
-                ),
-                if (_linkStartNode != null)
-                  Positioned(
-                    bottom: 20,
-                    left: 20,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.cancel),
-                      label: const Text('取消連線模式'),
-                      onPressed: () => setState(() => _linkStartNode = null),
-                    ),
-                  ),
-              ],
-            ),
-    );
-  }
-
-  Widget _buildNode(Map<String, dynamic> node) {
-    final offset = Offset(
-      (node['x'] ?? Random().nextDouble() * 400).toDouble(),
-      (node['y'] ?? Random().nextDouble() * 300).toDouble(),
-    );
-    final selected = _selectedNode == node['id'];
-    final linking = _linkStartNode != null && _linkStartNode == node['id'];
-
-    return Positioned(
-      left: offset.dx,
-      top: offset.dy,
-      child: GestureDetector(
-        onTap: () {
-          if (_linkStartNode != null && _linkStartNode != node['id']) {
-            _createLink(_linkStartNode!, node['id']);
-            setState(() => _linkStartNode = null);
-          } else {
-            setState(() => _selectedNode = node['id']);
-          }
-        },
-        onLongPress: () => setState(() => _linkStartNode = node['id']),
-        onDoubleTap: () => _openEditor(existing: node),
-        child: Draggable<Map<String, dynamic>>(
-          data: node,
-          feedback: _nodeBox(node, selected: true, opacity: 0.6),
-          childWhenDragging: _nodeBox(node, selected: false, opacity: 0.3),
-          onDragEnd: (details) {
-            final box = context.findRenderObject() as RenderBox;
-            final pos = box.globalToLocal(details.offset);
-            node['x'] = pos.dx;
-            node['y'] = pos.dy;
-            _saveNode(node);
-          },
-          child: _nodeBox(node, selected: selected, linking: linking),
-        ),
-      ),
-    );
-  }
-
-  Widget _nodeBox(Map<String, dynamic> node,
-      {bool selected = false, bool linking = false, double opacity = 1}) {
-    final color = _colorByType(node['type'] ?? 'segment');
-    return Opacity(
-      opacity: opacity,
-      child: Container(
-        width: 160,
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: color.withOpacity(selected ? 0.95 : 0.8),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: linking ? Colors.red : selected ? Colors.blue : Colors.white,
-            width: 2,
+          IconButton(
+            tooltip: '預覽',
+            onPressed: _preview,
+            icon: const Icon(Icons.visibility),
           ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(_iconByType(node['type']), color: Colors.white),
-            const SizedBox(height: 6),
-            Text(node['title'] ?? '未命名',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.bold)),
-            Text(node['type'] ?? '',
-                style: const TextStyle(color: Colors.white70, fontSize: 12)),
-            IconButton(
-              icon: const Icon(Icons.delete, color: Colors.white70, size: 18),
-              onPressed: () => _confirmDelete(node['id']),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _confirmDelete(String id) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除節點'),
-        content: const Text('確定要刪除此節點及其連線嗎？'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _deleteNode(id);
-            },
-            child: const Text('刪除', style: TextStyle(color: Colors.red)),
+          IconButton(
+            tooltip: '儲存',
+            onPressed: _saving ? null : _save,
+            icon: _saving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save),
           ),
         ],
       ),
-    );
-  }
-
-  // =====================================================
-  // 模擬流程
-  // =====================================================
-  void _simulateFlow() {
-    if (_nodes.isEmpty) return;
-    final startNodes = _nodes.where((n) => !_links.any((l) => l['to'] == n['id']));
-    final sb = StringBuffer();
-    for (final start in startNodes) {
-      _simulateNode(start['id'], sb, 0);
-    }
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('流程模擬結果'),
-        content: SingleChildScrollView(child: Text(sb.toString())),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('關閉')),
-        ],
-      ),
-    );
-  }
-
-  void _simulateNode(String id, StringBuffer sb, int depth) {
-    final node = _nodes.firstWhere((n) => n['id'] == id, orElse: () => {});
-    if (node.isEmpty) return;
-    sb.writeln('${'  ' * depth}➡ ${node['title']} (${node['type']})');
-    final nextLinks = _links.where((l) => l['from'] == id);
-    for (final l in nextLinks) {
-      _simulateNode(l['to'], sb, depth + 1);
-    }
-  }
-
-  // =====================================================
-  // 編輯器 Dialog
-  // =====================================================
-  Future<void> _openEditor({Map<String, dynamic>? existing}) async {
-    final titleCtrl = TextEditingController(text: existing?['title'] ?? '');
-    String type = existing?['type'] ?? 'segment';
-    final descCtrl = TextEditingController(text: existing?['description'] ?? '');
-
-    await showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(existing == null ? '新增節點' : '編輯節點'),
-        content: SingleChildScrollView(
-          child: Column(
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _sectionTitle('基本資訊'),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _titleCtrl,
+            decoration: const InputDecoration(
+              labelText: '活動標題',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _messageCtrl,
+            minLines: 3,
+            maxLines: 8,
+            decoration: const InputDecoration(
+              labelText: '訊息內容',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 18),
+          _sectionTitle('投放設定'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              TextField(
-                controller: titleCtrl,
-                decoration: const InputDecoration(labelText: '節點名稱'),
-              ),
-              DropdownButtonFormField<String>(
-                value: type,
+              _dropdown<String>(
+                label: '類型',
+                value: _type,
                 items: const [
-                  DropdownMenuItem(value: 'segment', child: Text('受眾分群')),
-                  DropdownMenuItem(value: 'auto_campaign', child: Text('自動派發')),
-                  DropdownMenuItem(value: 'lottery', child: Text('抽獎活動')),
-                  DropdownMenuItem(value: 'notify', child: Text('推播通知')),
+                  DropdownMenuItem(value: 'custom', child: Text('自訂')),
+                  DropdownMenuItem(value: 'coupon', child: Text('優惠券')),
+                  DropdownMenuItem(value: 'lottery', child: Text('抽獎')),
+                  DropdownMenuItem(value: 'segment_blast', child: Text('分群群發')),
                 ],
-                onChanged: (v) => type = v ?? 'segment',
-                decoration: const InputDecoration(labelText: '節點類型'),
+                onChanged: (v) {
+                  if (v == null) return;
+                  setState(() {
+                    _type = v;
+                    if (_type != 'coupon') _couponId = null;
+                    if (_type != 'lottery') _lotteryId = null;
+                  });
+                },
               ),
-              TextField(
-                controller: descCtrl,
-                decoration: const InputDecoration(labelText: '描述'),
-                maxLines: 2,
+              _dropdown<String>(
+                label: '渠道',
+                value: _channel,
+                items: const [
+                  DropdownMenuItem(value: 'push', child: Text('推播')),
+                  DropdownMenuItem(value: 'line', child: Text('LINE')),
+                  DropdownMenuItem(value: 'email', child: Text('Email')),
+                  DropdownMenuItem(value: 'inapp', child: Text('站內通知')),
+                ],
+                onChanged: (v) => setState(() => _channel = v ?? 'push'),
+              ),
+              _dropdown<String>(
+                label: '分群',
+                value: _segments.any((e) => e.id == _segmentId)
+                    ? _segmentId
+                    : 'all',
+                items: _segments
+                    .map(
+                      (s) =>
+                          DropdownMenuItem(value: s.id, child: Text(s.label)),
+                    )
+                    .toList(growable: false),
+                onChanged: (v) => setState(() => _segmentId = v ?? 'all'),
               ),
             ],
           ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          ElevatedButton(
-            onPressed: () {
-              final node = {
-                'title': titleCtrl.text.trim(),
-                'description': descCtrl.text.trim(),
-                'type': type,
-                'x': existing?['x'] ?? Random().nextDouble() * 400,
-                'y': existing?['y'] ?? Random().nextDouble() * 300,
-                'id': existing?['id'],
-              };
-              Navigator.pop(context);
-              _saveNode(node);
-            },
-            child: const Text('儲存'),
+          if (_type == 'coupon') ...[
+            const SizedBox(height: 12),
+            _dropdown<String>(
+              label: 'Coupon',
+              value: _couponId,
+              hint: '選擇優惠券',
+              items: _coupons
+                  .map(
+                    (c) => DropdownMenuItem(value: c.id, child: Text(c.label)),
+                  )
+                  .toList(growable: false),
+              onChanged: (v) => setState(() => _couponId = v),
+            ),
+          ],
+          if (_type == 'lottery') ...[
+            const SizedBox(height: 12),
+            _dropdown<String>(
+              label: 'Lottery',
+              value: _lotteryId,
+              hint: '選擇抽獎活動',
+              items: _lotteries
+                  .map(
+                    (c) => DropdownMenuItem(value: c.id, child: Text(c.label)),
+                  )
+                  .toList(growable: false),
+              onChanged: (v) => setState(() => _lotteryId = v),
+            ),
+          ],
+          const SizedBox(height: 18),
+          _sectionTitle('排程 / 狀態'),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _pickSendAt,
+                  icon: const Icon(Icons.schedule),
+                  label: Text('發送時間：$sendAtText'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              TextButton(onPressed: _clearSendAt, child: const Text('清除')),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            value: _isActive,
+            onChanged: (v) => setState(() => _isActive = v),
+            title: const Text('啟用'),
+            subtitle: const Text('停用時不會被派發/執行（依你的後端邏輯）'),
+          ),
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            onPressed: _saving ? null : _save,
+            icon: const Icon(Icons.save),
+            label: Text(_saving ? '儲存中...' : '儲存'),
           ),
         ],
       ),
     );
   }
 
-  IconData _iconByType(String type) {
-    switch (type) {
-      case 'segment':
-        return Icons.people;
-      case 'auto_campaign':
-        return Icons.campaign;
-      case 'lottery':
-        return Icons.emoji_events;
-      case 'notify':
-        return Icons.notifications_active;
-      default:
-        return Icons.extension;
-    }
+  Widget _sectionTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+    );
   }
 
-  Color _colorByType(String type) {
-    switch (type) {
-      case 'segment':
-        return Colors.teal;
-      case 'auto_campaign':
-        return Colors.blueAccent;
-      case 'lottery':
-        return Colors.orange;
-      case 'notify':
-        return Colors.purple;
-      default:
-        return Colors.grey;
-    }
+  Widget _dropdown<T>({
+    required String label,
+    required T? value,
+    required List<DropdownMenuItem<T>> items,
+    required ValueChanged<T?> onChanged,
+    String? hint,
+  }) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 240),
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 6,
+          ),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<T>(
+            value: value,
+            hint: hint == null ? null : Text(hint),
+            isExpanded: true,
+            items: items,
+            onChanged: onChanged,
+          ),
+        ),
+      ),
+    );
   }
 }
 
-// =====================================================
-// 自訂連線繪圖
-// =====================================================
-class _FlowLinkPainter extends CustomPainter {
-  final List<Map<String, dynamic>> nodes;
-  final List<Map<String, dynamic>> links;
-
-  _FlowLinkPainter(this.nodes, this.links);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.black26
-      ..strokeWidth = 2;
-
-    for (final l in links) {
-      final from = nodes.firstWhere((n) => n['id'] == l['from'], orElse: () => {});
-      final to = nodes.firstWhere((n) => n['id'] == l['to'], orElse: () => {});
-      if (from.isEmpty || to.isEmpty) continue;
-      final p1 = Offset((from['x'] ?? 0) + 80, (from['y'] ?? 0) + 40);
-      final p2 = Offset((to['x'] ?? 0) + 80, (to['y'] ?? 0) + 40);
-      canvas.drawLine(p1, p2, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+class _PickItem {
+  final String id;
+  final String label;
+  const _PickItem({required this.id, required this.label});
 }

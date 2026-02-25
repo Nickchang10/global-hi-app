@@ -1,107 +1,263 @@
+// lib/services/api_service.dart
+//
+// ✅ ApiService（HTTP API 封裝｜可編譯完整版｜已避免 unnecessary_cast）
+// ------------------------------------------------------------
+// - 支援 GET / POST / PUT / DELETE
+// - 自動帶 Firebase idToken（可關閉）
+// - JSON decode 安全處理：Map / List / String / 空 body
+// - 統一回傳 ApiResponse，方便 UI 顯示錯誤
+//
+// 依賴：
+//   - http
+//   - firebase_auth
+// ------------------------------------------------------------
+
 import 'dart:convert';
-import 'package:crypto/crypto.dart';
-import 'package:flutter/material.dart';
-import 'package:encrypt/encrypt.dart' as encrypt;
-import 'auth_service.dart';
-import 'security_service.dart';
 
-/// 🌐 模擬後端伺服器 + 安全封包傳輸層
-///
-/// 功能：
-/// - 模擬 API 請求 / 回應
-/// - AES 封包加密
-/// - Token 驗證
-/// - 防火牆驗證整合
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
+
+class ApiResponse<T> {
+  final bool ok;
+  final int statusCode;
+  final T? data;
+  final String? message;
+  final Object? error;
+
+  const ApiResponse({
+    required this.ok,
+    required this.statusCode,
+    this.data,
+    this.message,
+    this.error,
+  });
+
+  static ApiResponse<T> success<T>(int code, T data) =>
+      ApiResponse<T>(ok: true, statusCode: code, data: data);
+
+  static ApiResponse<T> fail<T>(int code, {String? message, Object? error}) =>
+      ApiResponse<T>(
+        ok: false,
+        statusCode: code,
+        message: message,
+        error: error,
+      );
+}
+
 class ApiService {
-  static final ApiService instance = ApiService._internal();
-  ApiService._internal();
+  ApiService({
+    required this.baseUrl,
+    FirebaseAuth? auth,
+    http.Client? client,
+    this.defaultTimeout = const Duration(seconds: 25),
+  }) : _auth = auth ?? FirebaseAuth.instance,
+       _client = client ?? http.Client();
 
-  final _serverKey = "OsmileSecretKey123"; // 模擬伺服器金鑰
-  String? _token;
+  final String baseUrl;
+  final Duration defaultTimeout;
 
-  /// 取得目前 Token
-  String? get token => _token;
+  final FirebaseAuth _auth;
+  final http.Client _client;
 
-  /// 生成 JWT-like Token
-  Future<String> generateToken(String username) async {
-    final header = base64UrlEncode(utf8.encode('{"alg":"HS256","typ":"JWT"}'));
-    final payload = base64UrlEncode(
-        utf8.encode('{"user":"$username","iat":${DateTime.now().millisecondsSinceEpoch}}'));
-    final signature = base64UrlEncode(
-        Hmac(sha256, utf8.encode(_serverKey)).convert(utf8.encode("$header.$payload")).bytes);
-
-    _token = "$header.$payload.$signature";
-    return _token!;
-  }
-
-  /// 驗證 Token 合法性
-  bool validateToken(String token) {
-    try {
-      final parts = token.split('.');
-      if (parts.length != 3) return false;
-      final signature = base64UrlEncode(
-          Hmac(sha256, utf8.encode(_serverKey))
-              .convert(utf8.encode("${parts[0]}.${parts[1]}"))
-              .bytes);
-      return signature == parts[2];
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// AES 加密
-  String encryptPayload(Map<String, dynamic> data) {
-    final key = encrypt.Key.fromUtf8(_serverKey.substring(0, 16));
-    final iv = encrypt.IV.fromLength(16);
-    final encrypter = encrypt.Encrypter(encrypt.AES(key));
-    final encrypted =
-        encrypter.encrypt(jsonEncode(data), iv: iv);
-    return encrypted.base64;
-  }
-
-  /// AES 解密
-  Map<String, dynamic> decryptPayload(String encryptedData) {
-    final key = encrypt.Key.fromUtf8(_serverKey.substring(0, 16));
-    final iv = encrypt.IV.fromLength(16);
-    final encrypter = encrypt.Encrypter(encrypt.AES(key));
-    final decrypted =
-        encrypter.decrypt64(encryptedData, iv: iv);
-    return jsonDecode(decrypted);
-  }
-
-  /// 🔗 模擬安全 API 請求
-  Future<Map<String, dynamic>> sendSecureRequest({
-    required String endpoint,
-    required Map<String, dynamic> payload,
-    bool requireAuth = true,
+  /// 若你不想帶 Firebase token（例如公開 API），呼叫時傳 false
+  Future<Map<String, String>> _buildHeaders({
+    bool withAuthToken = true,
+    Map<String, String>? extra,
   }) async {
-    final username = AuthService.instance.username ?? "訪客";
-    final security = SecurityService.instance;
-
-    // 🔒 防火牆驗證
-    if (!security.validateAccess(username, endpoint)) {
-      return {"status": 403, "message": "封鎖使用者請求被攔截"};
-    }
-
-    // 🔑 驗證 Token
-    if (requireAuth && (_token == null || !validateToken(_token!))) {
-      return {"status": 401, "message": "未授權的請求"};
-    }
-
-    // 🔐 加密傳送
-    final encrypted = encryptPayload(payload);
-    await Future.delayed(const Duration(milliseconds: 600));
-
-    // 🔓 模擬伺服器回傳
-    final response = {
-      "status": 200,
-      "endpoint": endpoint,
-      "encrypted": encrypted,
-      "timestamp": DateTime.now().toIso8601String(),
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      'Content-Type': 'application/json; charset=utf-8',
     };
 
-    security._addLog("API請求", "成功處理安全請求：$endpoint");
+    if (withAuthToken) {
+      final user = _auth.currentUser;
+      if (user != null) {
+        final token = await user.getIdToken();
+        headers['Authorization'] = 'Bearer $token';
+      }
+    }
 
-    return response;
+    if (extra != null && extra.isNotEmpty) {
+      headers.addAll(extra);
+    }
+    return headers;
+  }
+
+  Uri _uri(String path, [Map<String, dynamic>? query]) {
+    final cleanBase = baseUrl.endsWith('/')
+        ? baseUrl.substring(0, baseUrl.length - 1)
+        : baseUrl;
+    final cleanPath = path.startsWith('/') ? path : '/$path';
+    final u = Uri.parse('$cleanBase$cleanPath');
+    if (query == null || query.isEmpty) return u;
+
+    // query 轉成 String（避免 Object -> String 問題）
+    final q = <String, String>{};
+    query.forEach((k, v) {
+      if (v == null) return;
+      q[k] = v.toString();
+    });
+    return u.replace(queryParameters: q);
+  }
+
+  // -------------------------
+  // Public methods
+  // -------------------------
+
+  Future<ApiResponse<dynamic>> get(
+    String path, {
+    Map<String, dynamic>? query,
+    bool withAuthToken = true,
+    Map<String, String>? headers,
+    Duration? timeout,
+  }) async {
+    try {
+      final res = await _client
+          .get(
+            _uri(path, query),
+            headers: await _buildHeaders(
+              withAuthToken: withAuthToken,
+              extra: headers,
+            ),
+          )
+          .timeout(timeout ?? defaultTimeout);
+
+      return _handleResponse(res);
+    } catch (e) {
+      return ApiResponse.fail(-1, message: 'GET 失敗', error: e);
+    }
+  }
+
+  Future<ApiResponse<dynamic>> post(
+    String path, {
+    Object? body,
+    Map<String, dynamic>? query,
+    bool withAuthToken = true,
+    Map<String, String>? headers,
+    Duration? timeout,
+  }) async {
+    try {
+      final res = await _client
+          .post(
+            _uri(path, query),
+            headers: await _buildHeaders(
+              withAuthToken: withAuthToken,
+              extra: headers,
+            ),
+            body: body == null ? null : jsonEncode(body),
+          )
+          .timeout(timeout ?? defaultTimeout);
+
+      return _handleResponse(res);
+    } catch (e) {
+      return ApiResponse.fail(-1, message: 'POST 失敗', error: e);
+    }
+  }
+
+  Future<ApiResponse<dynamic>> put(
+    String path, {
+    Object? body,
+    Map<String, dynamic>? query,
+    bool withAuthToken = true,
+    Map<String, String>? headers,
+    Duration? timeout,
+  }) async {
+    try {
+      final res = await _client
+          .put(
+            _uri(path, query),
+            headers: await _buildHeaders(
+              withAuthToken: withAuthToken,
+              extra: headers,
+            ),
+            body: body == null ? null : jsonEncode(body),
+          )
+          .timeout(timeout ?? defaultTimeout);
+
+      return _handleResponse(res);
+    } catch (e) {
+      return ApiResponse.fail(-1, message: 'PUT 失敗', error: e);
+    }
+  }
+
+  Future<ApiResponse<dynamic>> delete(
+    String path, {
+    Object? body,
+    Map<String, dynamic>? query,
+    bool withAuthToken = true,
+    Map<String, String>? headers,
+    Duration? timeout,
+  }) async {
+    try {
+      final res = await _client
+          .delete(
+            _uri(path, query),
+            headers: await _buildHeaders(
+              withAuthToken: withAuthToken,
+              extra: headers,
+            ),
+            body: body == null ? null : jsonEncode(body),
+          )
+          .timeout(timeout ?? defaultTimeout);
+
+      return _handleResponse(res);
+    } catch (e) {
+      return ApiResponse.fail(-1, message: 'DELETE 失敗', error: e);
+    }
+  }
+
+  // -------------------------
+  // Response decode (no unnecessary cast)
+  // -------------------------
+
+  ApiResponse<dynamic> _handleResponse(http.Response res) {
+    final code = res.statusCode;
+    final raw = res.body.trim();
+
+    dynamic decoded;
+    if (raw.isEmpty) {
+      decoded = null;
+    } else {
+      decoded = _tryJsonDecode(raw);
+    }
+
+    // 你若後端習慣 { ok, message, data }，可在這裡集中解包
+    String? message;
+    dynamic data = decoded;
+
+    if (decoded is Map<String, dynamic>) {
+      // 這裡不用任何 `as Map<String, dynamic>`，避免 unnecessary_cast
+      if (decoded.containsKey('message')) {
+        message = decoded['message']?.toString();
+      }
+      if (decoded.containsKey('data')) {
+        data = decoded['data'];
+      }
+    }
+
+    if (code >= 200 && code < 300) {
+      return ApiResponse.success(code, data);
+    }
+
+    // error body fallback message
+    message ??= 'HTTP $code';
+    if (decoded is Map<String, dynamic>) {
+      // 常見錯誤欄位
+      message = decoded['error']?.toString() ?? message;
+    }
+    return ApiResponse.fail(code, message: message, error: decoded);
+  }
+
+  dynamic _tryJsonDecode(String raw) {
+    try {
+      return jsonDecode(raw);
+    } catch (_) {
+      // 不是 JSON 就回字串
+      return raw;
+    }
+  }
+
+  void dispose() {
+    _client.close();
   }
 }

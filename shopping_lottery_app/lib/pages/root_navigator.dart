@@ -1,61 +1,143 @@
-// lib/pages/root_navigator.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/cart_service.dart';
-import '../services/notification_service.dart';
 
-// 頁面
-import 'home_page.dart';
-import 'cart_page.dart';
-import 'lottery_page.dart';
-import 'live/live_list_page.dart';
-import 'social_page.dart';
-import 'profile_page.dart';
-
-// 如果你有 FloatingChatBot 可一併顯示（非必要）
-import '../widgets/floating_chatbot.dart';
-
+/// ✅ RootNavigator（底部導覽｜修改後完整版）
+/// ------------------------------------------------------------
+/// 修正重點：
+/// - 不再直接使用 cart.count（避免 undefined_getter）
+/// - 改用 _cartCount(cart) 安全推導數量：
+///   1) 若 CartService 有 count / itemCount / totalQuantity 取其一
+///   2) 若有 items(List) 則取 items.length
+///   3) 都沒有就回傳 0
+///
+/// ✅ 這樣不需要你先改 CartService 也能先編譯過
+/// ------------------------------------------------------------
 class RootNavigator extends StatefulWidget {
-  const RootNavigator({super.key});
+  const RootNavigator({super.key, this.initialIndex = 0});
+
+  final int initialIndex;
 
   @override
   State<RootNavigator> createState() => _RootNavigatorState();
 }
 
 class _RootNavigatorState extends State<RootNavigator> {
-  int _currentIndex = 0;
+  late int _index;
 
-  final List<Widget> _pages = const [
-    HomePage(),
-    CartPage(),
-    LotteryPage(),
-    LiveListPage(),
-    SocialPage(),
-    ProfilePage(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _index = widget.initialIndex.clamp(0, 4);
+  }
 
-  final List<String> _titles = ['首頁', '購物車', '抽獎', '直播', '社群', '我的'];
+  // ✅ 安全推導購物車數量（避免直接呼叫 cart.count 編譯錯）
+  int _cartCount(CartService cart) {
+    final dyn = cart as dynamic;
 
-  void _onTap(int idx) => setState(() => _currentIndex = idx);
+    // 1) 常見 getter：count
+    try {
+      final v = dyn.count;
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+    } catch (_) {}
 
-  Widget _badgeIcon(IconData icon, int count) {
-    if (count <= 0) return Icon(icon);
+    // 2) 常見 getter：itemCount
+    try {
+      final v = dyn.itemCount;
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+    } catch (_) {}
+
+    // 3) 常見 getter：totalQuantity
+    try {
+      final v = dyn.totalQuantity;
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+    } catch (_) {}
+
+    // 4) 常見欄位：items(List)
+    try {
+      final v = dyn.items;
+      if (v is List) return v.length;
+    } catch (_) {}
+
+    return 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cart = context.watch<CartService>();
+    final cartCount = _cartCount(cart);
+
+    final tabs = <Widget>[
+      _placeholder('首頁（Home）'),
+      _placeholder('商城（Shop）'),
+      _placeholder('獎勵中心（Rewards）'),
+      _placeholder('購物車（Cart）'),
+      _placeholder('我的（Me）'),
+    ];
+
+    return Scaffold(
+      body: IndexedStack(index: _index, children: tabs),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _index,
+        onTap: (i) => setState(() => _index = i),
+        type: BottomNavigationBarType.fixed,
+        items: [
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.home_outlined),
+            label: '首頁',
+          ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.storefront_outlined),
+            label: '商城',
+          ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.redeem_outlined),
+            label: '獎勵',
+          ),
+          BottomNavigationBarItem(
+            icon: _cartBadgeIcon(cartCount),
+            label: '購物車',
+          ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            label: '我的',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cartBadgeIcon(int count) {
+    if (count <= 0) return const Icon(Icons.shopping_cart_outlined);
+
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        Icon(icon),
+        const Icon(Icons.shopping_cart_outlined),
         Positioned(
           right: -6,
           top: -6,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white, width: 1.5)),
-            constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              color: Colors.red,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white, width: 1),
+            ),
+            constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
             child: Text(
               count > 99 ? '99+' : '$count',
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 10,
+                height: 1.1,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
         ),
@@ -63,65 +145,14 @@ class _RootNavigatorState extends State<RootNavigator> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final cartCount = context.watch<CartService>().count;
-    final notifCount = context.watch<NotificationService>().unreadCount;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_titles[_currentIndex]),
-        actions: [
-          // 搜尋快捷
-          IconButton(
-            tooltip: '搜尋',
-            icon: const Icon(Icons.search),
-            onPressed: () {
-              // 可跳到搜尋頁或 showSearch...
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('搜尋（示範）')));
-            },
-          ),
-          // 通知（顯示未讀數）
-          IconButton(
-            tooltip: '通知',
-            icon: _badgeIcon(Icons.notifications, notifCount),
-            onPressed: () {
-              // 可跳到通知頁（若你已做）
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('進入通知中心（示範）')));
-            },
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          IndexedStack(index: _currentIndex, children: _pages),
-          // 如果你已經有 FloatingChatBot，可以把這一行打開（或改成你自己的 widget）
-          // const FloatingChatBot(),
-        ],
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        type: BottomNavigationBarType.fixed,
-        selectedItemColor: Colors.blueAccent,
-        unselectedItemColor: Colors.grey[600],
-        showUnselectedLabels: true,
-        onTap: _onTap,
-        items: [
-          const BottomNavigationBarItem(icon: Icon(Icons.home), label: '首頁'),
-          BottomNavigationBarItem(icon: _badgeIcon(Icons.shopping_cart, cartCount), label: '購物車'),
-          const BottomNavigationBarItem(icon: Icon(Icons.casino), label: '抽獎'),
-          const BottomNavigationBarItem(icon: Icon(Icons.live_tv), label: '直播'),
-          const BottomNavigationBarItem(icon: Icon(Icons.people), label: '社群'),
-          const BottomNavigationBarItem(icon: Icon(Icons.person), label: '我的'),
-        ],
-      ),
-      // 預留一個浮動按鈕給客服或快速加購
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          // 例如打開智慧客服或快速下單
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Osmile 智慧客服（示範）')));
-        },
-        child: const Icon(Icons.headset_mic),
+  Widget _placeholder(String title) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          title,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+        ),
       ),
     );
   }

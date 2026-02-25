@@ -1,196 +1,223 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:share_plus/share_plus.dart';
 
-/// 📄 單一通知詳情頁（含分享功能）
-class NotificationDetailPage extends StatelessWidget {
-  final Map<String, dynamic> notification;
+/// ✅ NotificationDetailPage（通知詳情｜最終完整版｜已修正 curly_braces_in_flow_control_structures）
+/// ------------------------------------------------------------
+/// - 讀取：users/{uid}/notifications/{notificationId}
+/// - 自動標記已讀：支援欄位 isRead 或 read（二擇一存在即可）
+/// - 顯示：title / body / type / route / createdAt
+class NotificationDetailPage extends StatefulWidget {
+  final String notificationId;
 
-  const NotificationDetailPage({super.key, required this.notification});
+  const NotificationDetailPage({super.key, required this.notificationId});
+
+  @override
+  State<NotificationDetailPage> createState() => _NotificationDetailPageState();
+}
+
+class _NotificationDetailPageState extends State<NotificationDetailPage> {
+  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+
+  DocumentReference<Map<String, dynamic>> _docRef(String uid) {
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('notifications')
+        .doc(widget.notificationId);
+  }
+
+  String _s(dynamic v, [String fallback = '']) => (v ?? fallback).toString();
+
+  DateTime? _toDateTime(dynamic v) {
+    if (v == null) {
+      return null;
+    }
+    if (v is Timestamp) {
+      return v.toDate();
+    }
+    if (v is DateTime) {
+      return v;
+    }
+    return null;
+  }
+
+  String _fmtYmdHms(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    final hh = d.hour.toString().padLeft(2, '0');
+    final mm = d.minute.toString().padLeft(2, '0');
+    final ss = d.second.toString().padLeft(2, '0');
+    return '$y/$m/$day $hh:$mm:$ss';
+  }
+
+  Future<void> _markReadIfNeeded(String uid, Map<String, dynamic> data) async {
+    final bool isRead = (data['isRead'] ?? data['read'] ?? false) == true;
+
+    if (isRead) {
+      return;
+    }
+
+    try {
+      // 兩種欄位都一起寫（你只用其中一個也沒問題）
+      await _docRef(
+        uid,
+      ).set({'isRead': true, 'read': true}, SetOptions(merge: true));
+    } catch (_) {
+      // 靜默失敗即可（避免影響 UI）
+    }
+  }
+
+  void _goRoute(String route) {
+    if (route.trim().isEmpty) {
+      return;
+    }
+    Navigator.of(context).pushNamed(route.trim());
+  }
 
   @override
   Widget build(BuildContext context) {
-    final time = notification["time"] as DateTime;
-    final title = notification["title"] ?? "通知詳情";
-    final message = notification["message"] ?? "無內容";
-    final source = _detectSource(message);
+    final uid = _uid;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("通知詳情"),
-        backgroundColor: const Color(0xFF007BFF),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () {
-              final shareText = StringBuffer()
-                ..writeln("【$title】")
-                ..writeln(message)
-                ..writeln("")
-                ..writeln("來源：$source")
-                ..writeln("時間：${_formatTime(time)}");
-              Share.share(
-                shareText.toString(),
-                subject: title.toString(),
-              );
-            },
-          ),
-        ],
-      ),
-      body: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(20),
-        color: Colors.grey[100],
-        child: Card(
-          elevation: 3,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 🔹 標題
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF007BFF),
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // 🔹 時間 + 來源標籤
-                Row(
-                  children: [
-                    Icon(Icons.access_time,
-                        size: 18, color: Colors.grey.shade600),
-                    const SizedBox(width: 6),
-                    Text(
-                      _formatTime(time),
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.grey.shade700,
-                      ),
-                    ),
-                    const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _sourceColor(source).withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        source,
-                        style: TextStyle(
-                          color: _sourceColor(source),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const Divider(height: 30),
-
-                // 🔹 通知內容
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Text(
-                      message,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        height: 1.6,
-                        color: Colors.black87,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // 🔹 底部操作區：返回＋分享
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.arrow_back_ios_new, size: 16),
-                      label: const Text("返回"),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFF007BFF),
-                        side: const BorderSide(color: Color(0xFF007BFF)),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 10),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    ElevatedButton.icon(
-                      onPressed: () {
-                        final shareText = StringBuffer()
-                          ..writeln("【$title】")
-                          ..writeln(message)
-                          ..writeln("")
-                          ..writeln("來源：$source")
-                          ..writeln("時間：${_formatTime(time)}");
-                        Share.share(
-                          shareText.toString(),
-                          subject: title.toString(),
-                        );
-                      },
-                      icon: const Icon(Icons.share, size: 18),
-                      label: const Text("分享"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF007BFF),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 24, vertical: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+    if (uid == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('通知詳情')),
+        body: Center(
+          child: FilledButton(
+            onPressed: () => Navigator.of(context).pushNamed('/login'),
+            child: const Text('請先登入'),
           ),
         ),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('通知詳情')),
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: _docRef(uid).snapshots(),
+        builder: (context, snap) {
+          if (snap.hasError) {
+            return Center(child: Text('讀取失敗：${snap.error}'));
+          }
+
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final data = snap.data!.data();
+          if (data == null) {
+            return const Center(child: Text('找不到通知或已被刪除'));
+          }
+
+          // 進入頁面自動標記已讀（不阻塞 UI）
+          _markReadIfNeeded(uid, data);
+
+          final title = _s(data['title'], '');
+          final body = _s(data['body'], '');
+          final type = _s(data['type'], 'system');
+          final route = _s(data['route'], '');
+          final createdAt = _toDateTime(data['createdAt']);
+
+          final bool isRead = (data['isRead'] ?? data['read'] ?? false) == true;
+
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Card(
+                elevation: 1,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            isRead
+                                ? Icons.mark_email_read_outlined
+                                : Icons.mark_email_unread_outlined,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              title.isEmpty ? '(無標題)' : title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 18,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      if (body.isNotEmpty) ...[
+                        Text(
+                          body,
+                          style: const TextStyle(fontSize: 15, height: 1.4),
+                        ),
+                        const SizedBox(height: 12),
+                      ] else ...[
+                        const Text(
+                          '（無內容）',
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      const Divider(height: 1),
+                      const SizedBox(height: 10),
+                      _kv('type', type),
+                      _kv('route', route.isEmpty ? '-' : route),
+                      _kv(
+                        'createdAt',
+                        createdAt == null ? '-' : _fmtYmdHms(createdAt),
+                      ),
+                      _kv('id', widget.notificationId),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (route.trim().isNotEmpty) ...[
+                FilledButton.icon(
+                  onPressed: () => _goRoute(route),
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('前往相關頁面'),
+                ),
+              ] else ...[
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('返回'),
+                ),
+              ],
+            ],
+          );
+        },
       ),
     );
   }
 
-  /// 🔍 自動判斷來源類型
-  String _detectSource(String msg) {
-    if (msg.contains("折扣") || msg.contains("優惠")) return "行銷中心";
-    if (msg.contains("出貨") || msg.contains("物流")) return "物流部門";
-    if (msg.contains("公告") || msg.contains("更新")) return "系統公告";
-    return "其他";
-  }
-
-  Color _sourceColor(String source) {
-    switch (source) {
-      case "行銷中心":
-        return Colors.blue;
-      case "物流部門":
-        return Colors.green;
-      case "系統公告":
-        return Colors.purple;
-      default:
-        return Colors.grey;
-    }
-  }
-
-  String _formatTime(DateTime t) {
-    return "${t.year}/${t.month}/${t.day} "
-        "${t.hour.toString().padLeft(2, '0')}:"
-        "${t.minute.toString().padLeft(2, '0')}";
+  Widget _kv(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(
+              k,
+              style: const TextStyle(
+                color: Colors.black54,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(v, style: const TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
   }
 }

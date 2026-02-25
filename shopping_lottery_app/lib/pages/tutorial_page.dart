@@ -1,280 +1,232 @@
+// lib/pages/tutorial_page.dart
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
-class TutorialPage extends StatelessWidget {
+/// ✅ TutorialPage（新手教學｜完整版｜已修正 withValues alpha 型別）
+/// ------------------------------------------------------------
+/// - PageView 教學頁
+/// - 進度點點 + 下一步/跳過/完成
+/// - ✅ withOpacity 全改為 withValues(alpha: double 0~1)
+class TutorialPage extends StatefulWidget {
   const TutorialPage({super.key});
 
   @override
+  State<TutorialPage> createState() => _TutorialPageState();
+}
+
+class _TutorialPageState extends State<TutorialPage> {
+  final _pageCtrl = PageController();
+  int _index = 0;
+
+  // ✅ withValues(alpha: ) 需要 double?（0.0~1.0）
+  double _a(double opacity) => opacity.clamp(0.0, 1.0);
+
+  final List<_TutorialItem> _items = const [
+    _TutorialItem(
+      title: '歡迎來到 Osmile',
+      desc: '這裡會帶你快速了解主要功能：購物、點數任務、抽獎、通知中心。',
+      icon: Icons.auto_awesome,
+    ),
+    _TutorialItem(
+      title: '點數任務',
+      desc: '完成每日任務累積點數，可用於兌換優惠或參與活動。',
+      icon: Icons.stars_outlined,
+    ),
+    _TutorialItem(
+      title: '直播 / 活動',
+      desc: '參與直播與限時活動，有機會獲得加碼獎勵與抽獎資格。',
+      icon: Icons.live_tv_outlined,
+    ),
+    _TutorialItem(
+      title: '通知中心',
+      desc: '訂單、優惠券、系統公告都會在這裡提醒你，不漏接重要訊息。',
+      icon: Icons.notifications_outlined,
+    ),
+  ];
+
+  @override
+  void dispose() {
+    _pageCtrl.dispose();
+    super.dispose();
+  }
+
+  void _goNext() {
+    if (_index >= _items.length - 1) {
+      _finish();
+      return;
+    }
+    _pageCtrl.nextPage(
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _skip() => _finish();
+
+  void _finish() {
+    // 你也可以改成 pushReplacementNamed('/home')
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop(true);
+    } else {
+      Navigator.of(context).pushReplacementNamed('/'); // fallback
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final List<Map<String, String>> tutorials = [
-      {
-        "title": "快速認識 ED1000 智能手錶",
-        "desc": "帶你用 1 分鐘了解 ED1000 的主要功能與適用族群。",
-        "tag": "產品介紹",
-      },
-      {
-        "title": "如何設定家長 App 帳號與綁定手錶",
-        "desc": "一步一步教你從下載 App 到綁定手錶的完整流程。",
-        "tag": "帳號設定",
-      },
-      {
-        "title": "SOS 求助功能實際示範",
-        "desc": "示範小朋友長按按鍵、家長手機收到通知的過程。",
-        "tag": "安全守護",
-      },
-      {
-        "title": "如何查看步數、心率與睡眠紀錄",
-        "desc": "教你在 App 裡查看家人健康數據的方式。",
-        "tag": "健康數據",
-      },
-    ];
+    final isLast = _index == _items.length - 1;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F6FA),
+      backgroundColor: const Color(0xFFF7F8FA),
       appBar: AppBar(
-        backgroundColor: Colors.blueAccent,
-        centerTitle: true,
-        title: Text(
-          "教學與影片",
-          style: GoogleFonts.notoSansTc(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        iconTheme: const IconThemeData(color: Colors.white),
+        title: const Text('新手教學'),
+        actions: [TextButton(onPressed: _skip, child: const Text('跳過'))],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
+      body: Column(
         children: [
-          // 頂部說明卡
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF42A5F5), Color(0xFF1976D2)],
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-              ),
-              borderRadius: BorderRadius.circular(18),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.blueAccent.withOpacity(0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+          Expanded(
+            child: PageView.builder(
+              controller: _pageCtrl,
+              itemCount: _items.length,
+              onPageChanged: (i) => setState(() => _index = i),
+              itemBuilder: (_, i) => _page(context, _items[i]),
             ),
+          ),
+          _dots(),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
             child: Row(
               children: [
-                Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: const Icon(
-                    Icons.play_circle_fill,
-                    color: Colors.white,
-                    size: 30,
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _skip,
+                    child: const Text('略過'),
                   ),
                 ),
                 const SizedBox(width: 12),
-                const Expanded(
-                  child: Text(
-                    "這裡可以放教學影片、操作示範與圖文教學，讓展場來賓快速了解產品。",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      height: 1.5,
-                    ),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: _goNext,
+                    child: Text(isLast ? '完成' : '下一步'),
                   ),
                 ),
               ],
             ),
           ),
-
-          const SizedBox(height: 18),
-
-          const Text(
-            "精選教學影片（示意）",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-
-          // 影片預留區（可以換成真的播放器）
-          _buildVideoPlaceholder(
-            title: "ED1000 介紹影片（Demo）",
-            subtitle: "可嵌入 YouTube / 自家影片連結",
-          ),
-          _buildVideoPlaceholder(
-            title: "家長 App 操作教學（Demo）",
-            subtitle: "示範綁定手錶、查看健康資訊等功能",
-          ),
-
-          const SizedBox(height: 20),
-
-          const Text(
-            "圖文教學列表",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-
-          ...tutorials.map((t) {
-            return _buildTutorialItem(
-              tag: t["tag"] ?? "",
-              title: t["title"] ?? "",
-              desc: t["desc"] ?? "",
-            );
-          }).toList(),
-
-          const SizedBox(height: 24),
-          Center(
-            child: Text(
-              "本頁為教學示意，可日後串接真實影片與說明連結。",
-              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-              textAlign: TextAlign.center,
-            ),
-          ),
-          const SizedBox(height: 16),
         ],
       ),
     );
   }
 
-  // 影片區塊（目前是示意，可換成真正的播放器 widget）
-  Widget _buildVideoPlaceholder({
-    required String title,
-    required String subtitle,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 5,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          // 上方影片黑框示意
-          ClipRRect(
-            borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(14),
+  Widget _page(BuildContext context, _TutorialItem item) {
+    final primary = Theme.of(context).colorScheme.primary;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 22, 20, 10),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
             ),
-            child: Container(
-              height: 160,
-              color: Colors.black87,
-              child: const Center(
-                child: Icon(
-                  Icons.play_circle_fill,
-                  color: Colors.white70,
-                  size: 50,
-                ),
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 84,
+                    height: 84,
+                    decoration: BoxDecoration(
+                      // ✅ withOpacity → withValues(alpha: double 0~1)
+                      color: primary.withValues(alpha: _a(0.10)),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(
+                        color: primary.withValues(alpha: _a(0.18)),
+                      ),
+                    ),
+                    child: Icon(item.icon, size: 44, color: primary),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    item.title,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    item.desc,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      height: 1.6,
+                      color: Colors.black.withValues(alpha: _a(0.72)),
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.withValues(alpha: _a(0.08)),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: _a(0.06)),
+                      ),
+                    ),
+                    child: Text(
+                      '提示：你可以隨時在「我的」或「設定」重新查看教學。',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.black.withValues(alpha: _a(0.65)),
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-          // 下方文字
-          Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-              ],
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  // 圖文教學項目
-  Widget _buildTutorialItem({
-    required String tag,
-    required String title,
-    required String desc,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.03),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
+  Widget _dots() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: List.generate(_items.length, (i) {
+        final active = i == _index;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          width: active ? 18 : 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: active
+                ? Colors.blueAccent
+                : Colors.blueAccent.withValues(alpha: _a(0.25)),
+            borderRadius: BorderRadius.circular(99),
           ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: Colors.blueAccent.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Icon(
-              Icons.menu_book_outlined,
-              color: Colors.blueAccent,
-              size: 22,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (tag.isNotEmpty)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.blueAccent.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      tag,
-                      style: const TextStyle(
-                          fontSize: 10, color: Colors.blueAccent),
-                    ),
-                  ),
-                if (tag.isNotEmpty) const SizedBox(height: 4),
-                Text(
-                  title,
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  desc,
-                  style: const TextStyle(fontSize: 12, height: 1.5),
-                ),
-              ],
-            ),
-          ),
-          const Icon(Icons.chevron_right, color: Colors.grey),
-        ],
-      ),
+        );
+      }),
     );
   }
+}
+
+class _TutorialItem {
+  final String title;
+  final String desc;
+  final IconData icon;
+
+  const _TutorialItem({
+    required this.title,
+    required this.desc,
+    required this.icon,
+  });
 }

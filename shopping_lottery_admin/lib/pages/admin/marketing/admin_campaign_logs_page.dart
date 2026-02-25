@@ -10,15 +10,7 @@
 //   -> 變數改名 _toDateFilter
 //   -> 日期轉換函式改名 _asDateTime()
 //
-// ※ 欄位容錯：logs 欄位不齊也不會噴錯
-// ※ 建議欄位（可有可無）：
-//   createdAt(Timestamp), type(String), status(String),
-//   campaignId(String), campaignTitle(String), segmentId(String),
-//   couponId(String), lotteryId(String),
-//   userId(String), channel(String),
-//   title(String), message(String),
-//   triggerCount(num), sendCount(num), clickCount(num), conversionCount(num),
-//   meta(Map)
+// ✅ FIX: withOpacity deprecated → withValues(alpha: double 0.0~1.0)
 // ------------------------------------------------------------
 
 import 'dart:convert';
@@ -68,7 +60,8 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
     return null;
   }
 
-  String _s(dynamic v, {String fallback = ''}) => (v == null) ? fallback : v.toString();
+  String _s(dynamic v, {String fallback = ''}) =>
+      (v == null) ? fallback : v.toString();
 
   num _n(dynamic v, {num fallback = 0}) {
     if (v == null) return fallback;
@@ -79,13 +72,23 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
 
   bool _isTrue(dynamic v) => v == true;
 
+  /// ✅ FIX:
+  /// - Color.withValues(alpha: ...) 的 alpha 型別是 double?（0.0~1.0）
+  /// - 你原本用 int(0~255) 會造成編譯錯誤
+  Color _withOpacity(Color c, double opacity01) {
+    final a = opacity01.clamp(0.0, 1.0).toDouble();
+    return c.withValues(alpha: a);
+  }
+
   // ============================================================
   // Pick dates
   // ============================================================
 
   Future<void> _pickDate({required bool isFrom}) async {
     final now = DateTime.now();
-    final initial = isFrom ? (_fromDate ?? now) : (_toDateFilter ?? _fromDate ?? now);
+    final initial = isFrom
+        ? (_fromDate ?? now)
+        : (_toDateFilter ?? _fromDate ?? now);
 
     final picked = await showDatePicker(
       context: context,
@@ -174,7 +177,8 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
     }
 
     bool matchDate(Map<String, dynamic> d) {
-      final dt = _asDateTime(d['createdAt']) ??
+      final dt =
+          _asDateTime(d['createdAt']) ??
           _asDateTime(d['updatedAt']) ??
           _asDateTime(d['time']);
       if (dt == null) return true;
@@ -184,17 +188,24 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
       return true;
     }
 
-    return docs.where((doc) {
-      final d = doc.data();
-      return matchType(d) && matchStatus(d) && matchDate(d) && matchKeyword(d);
-    }).toList(growable: false);
+    return docs
+        .where((doc) {
+          final d = doc.data();
+          return matchType(d) &&
+              matchStatus(d) &&
+              matchDate(d) &&
+              matchKeyword(d);
+        })
+        .toList(growable: false);
   }
 
   // ============================================================
-  // KPI (optional but useful)
+  // KPI
   // ============================================================
 
-  Map<String, num> _calcKpi(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  Map<String, num> _calcKpi(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
     num trigger = 0, send = 0, click = 0, conv = 0;
 
     for (final doc in docs) {
@@ -204,12 +215,7 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
       click += _n(d['clickCount']);
       conv += _n(d['conversionCount']);
     }
-    return {
-      'trigger': trigger,
-      'send': send,
-      'click': click,
-      'conv': conv,
-    };
+    return {'trigger': trigger, 'send': send, 'click': click, 'conv': conv};
   }
 
   // ============================================================
@@ -222,11 +228,13 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
     return needsQuote ? '"$escaped"' : escaped;
   }
 
-  Future<void> _exportCsv(List<QueryDocumentSnapshot<Map<String, dynamic>>> filtered) async {
+  Future<void> _exportCsv(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> filtered,
+  ) async {
     if (filtered.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('目前沒有可匯出的日誌資料')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('目前沒有可匯出的日誌資料')));
       return;
     }
 
@@ -235,28 +243,31 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
       final df = DateFormat('yyyy-MM-dd HH:mm:ss');
 
       final b = StringBuffer();
-      b.writeln([
-        'time',
-        'type',
-        'status',
-        'campaignTitle',
-        'campaignId',
-        'segmentId',
-        'couponId',
-        'lotteryId',
-        'userId',
-        'channel',
-        'title',
-        'message',
-        'triggerCount',
-        'sendCount',
-        'clickCount',
-        'conversionCount',
-      ].join(','));
+      b.writeln(
+        [
+          'time',
+          'type',
+          'status',
+          'campaignTitle',
+          'campaignId',
+          'segmentId',
+          'couponId',
+          'lotteryId',
+          'userId',
+          'channel',
+          'title',
+          'message',
+          'triggerCount',
+          'sendCount',
+          'clickCount',
+          'conversionCount',
+        ].join(','),
+      );
 
       for (final doc in filtered) {
         final d = doc.data();
-        final dt = _asDateTime(d['createdAt']) ??
+        final dt =
+            _asDateTime(d['createdAt']) ??
             _asDateTime(d['updatedAt']) ??
             _asDateTime(d['time']);
         final timeText = dt == null ? '' : df.format(dt);
@@ -288,7 +299,8 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
       final contentBytes = utf8.encode(b.toString());
       final bytes = Uint8List.fromList([...bom, ...contentBytes]);
 
-      final name = 'campaign_logs_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}';
+      final name =
+          'campaign_logs_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}';
 
       await FileSaver.instance.saveFile(
         name: name,
@@ -303,9 +315,9 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('匯出失敗：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('匯出失敗：$e')));
     } finally {
       if (mounted) setState(() => _exporting = false);
     }
@@ -387,10 +399,7 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
             ),
           ),
           Expanded(
-            child: Text(
-              v,
-              style: const TextStyle(color: Colors.black54),
-            ),
+            child: Text(v, style: const TextStyle(color: Colors.black54)),
           ),
         ],
       ),
@@ -400,7 +409,10 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
   void _showDetailSheet(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
     final d = doc.data();
     final df = DateFormat('yyyy/MM/dd HH:mm:ss');
-    final dt = _asDateTime(d['createdAt']) ?? _asDateTime(d['updatedAt']) ?? _asDateTime(d['time']);
+    final dt =
+        _asDateTime(d['createdAt']) ??
+        _asDateTime(d['updatedAt']) ??
+        _asDateTime(d['time']);
 
     showModalBottomSheet(
       context: context,
@@ -416,8 +428,8 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
                   Text(
                     'Log 詳情',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w900,
-                        ),
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                   const SizedBox(height: 10),
                   _kv('Doc ID', doc.id),
@@ -426,7 +438,9 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
                   _kv('Status', _s(d['status'])),
                   _kv(
                     'Campaign',
-                    _s(d['campaignTitle']).isNotEmpty ? _s(d['campaignTitle']) : _s(d['campaignId']),
+                    _s(d['campaignTitle']).isNotEmpty
+                        ? _s(d['campaignTitle'])
+                        : _s(d['campaignId']),
                   ),
                   _kv('Segment', _s(d['segmentId'])),
                   _kv('Coupon', _s(d['couponId'])),
@@ -435,7 +449,8 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
                   _kv('Channel', _s(d['channel'])),
                   const Divider(height: 24),
                   if (_s(d['title']).isNotEmpty) _kv('Title', _s(d['title'])),
-                  if (_s(d['message']).isNotEmpty) _kv('Message', _s(d['message'])),
+                  if (_s(d['message']).isNotEmpty)
+                    _kv('Message', _s(d['message'])),
                   const Divider(height: 24),
                   _kv('triggerCount', _n(d['triggerCount']).toString()),
                   _kv('sendCount', _n(d['sendCount']).toString()),
@@ -445,8 +460,8 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
                   Text(
                     'Raw Data',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Container(
@@ -602,7 +617,13 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text(
+                    value,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                   Text(title, style: const TextStyle(color: Colors.grey)),
                 ],
               ),
@@ -694,32 +715,42 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
                           final doc = filtered[i];
                           final d = doc.data();
 
-                          final dt = _asDateTime(d['createdAt']) ??
+                          final dt =
+                              _asDateTime(d['createdAt']) ??
                               _asDateTime(d['updatedAt']) ??
                               _asDateTime(d['time']);
-                          final timeText = dt == null ? '' : DateFormat('yyyy/MM/dd HH:mm').format(dt);
+                          final timeText = dt == null
+                              ? ''
+                              : DateFormat('yyyy/MM/dd HH:mm').format(dt);
 
                           final type = _s(d['type']);
                           final status = _s(d['status']);
                           final title = _s(d['title']).isNotEmpty
                               ? _s(d['title'])
-                              : (_s(d['campaignTitle']).isNotEmpty ? _s(d['campaignTitle']) : '（未命名）');
+                              : (_s(d['campaignTitle']).isNotEmpty
+                                    ? _s(d['campaignTitle'])
+                                    : '（未命名）');
 
                           final message = _s(d['message']);
                           final campaignId = _s(d['campaignId']);
                           final userId = _s(d['userId']);
                           final channel = _s(d['channel']);
 
-                          final isImportant = _isTrue(d['isImportant']) ||
+                          final isImportant =
+                              _isTrue(d['isImportant']) ||
                               status.toLowerCase() == 'fail' ||
                               status.toLowerCase() == 'error';
+
+                          final sc = _statusColor(status);
 
                           return Card(
                             elevation: 1,
                             child: ListTile(
                               onTap: () => _showDetailSheet(doc),
                               leading: CircleAvatar(
-                                backgroundColor: isImportant ? Colors.red.shade50 : Colors.blue.shade50,
+                                backgroundColor: isImportant
+                                    ? Colors.red.shade50
+                                    : Colors.blue.shade50,
                                 child: Icon(
                                   Icons.receipt_long,
                                   color: isImportant ? Colors.red : Colors.blue,
@@ -728,31 +759,44 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
                               title: Row(
                                 children: [
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: Colors.grey.shade100,
                                       borderRadius: BorderRadius.circular(999),
-                                      border: Border.all(color: Colors.grey.shade300),
+                                      border: Border.all(
+                                        color: Colors.grey.shade300,
+                                      ),
                                     ),
                                     child: Text(
                                       _typeLabel(type),
-                                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w800,
+                                      ),
                                     ),
                                   ),
                                   const SizedBox(width: 8),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
                                     decoration: BoxDecoration(
-                                      color: _statusColor(status).withOpacity(0.10),
+                                      color: _withOpacity(sc, 0.10),
                                       borderRadius: BorderRadius.circular(999),
-                                      border: Border.all(color: _statusColor(status).withOpacity(0.35)),
+                                      border: Border.all(
+                                        color: _withOpacity(sc, 0.35),
+                                      ),
                                     ),
                                     child: Text(
                                       status.isEmpty ? 'unknown' : status,
                                       style: TextStyle(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w800,
-                                        color: _statusColor(status),
+                                        color: sc,
                                       ),
                                     ),
                                   ),
@@ -762,7 +806,9 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
                                       title,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontWeight: FontWeight.w800),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w800,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -783,10 +829,20 @@ class _AdminCampaignLogsPageState extends State<AdminCampaignLogsPage> {
                                       spacing: 10,
                                       runSpacing: 6,
                                       children: [
-                                        if (timeText.isNotEmpty) _chip(Icons.schedule, timeText),
-                                        if (campaignId.isNotEmpty) _chip(Icons.flag_outlined, 'CID: $campaignId'),
-                                        if (userId.isNotEmpty) _chip(Icons.person_outline, 'UID: $userId'),
-                                        if (channel.isNotEmpty) _chip(Icons.send_outlined, channel),
+                                        if (timeText.isNotEmpty)
+                                          _chip(Icons.schedule, timeText),
+                                        if (campaignId.isNotEmpty)
+                                          _chip(
+                                            Icons.flag_outlined,
+                                            'CID: $campaignId',
+                                          ),
+                                        if (userId.isNotEmpty)
+                                          _chip(
+                                            Icons.person_outline,
+                                            'UID: $userId',
+                                          ),
+                                        if (channel.isNotEmpty)
+                                          _chip(Icons.send_outlined, channel),
                                       ],
                                     ),
                                   ],
@@ -810,10 +866,7 @@ class _ErrorView extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
 
-  const _ErrorView({
-    required this.message,
-    required this.onRetry,
-  });
+  const _ErrorView({required this.message, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {

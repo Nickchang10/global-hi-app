@@ -1,201 +1,150 @@
-import 'dart:io';
 import 'dart:typed_data';
-import 'package:image_picker/image_picker.dart';
-import 'package:image/image.dart' as img;
-import 'package:path_provider/path_provider.dart';
 
-/// 🧭 ImagePickerHelper
-///
-/// 提供相機 / 相簿圖片、影片選取與壓縮裁切功能
-/// ✅ 支援：
-/// - 拍照 / 錄影
-/// - 選多張圖片
-/// - 圖片壓縮（控制大小）
-/// - IG 正方形裁切
-/// - Story 9:16 裁切
-/// - 安全寫入暫存路徑
+import 'package:flutter/foundation.dart';
+import 'package:image_picker/image_picker.dart';
+
+/// ✅ ImagePickerHelper（完整版｜不依賴 package:image）
+/// ------------------------------------------------------------
+/// - 使用 image_picker 內建 maxWidth/maxHeight/imageQuality 做縮圖/壓縮
+/// - 回傳 PickedImage（含 bytes / 檔名 / mimeType / XFile）
+/// - 支援：相簿、相機、相簿多選
+/// ------------------------------------------------------------
 class ImagePickerHelper {
+  ImagePickerHelper._();
+
   static final ImagePicker _picker = ImagePicker();
 
-  /// 📸 從相簿選取單張圖片
-  static Future<String?> pickImage() async {
-    try {
-      final picked = await _picker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 90,
-      );
-      return picked?.path;
-    } catch (e) {
-      print("❌ pickImage Error: $e");
-      return null;
-    }
-  }
-
-  /// 📷 拍照取得圖片
-  static Future<String?> takePhoto() async {
-    try {
-      final picked = await _picker.pickImage(
-        source: ImageSource.camera,
-        imageQuality: 90,
-      );
-      return picked?.path;
-    } catch (e) {
-      print("❌ takePhoto Error: $e");
-      return null;
-    }
-  }
-
-  /// 🖼️ 多張圖片（相簿）
-  static Future<List<String>> pickMultiImages({int maxImages = 10}) async {
-    try {
-      final picked = await _picker.pickMultiImage(imageQuality: 90);
-      if (picked.isEmpty) return [];
-
-      final images = picked.length > maxImages
-          ? picked.sublist(0, maxImages)
-          : picked;
-      return images.map((x) => x.path).toList();
-    } catch (e) {
-      print("❌ pickMultiImages Error: $e");
-      return [];
-    }
-  }
-
-  /// 🔀 選擇來源（true = 相機，false = 相簿）
-  static Future<String?> pickImageWithSource({required bool fromCamera}) async {
-    try {
-      final picked = await _picker.pickImage(
-        source: fromCamera ? ImageSource.camera : ImageSource.gallery,
-        imageQuality: 90,
-      );
-      return picked?.path;
-    } catch (e) {
-      print("❌ pickImageWithSource Error: $e");
-      return null;
-    }
-  }
-
-  /// 🎬 從相簿選影片（例如 Reels 用）
-  static Future<String?> pickVideo() async {
-    try {
-      final picked = await _picker.pickVideo(
-        source: ImageSource.gallery,
-        maxDuration: const Duration(minutes: 3),
-      );
-      return picked?.path;
-    } catch (e) {
-      print("❌ pickVideo Error: $e");
-      return null;
-    }
-  }
-
-  /// 🎥 錄影
-  static Future<String?> recordVideo() async {
-    try {
-      final picked = await _picker.pickVideo(
-        source: ImageSource.camera,
-        maxDuration: const Duration(minutes: 3),
-      );
-      return picked?.path;
-    } catch (e) {
-      print("❌ recordVideo Error: $e");
-      return null;
-    }
-  }
-
-  /// 🪫 壓縮圖片：把檔案壓到 maxSizeInBytes 以下（預設 1MB）
-  static Future<File?> compressImage(
-    File file, {
-    int maxSizeInBytes = 1 * 1024 * 1024, // 1MB
+  /// 從相簿選取 1 張
+  static Future<PickedImage?> pickFromGallery({
+    double? maxWidth = 1600,
+    double? maxHeight = 1600,
+    int imageQuality = 85,
   }) async {
-    try {
-      final bytes = await file.readAsBytes();
-      final image = img.decodeImage(bytes);
-      if (image == null) return null;
-
-      final tmpDir = await getTemporaryDirectory();
-      final tempPath =
-          "${tmpDir.path}/compressed_${DateTime.now().millisecondsSinceEpoch}.jpg";
-
-      int quality = 95;
-      File output = File(tempPath);
-      var compressed = img.encodeJpg(image, quality: quality);
-      await output.writeAsBytes(compressed);
-
-      // 逐步降低品質直到小於指定大小
-      while (output.lengthSync() > maxSizeInBytes && quality > 10) {
-        quality -= 10;
-        compressed = img.encodeJpg(image, quality: quality);
-        await output.writeAsBytes(compressed);
-      }
-      return output;
-    } catch (e) {
-      print("❌ compressImage Error: $e");
-      return null;
-    }
+    final XFile? file = await _picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: maxWidth,
+      maxHeight: maxHeight,
+      imageQuality: imageQuality,
+    );
+    if (file == null) return null;
+    return _toPickedImage(file);
   }
 
-  /// 🟥 裁切成正方形（IG 貼文用）
-  static Future<File?> cropSquare(File file) async {
-    try {
-      final bytes = await file.readAsBytes();
-      final image = img.decodeImage(bytes);
-      if (image == null) return null;
-
-      final size = image.width < image.height ? image.width : image.height;
-      final cropped = img.copyCrop(
-        image,
-        x: (image.width - size) ~/ 2,
-        y: (image.height - size) ~/ 2,
-        width: size,
-        height: size,
-      );
-
-      final tmpDir = await getTemporaryDirectory();
-      final outFile = File(
-          "${tmpDir.path}/square_${DateTime.now().millisecondsSinceEpoch}.jpg");
-      await outFile.writeAsBytes(img.encodeJpg(cropped, quality: 90));
-
-      return outFile;
-    } catch (e) {
-      print("❌ cropSquare Error: $e");
-      return null;
-    }
+  /// 從相機拍攝 1 張
+  static Future<PickedImage?> pickFromCamera({
+    double? maxWidth = 1600,
+    double? maxHeight = 1600,
+    int imageQuality = 85,
+  }) async {
+    final XFile? file = await _picker.pickImage(
+      source: ImageSource.camera,
+      maxWidth: maxWidth,
+      maxHeight: maxHeight,
+      imageQuality: imageQuality,
+    );
+    if (file == null) return null;
+    return _toPickedImage(file);
   }
 
-  /// 🟨 裁切為 9:16（Story / 直式影片封面用）
-  static Future<File?> cropStory(File file) async {
-    try {
-      final bytes = await file.readAsBytes();
-      final image = img.decodeImage(bytes);
-      if (image == null) return null;
+  /// 相簿多選（注意：iOS/Android 需新版 image_picker 才支援 pickMultiImage）
+  static Future<List<PickedImage>> pickMultiFromGallery({
+    double? maxWidth = 1600,
+    double? maxHeight = 1600,
+    int imageQuality = 85,
+    int? limit,
+  }) async {
+    final List<XFile> files = await _picker.pickMultiImage(
+      maxWidth: maxWidth,
+      maxHeight: maxHeight,
+      imageQuality: imageQuality,
+      limit: limit,
+    );
 
-      const targetRatio = 9 / 16;
-      int width = image.width;
-      int height = (width / targetRatio).round();
+    if (files.isEmpty) return <PickedImage>[];
+    final results = <PickedImage>[];
+    for (final f in files) {
+      results.add(await _toPickedImage(f));
+    }
+    return results;
+  }
 
-      if (height > image.height) {
-        height = image.height;
-        width = (height * targetRatio).round();
-      }
+  /// 轉換成 PickedImage（讀 bytes + 推斷 mimeType）
+  static Future<PickedImage> _toPickedImage(XFile file) async {
+    final Uint8List bytes = await file.readAsBytes();
+    final String name = _fileName(file);
+    final String mimeType = _guessMimeType(name);
 
-      final cropped = img.copyCrop(
-        image,
-        x: (image.width - width) ~/ 2,
-        y: (image.height - height) ~/ 2,
-        width: width,
-        height: height,
-      );
+    return PickedImage(
+      file: file,
+      bytes: bytes,
+      name: name,
+      mimeType: mimeType,
+      sizeBytes: bytes.lengthInBytes,
+    );
+  }
 
-      final tmpDir = await getTemporaryDirectory();
-      final outFile = File(
-          "${tmpDir.path}/story_${DateTime.now().millisecondsSinceEpoch}.jpg");
-      await outFile.writeAsBytes(img.encodeJpg(cropped, quality: 90));
+  static String _fileName(XFile file) {
+    // XFile.name 在多數平台可用；web 也通常有值
+    final n = file.name.trim();
+    if (n.isNotEmpty) return n;
 
-      return outFile;
-    } catch (e) {
-      print("❌ cropStory Error: $e");
-      return null;
+    // fallback：從 path 拿最後一段
+    final p = file.path;
+    final idx = p.lastIndexOf('/');
+    final idx2 = p.lastIndexOf('\\');
+    final cut = idx > idx2 ? idx : idx2;
+    return (cut >= 0 && cut + 1 < p.length) ? p.substring(cut + 1) : 'image';
+  }
+
+  static String _guessMimeType(String fileName) {
+    final lower = fileName.toLowerCase();
+
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    if (lower.endsWith('.heic')) return 'image/heic';
+    if (lower.endsWith('.heif')) return 'image/heif';
+
+    // unknown -> 預設 jpeg（多數相機輸出）
+    return 'image/jpeg';
+  }
+
+  /// 可選：檔案大小上限檢查（避免上傳過大）
+  static void assertMaxSize({
+    required PickedImage image,
+    required int maxBytes,
+  }) {
+    if (image.sizeBytes != null && image.sizeBytes! > maxBytes) {
+      throw Exception('圖片過大：${image.sizeBytes} bytes（上限 $maxBytes bytes）');
     }
   }
+}
+
+/// 選取圖片結果（可直接拿 bytes 上傳 Firestore Storage / API）
+class PickedImage {
+  final XFile file;
+  final Uint8List bytes;
+  final String name;
+  final String mimeType;
+  final int? sizeBytes;
+
+  const PickedImage({
+    required this.file,
+    required this.bytes,
+    required this.name,
+    required this.mimeType,
+    required this.sizeBytes,
+  });
+
+  @override
+  String toString() {
+    return 'PickedImage(name=$name, mimeType=$mimeType, sizeBytes=$sizeBytes)';
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'mimeType': mimeType,
+    'sizeBytes': sizeBytes,
+  };
 }

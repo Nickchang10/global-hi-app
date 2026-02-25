@@ -33,11 +33,15 @@ class GuestPage extends StatelessWidget {
                     width: 80,
                     height: 80,
                     decoration: BoxDecoration(
-                      color: _brand.withOpacity(0.1),
+                      // ✅ withOpacity(deprecated) → withValues(alpha: ...)
+                      color: _brand.withValues(alpha: 0.10),
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: const Icon(Icons.person_outline,
-                        color: _brand, size: 48),
+                    child: const Icon(
+                      Icons.person_outline,
+                      color: _brand,
+                      size: 48,
+                    ),
                   ),
                   const SizedBox(height: 20),
 
@@ -68,8 +72,7 @@ class GuestPage extends StatelessWidget {
                     width: double.infinity,
                     height: 48,
                     child: ElevatedButton(
-                      onPressed: () =>
-                          Navigator.pushNamed(context, '/login'),
+                      onPressed: () => Navigator.pushNamed(context, '/login'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _brand,
                         foregroundColor: Colors.white,
@@ -81,7 +84,9 @@ class GuestPage extends StatelessWidget {
                       child: const Text(
                         '登入',
                         style: TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 16),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
                       ),
                     ),
                   ),
@@ -97,7 +102,8 @@ class GuestPage extends StatelessWidget {
                           Navigator.pushNamed(context, '/register'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: _brand,
-                        side: BorderSide(color: _brand.withOpacity(0.35)),
+                        // ✅ withOpacity(deprecated) → withValues(alpha: ...)
+                        side: BorderSide(color: _brand.withValues(alpha: 0.35)),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(14),
                         ),
@@ -122,10 +128,7 @@ class GuestPage extends StatelessWidget {
                   const SizedBox(height: 40),
                   Text(
                     'Osmile 為您守護健康與安全',
-                    style: TextStyle(
-                      color: Colors.grey.shade500,
-                      fontSize: 12,
-                    ),
+                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
                   ),
                 ],
               ),

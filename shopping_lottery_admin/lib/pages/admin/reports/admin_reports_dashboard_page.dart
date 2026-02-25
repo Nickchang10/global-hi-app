@@ -1,21 +1,24 @@
 // lib/pages/admin/reports/admin_reports_dashboard_page.dart
-//
-// ✅ AdminReportsDashboardPage（修復後完整版｜可編譯｜已根治 RenderFlex Overflow）
-// ------------------------------------------------------------
-// - 含 Firestore 容錯、防索引錯誤提示
-// - 支援日期區間、趨勢天數切換
-// - Loading / Error / Empty 狀態完整覆蓋
-// - 整合 ReportService V8
-// - ✅ 修正：QuickTile / Grid 在極窄高度約束下 Column overflow（改 Row + Flexible + 文字省略 + 自適應欄數/比例）
-// - ✅ 修正：所有可能爆掉的文字列加上 maxLines/ellipsis
-// - ✅ 修正：ErrorView 可滾動避免小螢幕 overflow
-// ------------------------------------------------------------
+// =====================================================
+// ✅ AdminReportsDashboardPage（修正版完整版｜可編譯）
+// - ✅ 修正 control_flow_in_finally：finally 內不使用 return（改用 if (mounted) {...}）
+// - 報表 Dashboard：區間統計（訂單數/營收/新會員/退款/出貨） + 最近訂單
+// - Firestore（預設集合）：orders / users
+//   - orders 欄位（常見）：createdAt(Timestamp), finalAmount/total/amount(num), status, userId
+//   - users 欄位（常見）：createdAt(Timestamp), displayName/email/phone
+// =====================================================
 
-import 'dart:math' as math;
-import 'package:fl_chart/fl_chart.dart';
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:osmile_admin/services/report_service.dart';
+
+/// ✅ FIX: withOpacity deprecated → withValues(alpha: 0~1)
+Color _withOpacity(Color c, double opacity01) {
+  final o = opacity01.clamp(0.0, 1.0).toDouble();
+  return c.withValues(alpha: o);
+}
 
 class AdminReportsDashboardPage extends StatefulWidget {
   const AdminReportsDashboardPage({super.key});
@@ -26,644 +29,571 @@ class AdminReportsDashboardPage extends StatefulWidget {
 }
 
 class _AdminReportsDashboardPageState extends State<AdminReportsDashboardPage> {
-  final _report = ReportService();
+  final _db = FirebaseFirestore.instance;
 
-  bool _loading = true;
+  bool _loading = false;
   String? _error;
 
-  ReportStats? _stats;
-  Map<String, num> _dailyRevenue = const {};
-  DateTimeRange? _summaryRange;
+  _DashRange _range = _DashRange.days30;
+  _DashData? _data;
 
-  int _trendDays = 14;
+  Timer? _debounce;
+
+  final _money = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
+  final _df = DateFormat('yyyy/MM/dd HH:mm');
 
   @override
   void initState() {
     super.initState();
-    _load();
+    // 首次載入
+    scheduleMicrotask(_reload);
   }
 
-  // ======================================================
-  // 資料載入（含防呆）
-  // ======================================================
-  Future<void> _load() async {
-    if (!mounted) return;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
+  }
 
-    try {
-      final stats = await _report.getSalesReport(range: _summaryRange);
-      final daily = await _report.getRecentDailyRevenue(days: _trendDays);
+  DateTime get _now => DateTime.now();
+  DateTime get _start => _now.subtract(Duration(days: _range.days));
 
+  // =====================================================
+  // Data loader
+  // =====================================================
+  Future<void> _reload() async {
+    // 避免短時間多次 refresh
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 120), () async {
       if (!mounted) return;
       setState(() {
-        _stats = stats;
-        _dailyRevenue = daily;
+        _loading = true;
+        _error = null;
       });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
-    } finally {
-      if (!mounted) return;
-      setState(() => _loading = false);
+
+      try {
+        final data = await _fetchDashData(start: _start);
+
+        if (mounted) {
+          setState(() => _data = data);
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _error = e.toString());
+        }
+      } finally {
+        // ✅ FIX: finally 不能 return
+        if (mounted) {
+          setState(() => _loading = false);
+        }
+      }
+    });
+  }
+
+  Future<_DashData> _fetchDashData({required DateTime start}) async {
+    final startTs = Timestamp.fromDate(start);
+
+    // orders：取區間內最近 500 筆，用來算 count / revenue / refund / shipping 等
+    final ordersSnap = await _db
+        .collection('orders')
+        .where('createdAt', isGreaterThanOrEqualTo: startTs)
+        .orderBy('createdAt', descending: true)
+        .limit(500)
+        .get();
+
+    // users：取區間內最近 1000 筆（一般會員新增量不會太誇張）
+    final usersSnap = await _db
+        .collection('users')
+        .where('createdAt', isGreaterThanOrEqualTo: startTs)
+        .orderBy('createdAt', descending: true)
+        .limit(1000)
+        .get();
+
+    final orders = ordersSnap.docs;
+    final users = usersSnap.docs;
+
+    num revenue = 0;
+    int refunded = 0;
+    int shipping = 0;
+
+    for (final doc in orders) {
+      final m = doc.data();
+
+      final amount = _asNum(m['finalAmount'] ?? m['total'] ?? m['amount'] ?? 0);
+      revenue += amount;
+
+      // 退款判斷（防呆：你欄位不同也不會炸）
+      final refundStatus = (m['refundStatus'] ?? '').toString().toLowerCase();
+      final refundRequested = m['refundRequested'] == true;
+      final isRefunded =
+          refundStatus.contains('refund') ||
+          refundStatus.contains('refunded') ||
+          refundRequested == true;
+      if (isRefunded) refunded++;
+
+      // 出貨判斷
+      final shippingStatus = (m['shippingStatus'] ?? m['shipStatus'] ?? '')
+          .toString()
+          .toLowerCase();
+      final shippedAt = m['shippedAt'];
+      final isShipped =
+          shippingStatus.contains('ship') ||
+          shippingStatus.contains('delivered') ||
+          shippedAt is Timestamp;
+      if (isShipped) shipping++;
     }
-  }
 
-  // ======================================================
-  // 日期區間控制
-  // ======================================================
-  Future<void> _pickSummaryRange() async {
-    final now = DateTime.now();
-    final initial = _summaryRange ??
-        DateTimeRange(
-          start: DateTime(now.year, now.month, 1),
-          end: DateTime(now.year, now.month + 1, 0),
-        );
+    // 最近訂單（直接用同一批 orders）
+    final recentOrders = orders
+        .take(12)
+        .map((d) {
+          final m = d.data();
+          return _OrderLite(
+            id: d.id,
+            createdAt: _toDateTime(m['createdAt']),
+            status: (m['status'] ?? '').toString(),
+            userId: (m['userId'] ?? m['uid'] ?? '').toString(),
+            amount: _asNum(m['finalAmount'] ?? m['total'] ?? m['amount'] ?? 0),
+          );
+        })
+        .toList(growable: false);
 
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(now.year - 3, 1, 1),
-      lastDate: DateTime(now.year + 1, 12, 31),
-      initialDateRange: initial,
-      helpText: '選擇摘要區間',
-      confirmText: '套用',
-      cancelText: '取消',
+    return _DashData(
+      rangeDays: _range.days,
+      start: start,
+      ordersCount: orders.length,
+      revenue: revenue,
+      newUsers: users.length,
+      refundedCount: refunded,
+      shippedCount: shipping,
+      recentOrders: recentOrders,
+      notes:
+          '※ 此頁為「前端統計」：orders 取最多 500 筆、users 取最多 1000 筆。\n'
+          '若你要「全量精準報表」，建議用 Cloud Functions/BigQuery 或 Firestore Aggregations。',
     );
-
-    if (picked == null) return;
-    setState(() => _summaryRange = picked);
-    await _load();
   }
 
-  Future<void> _clearSummaryRange() async {
-    setState(() => _summaryRange = null);
-    await _load();
-  }
-
-  Future<void> _setTrendDays(int days) async {
-    if (_trendDays == days) return;
-    setState(() => _trendDays = days);
-    await _load();
-  }
-
-  // ======================================================
-  // Build UI
-  // ======================================================
+  // =====================================================
+  // UI
+  // =====================================================
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (_error != null) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('報表中心總覽'),
-          actions: [
-            IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
-          ],
-        ),
-        body: _ErrorView(
-          title: '載入報表失敗',
-          message: _error!,
-          onRetry: _load,
-          hint:
-              '請檢查 Firestore 權限、複合索引 (status + createdAt)，或 orders 欄位 createdAt 是否為 Timestamp。',
-        ),
-      );
-    }
-
-    final stats = _stats;
-    if (stats == null) {
-      return const Scaffold(
-        body: Center(child: Text('尚無報表資料')),
-      );
-    }
-
-    final fmt = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('報表中心總覽'),
+        title: const Text('報表總覽'),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: _reload,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _rangeBar(cs),
-            const SizedBox(height: 12),
-            _headerSection(fmt, stats),
-            const SizedBox(height: 16),
-            _trendControlBar(cs),
-            const SizedBox(height: 12),
-            _trendChart(),
-            const SizedBox(height: 16),
-            _quickAccessSection(context),
-            const SizedBox(height: 24),
-            _rankingPreviewSection(fmt, stats),
-            const SizedBox(height: 40),
-          ],
-        ),
+      body: Column(
+        children: [
+          _filters(cs),
+          const Divider(height: 1),
+          Expanded(
+            child: _loading && _data == null
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                ? _ErrorView(title: '載入失敗', message: _error!, onRetry: _reload)
+                : _body(cs),
+          ),
+        ],
       ),
     );
   }
 
-  // ======================================================
-  // 日期區間標籤列
-  // ======================================================
-  Widget _rangeBar(ColorScheme cs) {
-    final r = _summaryRange;
-    final label = (r == null)
-        ? '摘要區間：本月（預設）'
-        : '摘要區間：${_fmtDate(r.start)} ～ ${_fmtDate(r.end)}';
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                label,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: cs.onSurface,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            TextButton.icon(
-              onPressed: _pickSummaryRange,
-              icon: const Icon(Icons.date_range),
-              label: const Text('選擇'),
-            ),
-            if (r != null)
-              TextButton(
-                onPressed: _clearSummaryRange,
-                child: const Text('清除'),
-              ),
-          ],
+  Widget _filters(ColorScheme cs) {
+    // ✅ Flutter 3.33+：DropdownButtonFormField 用 initialValue
+    final rangeDropdown = DropdownButtonFormField<_DashRange>(
+      key: ValueKey('range_${_range.name}'),
+      initialValue: _range,
+      items: _DashRange.values
+          .map(
+            (r) => DropdownMenuItem<_DashRange>(value: r, child: Text(r.label)),
+          )
+          .toList(),
+      onChanged: (v) {
+        if (v == null) return;
+        setState(() => _range = v);
+        _reload();
+      },
+      isExpanded: true,
+      decoration: InputDecoration(
+        labelText: '區間',
+        isDense: true,
+        filled: true,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
         ),
       ),
     );
-  }
 
-  // ======================================================
-  // Header 摘要區
-  // ======================================================
-  Widget _headerSection(NumberFormat fmt, ReportStats stats) {
-    final cs = Theme.of(context).colorScheme;
+    final hint = Text(
+      '統計區間：${DateFormat('yyyy/MM/dd').format(_start)} ～ ${DateFormat('yyyy/MM/dd').format(_now)}',
+      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+    );
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
-        child: LayoutBuilder(
-          builder: (context, c) {
-            if (c.maxWidth < 520) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _summaryBlock('總營收', fmt.format(stats.totalRevenue), cs.primary),
-                  const SizedBox(height: 10),
-                  _summaryBlock(
-                    '區間營收',
-                    fmt.format(stats.periodRevenue),
-                    Colors.blueAccent,
-                  ),
-                  const SizedBox(height: 10),
-                  _summaryBlock('訂單數', '${stats.orderCount}', cs.secondary),
-                ],
-              );
-            }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: LayoutBuilder(
+        builder: (context, c) {
+          final isNarrow = c.maxWidth < 640;
 
-            return Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
+          if (isNarrow) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _summaryBlock('總營收', fmt.format(stats.totalRevenue), cs.primary),
-                _summaryBlock(
-                  '區間營收',
-                  fmt.format(stats.periodRevenue),
-                  Colors.blueAccent,
-                ),
-                _summaryBlock('訂單數', '${stats.orderCount}', cs.secondary),
+                rangeDropdown,
+                const SizedBox(height: 8),
+                hint,
+                if (_loading) ...[
+                  const SizedBox(height: 8),
+                  const LinearProgressIndicator(minHeight: 2),
+                ],
               ],
             );
-          },
-        ),
+          }
+
+          return Row(
+            children: [
+              SizedBox(width: 260, child: rangeDropdown),
+              const SizedBox(width: 12),
+              Expanded(child: hint),
+              if (_loading) ...[
+                const SizedBox(width: 12),
+                const SizedBox(
+                  width: 120,
+                  child: LinearProgressIndicator(minHeight: 2),
+                ),
+              ],
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _summaryBlock(String title, String value, Color color) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Colors.black54,
-          ),
-        ),
-        const SizedBox(height: 6),
-        FittedBox(
-          fit: BoxFit.scaleDown, // ✅ 數字不爆版
-          child: Text(
-            value,
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w900,
-              color: color,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
+  Widget _body(ColorScheme cs) {
+    final data = _data;
 
-  // ======================================================
-  // 趨勢控制列
-  // ======================================================
-  Widget _trendControlBar(ColorScheme cs) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            '趨勢圖：近 $_trendDays 日',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              color: cs.onSurface,
-            ),
-          ),
-        ),
-        for (final d in [7, 14, 30]) ...[
-          _pill('$d', selected: _trendDays == d, onTap: () => _setTrendDays(d)),
-          const SizedBox(width: 8),
-        ]
-      ],
-    );
-  }
-
-  Widget _pill(
-    String text, {
-    required bool selected,
-    required VoidCallback onTap,
-  }) {
-    final cs = Theme.of(context).colorScheme;
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(999),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          border: Border.all(color: cs.outlineVariant),
-          borderRadius: BorderRadius.circular(999),
-          color: selected ? cs.primaryContainer : cs.surface,
-        ),
-        child: Text(
-          text,
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: selected ? cs.onPrimaryContainer : cs.onSurface,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ======================================================
-  // 趨勢圖
-  // ======================================================
-  Widget _trendChart() {
-    if (_dailyRevenue.isEmpty) {
-      return const Card(
-        child: Padding(
-          padding: EdgeInsets.all(20),
-          child: Text('尚無每日營收資料，請確認 orders 有 createdAt 與 finalAmount 欄位。'),
-        ),
-      );
+    if (data == null) {
+      return const Center(child: Text('尚無資料'));
     }
 
-    final sortedDays = _dailyRevenue.keys.toList()..sort();
-    final values =
-        sortedDays.map((d) => (_dailyRevenue[d] ?? 0).toDouble()).toList();
-
-    final maxY = math.max(1.0, (values.reduce(math.max)) * 1.2);
-    final step = math.max(1, (sortedDays.length / 7).ceil());
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: SizedBox(
-          height: 240,
-          child: LineChart(
-            LineChartData(
-              minY: 0,
-              maxY: maxY,
-              gridData: FlGridData(show: true, horizontalInterval: maxY / 5),
-              titlesData: FlTitlesData(
-                bottomTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    reservedSize: 22,
-                    getTitlesWidget: (v, _) {
-                      final i = v.toInt();
-                      if (i < 0 || i >= sortedDays.length) {
-                        return const SizedBox.shrink();
-                      }
-                      if (i % step != 0 && i != sortedDays.length - 1) {
-                        return const SizedBox.shrink();
-                      }
-                      final day = sortedDays[i].substring(5);
-                      return Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(day, style: const TextStyle(fontSize: 10)),
-                      );
-                    },
-                  ),
-                ),
-                leftTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    reservedSize: 44,
-                    getTitlesWidget: (v, _) {
-                      if (v == 0) return const Text('0');
-                      if (v % 1000 == 0) {
-                        return Text(
-                          '${v ~/ 1000}k',
-                          style: const TextStyle(fontSize: 10),
-                        );
-                      }
-                      return const SizedBox.shrink();
-                    },
-                  ),
-                ),
-                rightTitles:
-                    const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                topTitles:
-                    const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              ),
-              lineBarsData: [
-                LineChartBarData(
-                  isCurved: true,
-                  color: Colors.blueAccent,
-                  barWidth: 3,
-                  dotData: FlDotData(show: false),
-                  spots: [
-                    for (int i = 0; i < sortedDays.length; i++)
-                      FlSpot(i.toDouble(), values[i]),
-                  ],
-                )
-              ],
-            ),
-          ),
-        ),
-      ),
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        _summaryGrid(cs, data),
+        const SizedBox(height: 12),
+        _recentOrdersCard(cs, data),
+        const SizedBox(height: 12),
+        _noteCard(cs, data.notes),
+      ],
     );
   }
 
-  // ======================================================
-  // 快速功能入口（✅ 根治：tile 高度不足 + Column overflow）
-  // - 自適應欄數：窄螢幕 1 欄，寬螢幕 2 欄
-  // - childAspectRatio：提升 tile 高度，杜絕 h<=21.8 這類極端壓縮
-  // - tile 內：Row + Flexible(loose) + 文字 ellipsis
-  // ======================================================
-  Widget _quickAccessSection(BuildContext context) {
-    final tiles = [
-      _quickTile(
-        context,
-        icon: Icons.bar_chart,
-        color: Colors.blue,
-        title: '營收報表',
-        subtitle: '查看詳細營收趨勢與統計',
-        route: '/admin_sales_report',
+  Widget _summaryGrid(ColorScheme cs, _DashData d) {
+    final items = <_KpiItem>[
+      _KpiItem(
+        title: '訂單數',
+        value: d.ordersCount.toString(),
+        icon: Icons.receipt_long,
+        color: cs.primary,
       ),
-      _quickTile(
-        context,
-        icon: Icons.download,
-        color: Colors.teal,
-        title: '匯出報表',
-        subtitle: '下載 CSV 或報表資料',
-        route: '/admin_sales_export',
+      _KpiItem(
+        title: '營收（估算）',
+        value: _money.format(d.revenue),
+        icon: Icons.payments,
+        color: cs.tertiary,
       ),
-      _quickTile(
-        context,
-        icon: Icons.leaderboard,
-        color: Colors.orange,
-        title: '排行報表',
-        subtitle: '商品與廠商銷售排行榜',
-        route: '/admin_sales_report',
+      _KpiItem(
+        title: '新會員',
+        value: d.newUsers.toString(),
+        icon: Icons.person_add_alt_1,
+        color: cs.secondary,
+      ),
+      _KpiItem(
+        title: '退款/申請退款',
+        value: d.refundedCount.toString(),
+        icon: Icons.undo,
+        color: cs.error,
+      ),
+      _KpiItem(
+        title: '出貨/已出貨',
+        value: d.shippedCount.toString(),
+        icon: Icons.local_shipping_outlined,
+        color: cs.primary,
+      ),
+      _KpiItem(
+        title: '區間天數',
+        value: '${d.rangeDays} 天',
+        icon: Icons.date_range,
+        color: cs.secondary,
       ),
     ];
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          '報表功能入口',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-        const SizedBox(height: 12),
-        LayoutBuilder(
-          builder: (context, c) {
-            final isNarrow = c.maxWidth < 520;
-            final crossAxisCount = isNarrow ? 1 : 2;
+    return LayoutBuilder(
+      builder: (context, c) {
+        final crossAxisCount = c.maxWidth >= 980
+            ? 3
+            : c.maxWidth >= 640
+            ? 2
+            : 1;
 
-            // ✅ 比例越小→高度越高。這裡選一個更保守的高度避免極端壓縮。
-            // 你之前 log 出現 h<=21.8，代表 tile 被壓到幾乎一行字高，必須拉高。
-            final ratio = isNarrow ? 2.4 : 2.7;
-
-            return GridView.count(
-              crossAxisCount: crossAxisCount,
-              shrinkWrap: true,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              physics: const NeverScrollableScrollPhysics(),
-              childAspectRatio: ratio,
-              children: tiles,
-            );
-          },
-        ),
-      ],
-    );
-  }
-
-  Widget _quickTile(
-    BuildContext context, {
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String subtitle,
-    required String route,
-  }) {
-    final cs = Theme.of(context).colorScheme;
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: () => _pushNamedSafe(context, route),
-      child: Card(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, color: color, size: 28),
-              const SizedBox(width: 10),
-              Flexible(
-                fit: FlexFit.loose, // ✅ 不硬撐滿，避免垂直溢位
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: FontWeight.w800,
-                        color: cs.onSurface,
-                        fontSize: 14,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: cs.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: crossAxisCount == 1 ? 3.2 : 2.6,
           ),
-        ),
-      ),
+          itemCount: items.length,
+          itemBuilder: (_, i) => _kpiCard(cs, items[i]),
+        );
+      },
     );
   }
 
-  // ======================================================
-  // 排行榜預覽
-  // ======================================================
-  Widget _rankingPreviewSection(NumberFormat fmt, ReportStats stats) {
-    final topVendor = stats.vendorRevenue.entries.isEmpty
-        ? null
-        : (stats.vendorRevenue.entries.toList()
-              ..sort((a, b) => b.value.compareTo(a.value)))
-            .first;
-
-    final topProduct = stats.productSales.entries.isEmpty
-        ? null
-        : (stats.productSales.entries.toList()
-              ..sort((a, b) => b.value.compareTo(a.value)))
-            .first;
-
+  Widget _kpiCard(ColorScheme cs, _KpiItem it) {
     return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.all(14),
+        child: Row(
           children: [
-            const Text(
-              '銷售排行榜預覽',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            CircleAvatar(
+              backgroundColor: _withOpacity(it.color, 0.12),
+              child: Icon(it.icon, color: it.color),
             ),
-            const SizedBox(height: 12),
-            if (topVendor == null && topProduct == null)
-              const Text('尚無可統計資料')
-            else ...[
-              if (topVendor != null)
-                ListTile(
-                  leading: const Icon(Icons.store, color: Colors.blue),
-                  title: const Text('廠商營收冠軍'),
-                  subtitle: Text(
-                    topVendor.key,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    it.title,
+                    style: TextStyle(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    it.value,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 20,
+                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  trailing: Text(
-                    fmt.format(topVendor.value),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-              if (topProduct != null)
-                ListTile(
-                  leading:
-                      const Icon(Icons.shopping_bag, color: Colors.orange),
-                  title: const Text('熱銷商品'),
-                  subtitle: Text(
-                    topProduct.key,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: Text(
-                    'x${topProduct.value.toInt()}',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-            ],
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // ======================================================
-  // Utils
-  // ======================================================
-  String _fmtDate(DateTime d) => DateFormat('yyyy-MM-dd').format(d);
-
-  void _pushNamedSafe(BuildContext context, String route, {Object? arguments}) {
-    try {
-      Navigator.pushNamed(context, route, arguments: arguments);
-    } catch (_) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('尚未註冊路由：$route（請在 MaterialApp.onGenerateRoute 設定）'),
-          duration: const Duration(seconds: 2),
+  Widget _recentOrdersCard(ColorScheme cs, _DashData d) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '最近訂單（區間內）',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+            ),
+            const SizedBox(height: 10),
+            if (d.recentOrders.isEmpty)
+              Text('（無）', style: TextStyle(color: cs.onSurfaceVariant))
+            else
+              Column(
+                children: [
+                  for (final o in d.recentOrders) ...[
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        '訂單 ${o.id}',
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        [
+                          if (o.status.isNotEmpty) '狀態：${o.status}',
+                          if (o.userId.isNotEmpty) 'userId：${o.userId}',
+                          '金額：${_money.format(o.amount)}',
+                          '時間：${o.createdAt == null ? '-' : _df.format(o.createdAt!)}',
+                        ].join('  •  '),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        // 若你有 gate/page：/admin_order_detail
+                        try {
+                          Navigator.pushNamed(
+                            context,
+                            '/admin_order_detail',
+                            arguments: {'orderId': o.id},
+                          );
+                        } catch (_) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('尚未註冊路由：/admin_order_detail'),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                  ],
+                ],
+              ),
+          ],
         ),
-      );
-    }
+      ),
+    );
+  }
+
+  Widget _noteCard(ColorScheme cs, String msg) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline, color: cs.onSurfaceVariant),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                msg,
+                style: TextStyle(color: cs.onSurfaceVariant, height: 1.3),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
-// ======================================================
-// Error View（✅ 可滾動，避免 overflow）
-// ======================================================
+// =====================================================
+// Models / Utils
+// =====================================================
+class _DashData {
+  final int rangeDays;
+  final DateTime start;
+
+  final int ordersCount;
+  final num revenue;
+  final int newUsers;
+
+  final int refundedCount;
+  final int shippedCount;
+
+  final List<_OrderLite> recentOrders;
+
+  final String notes;
+
+  _DashData({
+    required this.rangeDays,
+    required this.start,
+    required this.ordersCount,
+    required this.revenue,
+    required this.newUsers,
+    required this.refundedCount,
+    required this.shippedCount,
+    required this.recentOrders,
+    required this.notes,
+  });
+}
+
+class _OrderLite {
+  final String id;
+  final DateTime? createdAt;
+  final String status;
+  final String userId;
+  final num amount;
+
+  _OrderLite({
+    required this.id,
+    required this.createdAt,
+    required this.status,
+    required this.userId,
+    required this.amount,
+  });
+}
+
+class _KpiItem {
+  final String title;
+  final String value;
+  final IconData icon;
+  final Color color;
+
+  _KpiItem({
+    required this.title,
+    required this.value,
+    required this.icon,
+    required this.color,
+  });
+}
+
+enum _DashRange {
+  days7(7, '近 7 天'),
+  days30(30, '近 30 天'),
+  days90(90, '近 90 天'),
+  days365(365, '近 365 天');
+
+  final int days;
+  final String label;
+  const _DashRange(this.days, this.label);
+}
+
+num _asNum(dynamic v) {
+  if (v is num) return v;
+  return num.tryParse((v ?? '').toString()) ?? 0;
+}
+
+DateTime? _toDateTime(dynamic v) {
+  if (v == null) return null;
+  if (v is Timestamp) return v.toDate();
+  if (v is DateTime) return v;
+  if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+  return null;
+}
+
+// =====================================================
+// Shared small views
+// =====================================================
 class _ErrorView extends StatelessWidget {
   final String title;
   final String message;
   final VoidCallback onRetry;
-  final String? hint;
 
   const _ErrorView({
     required this.title,
     required this.message,
     required this.onRetry,
-    this.hint,
   });
 
   @override
@@ -672,8 +602,8 @@ class _ErrorView extends StatelessWidget {
 
     return Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 680),
-        child: SingleChildScrollView(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Padding(
           padding: const EdgeInsets.all(16),
           child: Card(
             elevation: 0,
@@ -686,29 +616,13 @@ class _ErrorView extends StatelessWidget {
                   const SizedBox(height: 10),
                   Text(
                     title,
-                    textAlign: TextAlign.center,
                     style: const TextStyle(
                       fontSize: 18,
-                      fontWeight: FontWeight.bold,
+                      fontWeight: FontWeight.w900,
                     ),
                   ),
                   const SizedBox(height: 10),
-                  Text(
-                    message,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: cs.onSurfaceVariant),
-                  ),
-                  if (hint != null) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      hint!,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: cs.onSurfaceVariant,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
+                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
                   const SizedBox(height: 14),
                   FilledButton.icon(
                     onPressed: onRetry,

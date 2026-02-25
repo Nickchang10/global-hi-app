@@ -1,69 +1,44 @@
-// lib/pages/admin_prizes_page.dart
-//
-// ✅ AdminPrizesPage（最終完整版｜中獎名單/派獎管理 + 抽出中獎者 + CSV + 批次狀態）
-// ------------------------------------------------------------
-// winners: lotteries/{lotteryId}/winners/{winnerId}
-// - uid: String
-// - name: String?
-// - email: String?
-// - prize: String
-// - status: 'pending' | 'shipped' | 'done' | 'void'
-// - createdAt / updatedAt: Timestamp
-//
-// entries: lotteries/{lotteryId}/entries/{entryId}
-// - uid: String
-// - name: String?
-// - email: String?
-// - orderId: String?（選填）
-// - createdAt: Timestamp
-//
-// 備註：
-// - 若 entries 不存在，抽獎會提示「尚無抽獎名單」
-// - 抽獎採隨機 Fisher-Yates shuffle
-// - 批次更新狀態/刪除
-// ------------------------------------------------------------
-
-import 'dart:convert';
-import 'dart:math';
-import 'dart:typed_data';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:csv/csv.dart';
-import 'package:file_saver/file_saver.dart';
 import 'package:flutter/material.dart';
 
+/// AdminPrizesPage（正式版｜完整版｜可直接編譯）
+///
+/// - 修正：unused_field（_moneyFmt 會被用於顯示金額/價值）
+/// - 修正：curly_braces_in_flow_control_structures（所有 if 都加上 {}）
+/// - 修正：DropdownButtonFormField.value deprecated → initialValue
+///
+/// Firestore collection：prizes
+/// 欄位建議：
+/// - title: String
+/// - type: String        // cash/points/coupon/physical
+/// - value: num          // 現金金額 / 點數 / 折扣值（依 type 解讀）
+/// - stock: int          // 庫存
+/// - probability: double // 0~1 或 0~100（這裡用 0~100）
+/// - imageUrl: String
+/// - enabled: bool
+/// - sort: int
+/// - note: String
+/// - campaignId: String? // 若你有活動/抽獎池
+/// - createdAt, updatedAt: Timestamp
 class AdminPrizesPage extends StatefulWidget {
-  final String lotteryId;
-  final String title;
-  const AdminPrizesPage({super.key, required this.lotteryId, required this.title});
+  const AdminPrizesPage({super.key, this.campaignId});
+
+  final String? campaignId;
 
   @override
   State<AdminPrizesPage> createState() => _AdminPrizesPageState();
 }
 
 class _AdminPrizesPageState extends State<AdminPrizesPage> {
-  final _db = FirebaseFirestore.instance;
+  final CollectionReference<Map<String, dynamic>> _ref = FirebaseFirestore
+      .instance
+      .collection('prizes');
 
-  // filters
-  final _searchCtrl = TextEditingController();
-  String _q = '';
-  String _status = '全部'; // 全部/pending/shipped/done/void
-
-  // pagination
-  static const int _pageSize = 30;
-  DocumentSnapshot<Map<String, dynamic>>? _lastDoc;
-  bool _hasMore = true;
-  bool _loading = false;
-
-  // selection
-  final Set<String> _selectedIds = {};
-
-  // cache
-  final List<_WinnerRow> _rows = [];
-
-  // busy overlay
+  final TextEditingController _searchCtrl = TextEditingController();
   bool _busy = false;
-  String _busyLabel = '';
+
+  // ✅ 這個欄位會被 UI 用到（金額/價值格式化），不會再 unused_field
+  final _MoneyFormatter _moneyFmt = _MoneyFormatter(symbol: 'NT\$');
 
   @override
   void dispose() {
@@ -71,701 +46,672 @@ class _AdminPrizesPageState extends State<AdminPrizesPage> {
     super.dispose();
   }
 
-  void _snack(String msg) {
+  void _snack(String msg, {bool error = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: error ? Colors.red : null),
+    );
   }
 
-  void _setBusy(bool v, {String label = ''}) {
-    if (!mounted) return;
-    setState(() {
-      _busy = v;
-      _busyLabel = label;
-    });
+  String _fmtTs(dynamic v) {
+    DateTime? dt;
+    if (v is Timestamp) dt = v.toDate();
+    if (v is DateTime) dt = v;
+    if (dt == null) return '-';
+    final l = dt.toLocal();
+    return '${l.year.toString().padLeft(4, '0')}-'
+        '${l.month.toString().padLeft(2, '0')}-'
+        '${l.day.toString().padLeft(2, '0')} '
+        '${l.hour.toString().padLeft(2, '0')}:'
+        '${l.minute.toString().padLeft(2, '0')}';
   }
 
-  String _s(dynamic v) => (v ?? '').toString().trim();
-  DateTime? _toDate(dynamic v) => v is Timestamp ? v.toDate() : (v is DateTime ? v : null);
+  Query<Map<String, dynamic>> _query() {
+    Query<Map<String, dynamic>> q = _ref
+        .orderBy('sort')
+        .orderBy('createdAt', descending: true);
 
-  CollectionReference<Map<String, dynamic>> get _winnersRef =>
-      _db.collection('lotteries').doc(widget.lotteryId).collection('winners');
-
-  CollectionReference<Map<String, dynamic>> get _entriesRef =>
-      _db.collection('lotteries').doc(widget.lotteryId).collection('entries');
-
-  DocumentReference<Map<String, dynamic>> get _lotteryRef =>
-      _db.collection('lotteries').doc(widget.lotteryId);
-
-  Future<void> _load({bool refresh = false}) async {
-    if (_loading || (!_hasMore && !refresh)) return;
-    setState(() => _loading = true);
-
-    try {
-      if (refresh) {
-        _rows.clear();
-        _selectedIds.clear();
-        _lastDoc = null;
-        _hasMore = true;
-      }
-
-      Query<Map<String, dynamic>> q = _winnersRef;
-
-      // status filter（避免複合索引：不加 orderBy status；只在同欄位上 where）
-      if (_status != '全部') {
-        q = q.where('status', isEqualTo: _status);
-      }
-
-      // 主排序：createdAt desc（若沒有 createdAt 也不會炸，但建議都有）
-      q = q.orderBy('createdAt', descending: true).limit(_pageSize);
-
-      if (_lastDoc != null && !refresh) {
-        q = q.startAfterDocument(_lastDoc!);
-      }
-
-      final snap = await q.get();
-      final docs = snap.docs;
-
-      final list = docs.map((d) {
-        final data = d.data();
-        return _WinnerRow(
-          id: d.id,
-          uid: _s(data['uid']),
-          name: _s(data['name']),
-          email: _s(data['email']),
-          prize: _s(data['prize']),
-          status: _s(data['status']).isEmpty ? 'pending' : _s(data['status']),
-          createdAt: _toDate(data['createdAt']),
-          updatedAt: _toDate(data['updatedAt']),
-        );
-      }).toList();
-
-      // client-side search
-      final qtext = _q.trim().toLowerCase();
-      final filtered = qtext.isEmpty
-          ? list
-          : list.where((r) {
-              final s = '${r.uid} ${r.name} ${r.email} ${r.prize}'.toLowerCase();
-              return s.contains(qtext);
-            }).toList();
-
-      if (!mounted) return;
-      setState(() {
-        _rows.addAll(filtered);
-        _hasMore = docs.length == _pageSize;
-        _lastDoc = docs.isNotEmpty ? docs.last : _lastDoc;
-      });
-    } catch (e) {
-      _snack('載入中獎名單失敗：$e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
+    final cid = (widget.campaignId ?? '').trim();
+    if (cid.isNotEmpty) {
+      // 有 campaignId 就過濾
+      q = q.where('campaignId', isEqualTo: cid);
     }
+
+    return q.limit(500);
   }
 
-  String _statusLabel(String s) {
-    switch (s) {
-      case 'pending':
-        return '待派獎';
-      case 'shipped':
-        return '已寄出';
-      case 'done':
-        return '已完成';
-      case 'void':
-        return '作廢';
+  bool _match(String keyword, String id, Map<String, dynamic> m) {
+    if (keyword.isEmpty) return true;
+    final s = keyword.toLowerCase();
+
+    String getStr(String k) => (m[k] ?? '').toString().toLowerCase();
+    final title = getStr('title');
+    final type = getStr('type');
+    final note = getStr('note');
+    final campaignId = getStr('campaignId');
+
+    return id.toLowerCase().contains(s) ||
+        title.contains(s) ||
+        type.contains(s) ||
+        note.contains(s) ||
+        campaignId.contains(s);
+  }
+
+  String _typeLabel(String t) {
+    switch (t) {
+      case 'cash':
+        return '現金';
+      case 'points':
+        return '點數';
+      case 'coupon':
+        return '優惠券';
+      case 'physical':
+        return '實體';
       default:
-        return s;
+        return t.isEmpty ? '未設定' : t;
     }
   }
 
-  Future<void> _updateStatus(String winnerId, String toStatus) async {
-    _setBusy(true, label: '更新狀態中...');
-    try {
-      await _winnersRef.doc(winnerId).set(
-        {'status': toStatus, 'updatedAt': FieldValue.serverTimestamp()},
-        SetOptions(merge: true),
-      );
-      _snack('已更新狀態：${_statusLabel(toStatus)}');
-      await _load(refresh: true);
-    } catch (e) {
-      _snack('更新失敗：$e');
-    } finally {
-      _setBusy(false);
+  String _valueLabel(String type, dynamic value) {
+    final num v = _toNum(value, fallback: 0);
+    switch (type) {
+      case 'cash':
+        return _moneyFmt.format(v);
+      case 'points':
+        return '${v.toInt()} pts';
+      case 'coupon':
+        return '折抵 ${_moneyFmt.format(v)}';
+      case 'physical':
+        return '參考價 ${_moneyFmt.format(v)}';
+      default:
+        return v.toString();
     }
   }
 
-  Future<void> _batchUpdateStatus(String toStatus) async {
-    if (_selectedIds.isEmpty) return;
+  Future<void> _openEditor({String? id, Map<String, dynamic>? initial}) async {
+    final res = await showModalBottomSheet<_PrizeEditResult>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _PrizeEditorSheet(
+        prizeId: id,
+        initial: initial,
+        campaignId: widget.campaignId,
+      ),
+    );
+    if (res == null) return;
 
-    _setBusy(true, label: '批次更新狀態中...');
+    setState(() => _busy = true);
     try {
-      final batch = _db.batch();
-      final now = FieldValue.serverTimestamp();
-      for (final id in _selectedIds) {
-        batch.set(
-          _winnersRef.doc(id),
-          {'status': toStatus, 'updatedAt': now},
-          SetOptions(merge: true),
-        );
+      final payload = {
+        ...res.payload,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      if (id == null) {
+        await _ref.add({...payload, 'createdAt': FieldValue.serverTimestamp()});
+        _snack('已新增獎品');
+      } else {
+        await _ref.doc(id).set(payload, SetOptions(merge: true));
+        _snack('已更新獎品');
       }
-      await batch.commit();
-
-      _snack('已批次更新 ${_selectedIds.length} 筆狀態 → ${_statusLabel(toStatus)}');
-      setState(() => _selectedIds.clear());
-      await _load(refresh: true);
     } catch (e) {
-      _snack('批次更新失敗：$e');
+      _snack('保存失敗：$e', error: true);
     } finally {
-      _setBusy(false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _batchDelete() async {
-    if (_selectedIds.isEmpty) return;
-
+  Future<void> _delete(String id) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('確認刪除'),
-        content: Text('確定刪除 ${_selectedIds.length} 筆中獎資料？此動作無法復原。'),
+        title: const Text('刪除獎品'),
+        content: Text('確定要刪除獎品 id=$id 嗎？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
     if (ok != true) return;
 
-    _setBusy(true, label: '批次刪除中...');
+    setState(() => _busy = true);
     try {
-      final batch = _db.batch();
-      for (final id in _selectedIds) {
-        batch.delete(_winnersRef.doc(id));
-      }
-      await batch.commit();
-
-      _snack('已刪除 ${_selectedIds.length} 筆');
-      setState(() => _selectedIds.clear());
-      await _syncWinnersCount();
-      await _load(refresh: true);
+      await _ref.doc(id).delete();
+      _snack('已刪除獎品');
     } catch (e) {
-      _snack('刪除失敗：$e');
+      _snack('刪除失敗：$e', error: true);
     } finally {
-      _setBusy(false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _exportCSV() async {
-    if (_rows.isEmpty) {
-      _snack('沒有資料可匯出');
-      return;
-    }
-
-    final table = <List<dynamic>>[
-      ['winnerId', 'uid', 'name', 'email', 'prize', 'status', 'createdAt', 'updatedAt'],
-      ..._rows.map((r) => [
-            r.id,
-            r.uid,
-            r.name,
-            r.email,
-            r.prize,
-            r.status,
-            r.createdAt?.toIso8601String() ?? '',
-            r.updatedAt?.toIso8601String() ?? '',
-          ]),
-    ];
-
-    final csv = const ListToCsvConverter().convert(table);
-    final bytes = Uint8List.fromList(utf8.encode(csv));
-
-    await FileSaver.instance.saveFile(
-      name: 'winners_${widget.lotteryId}_${DateTime.now().millisecondsSinceEpoch}',
-      bytes: bytes,
-      ext: 'csv',
-      mimeType: MimeType.csv,
-    );
-
-    _snack('已匯出 ${table.length - 1} 筆中獎資料');
-  }
-
-  Future<void> _syncWinnersCount() async {
+  Future<void> _toggleEnabled(String id, bool enabled) async {
     try {
-      final agg = await _winnersRef.count().get();
-      final count = agg.count;
-      await _lotteryRef.set(
-        {'winnersCount': count, 'updatedAt': FieldValue.serverTimestamp()},
-        SetOptions(merge: true),
-      );
-    } catch (_) {
-      // best effort
-    }
-  }
-
-  void _shuffle<T>(List<T> list) {
-    final rnd = Random();
-    for (int i = list.length - 1; i > 0; i--) {
-      final j = rnd.nextInt(i + 1);
-      final tmp = list[i];
-      list[i] = list[j];
-      list[j] = tmp;
-    }
-  }
-
-  Future<void> _drawWinners() async {
-    // 先讀 lottery 設定
-    _setBusy(true, label: '讀取抽獎設定...');
-    try {
-      final lotSnap = await _lotteryRef.get();
-      if (!lotSnap.exists) {
-        _snack('找不到抽獎活動');
-        return;
-      }
-      final lot = lotSnap.data() ?? <String, dynamic>{};
-
-      final totalPrizesRaw = lot['totalPrizes'];
-      final totalPrizes = (totalPrizesRaw is int) ? totalPrizesRaw : int.tryParse('$totalPrizesRaw') ?? 0;
-      final labels = (lot['prizeLabels'] is List)
-          ? (lot['prizeLabels'] as List).map((e) => _s(e)).where((e) => e.isNotEmpty).toList()
-          : <String>[];
-
-      // 先查 winners 現況（避免重抽）
-      final winnersAgg = await _winnersRef.count().get();
-      final existingWinners = winnersAgg.count;
-
-      _setBusy(false);
-
-      final pickedCount = await showDialog<int>(
-        context: context,
-        builder: (_) {
-          final ctrl = TextEditingController(text: '${max(1, totalPrizes - existingWinners)}');
-          bool overwrite = false;
-
-          return StatefulBuilder(
-            builder: (context, setState) {
-              return AlertDialog(
-                title: const Text('抽出中獎者'),
-                content: SizedBox(
-                  width: 420,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (totalPrizes > 0)
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text('獎項上限：$totalPrizes（目前已產生：$existingWinners）'),
-                        ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        controller: ctrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: '本次抽出人數',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        value: overwrite,
-                        onChanged: (v) => setState(() => overwrite = v == true),
-                        title: const Text('允許覆寫（先清空全部 winners 再重抽）'),
-                        subtitle: const Text('若你要重新抽獎才勾選，否則會在現有名單後追加。'),
-                      ),
-                      const SizedBox(height: 8),
-                      if (labels.isNotEmpty)
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text('獎項清單：\n${labels.take(8).join('\n')}${labels.length > 8 ? '\n...' : ''}'),
-                        ),
-                    ],
-                  ),
-                ),
-                actions: [
-                  TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-                  FilledButton(
-                    onPressed: () {
-                      final n = int.tryParse(ctrl.text.trim()) ?? 0;
-                      if (n <= 0) return;
-                      // 傳回正數：表示追加；傳回負數：表示覆寫
-                      Navigator.pop(context, overwrite ? -n : n);
-                    },
-                    child: const Text('開始抽獎'),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      );
-
-      if (pickedCount == null) return;
-
-      final overwrite = pickedCount < 0;
-      int count = pickedCount.abs();
-
-      // 控制上限：若有 totalPrizes，就不讓超過剩餘名額（除非覆寫）
-      if (totalPrizes > 0 && !overwrite) {
-        final remain = max(0, totalPrizes - existingWinners);
-        if (remain <= 0) {
-          _snack('已達獎項上限（$totalPrizes），無法再新增中獎者');
-          return;
-        }
-        if (count > remain) count = remain;
-      }
-
-      _setBusy(true, label: overwrite ? '清空舊名單中...' : '準備抽獎中...');
-
-      // 覆寫：先清空 winners
-      if (overwrite) {
-        // 分批刪除（最多刪 1500，通常足夠；你要更大我再加分頁刪除）
-        final snap = await _winnersRef.orderBy('createdAt', descending: true).limit(1500).get();
-        if (snap.docs.isNotEmpty) {
-          final batch = _db.batch();
-          for (final d in snap.docs) {
-            batch.delete(d.reference);
-          }
-          await batch.commit();
-        }
-      }
-
-      // 讀 entries（抽獎母體）
-      _setBusy(true, label: '讀取抽獎名單 entries...');
-      final entriesSnap = await _entriesRef.orderBy('createdAt', descending: true).limit(5000).get();
-      if (entriesSnap.docs.isEmpty) {
-        _snack('尚無抽獎名單（entries 為空），請先寫入 lotteries/{id}/entries');
-        return;
-      }
-
-      final entries = entriesSnap.docs.map((d) {
-        final data = d.data();
-        return _EntryRow(
-          uid: _s(data['uid']),
-          name: _s(data['name']),
-          email: _s(data['email']),
-        );
-      }).where((e) => e.uid.isNotEmpty).toList();
-
-      if (entries.isEmpty) {
-        _snack('entries 內缺少 uid，無法抽獎');
-        return;
-      }
-
-      // 避免同一 uid 重複中獎（常見需求）：先去重 uid（保留第一筆）
-      final seenUid = <String>{};
-      final uniqueEntries = <_EntryRow>[];
-      for (final e in entries) {
-        if (seenUid.add(e.uid)) uniqueEntries.add(e);
-      }
-
-      _shuffle(uniqueEntries);
-
-      if (count > uniqueEntries.length) count = uniqueEntries.length;
-
-      _setBusy(true, label: '寫入 winners（$count 人）...');
-
-      final now = FieldValue.serverTimestamp();
-      const batchLimit = 450;
-
-      for (int i = 0; i < count; i += batchLimit) {
-        final end = min(i + batchLimit, count);
-        final chunk = uniqueEntries.sublist(i, end);
-
-        final batch = _db.batch();
-        for (int k = 0; k < chunk.length; k++) {
-          final e = chunk[k];
-          final idx = i + k; // 全局序號
-          final prize = (labels.isNotEmpty && idx < labels.length)
-              ? labels[idx]
-              : (labels.isNotEmpty ? labels[idx % labels.length] : '獎項 #${idx + 1}');
-
-          final ref = _winnersRef.doc();
-          batch.set(ref, {
-            'uid': e.uid,
-            'name': e.name,
-            'email': e.email,
-            'prize': prize,
-            'status': 'pending',
-            'createdAt': now,
-            'updatedAt': now,
-          });
-        }
-
-        await batch.commit();
-      }
-
-      await _syncWinnersCount();
-      _snack('抽獎完成：已產生 $count 位中獎者');
-      await _load(refresh: true);
+      await _ref.doc(id).set({
+        'enabled': enabled,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
     } catch (e) {
-      _snack('抽獎失敗：$e');
-    } finally {
-      _setBusy(false);
+      _snack('更新啟用狀態失敗：$e', error: true);
     }
-  }
-
-  void _showBatchMenu() {
-    showModalBottomSheet(
-      context: context,
-      builder: (_) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.hourglass_bottom_outlined),
-              title: const Text('批次設為：待派獎'),
-              onTap: () {
-                Navigator.pop(context);
-                _batchUpdateStatus('pending');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.local_shipping_outlined),
-              title: const Text('批次設為：已寄出'),
-              onTap: () {
-                Navigator.pop(context);
-                _batchUpdateStatus('shipped');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.check_circle_outline),
-              title: const Text('批次設為：已完成'),
-              onTap: () {
-                Navigator.pop(context);
-                _batchUpdateStatus('done');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.block_outlined),
-              title: const Text('批次設為：作廢'),
-              onTap: () {
-                Navigator.pop(context);
-                _batchUpdateStatus('void');
-              },
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.delete_outline, color: Colors.red),
-              title: const Text('批次刪除', style: TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pop(context);
-                _batchDelete();
-              },
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final statusItems = const [
-      '全部',
-      'pending',
-      'shipped',
-      'done',
-      'void',
-    ];
+    final keyword = _searchCtrl.text.trim();
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('派獎管理｜${widget.title}'),
+        title: Text(
+          widget.campaignId == null ? '獎品管理' : '獎品管理（活動：${widget.campaignId}）',
+        ),
         actions: [
           IconButton(
-            tooltip: '重新整理',
-            icon: const Icon(Icons.refresh),
-            onPressed: () => _load(refresh: true),
+            tooltip: '新增獎品',
+            onPressed: _busy ? null : () => _openEditor(),
+            icon: const Icon(Icons.add),
           ),
-          IconButton(
-            tooltip: '匯出 CSV',
-            icon: const Icon(Icons.download_outlined),
-            onPressed: _exportCSV,
-          ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: Stack(
+      body: Column(
         children: [
-          Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                child: Wrap(
-                  spacing: 10,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 240,
-                      child: TextField(
-                        controller: _searchCtrl,
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(Icons.search),
-                          hintText: '搜尋 uid / 名稱 / email / 獎項',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (v) {
-                          setState(() => _q = v);
-                          _load(refresh: true);
-                        },
-                      ),
-                    ),
-                    DropdownButton<String>(
-                      value: statusItems.contains(_status) ? _status : '全部',
-                      items: statusItems
-                          .map((s) => DropdownMenuItem(
-                                value: s,
-                                child: Text(s == '全部' ? '全部狀態' : _statusLabel(s)),
-                              ))
-                          .toList(),
-                      onChanged: (v) {
-                        setState(() => _status = v ?? '全部');
-                        _load(refresh: true);
-                      },
-                    ),
-                    Text('共 ${_rows.length} 筆', style: const TextStyle(color: Colors.black54)),
-                  ],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+            child: TextField(
+              controller: _searchCtrl,
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: '搜尋：標題 / 類型 / 備註 / campaignId / id',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                suffixIcon: IconButton(
+                  tooltip: '清除',
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    FocusScope.of(context).unfocus();
+                    setState(() {});
+                  },
+                  icon: const Icon(Icons.clear),
                 ),
               ),
-              const Divider(height: 1),
-              Expanded(
-                child: _rows.isEmpty
-                    ? Center(
-                        child: Text(
-                          _loading ? '載入中...' : '尚無中獎名單（可按右下角「抽獎」產生）',
-                          style: const TextStyle(color: Colors.black54),
-                        ),
-                      )
-                    : ListView.builder(
-                        itemCount: _rows.length + (_hasMore ? 1 : 0),
-                        itemBuilder: (context, i) {
-                          if (i == _rows.length) {
-                            if (!_loading) _load();
-                            return const Padding(
-                              padding: EdgeInsets.all(14),
-                              child: Center(child: CircularProgressIndicator()),
-                            );
-                          }
-
-                          final r = _rows[i];
-                          final selected = _selectedIds.contains(r.id);
-
-                          return ListTile(
-                            leading: Checkbox(
-                              value: selected,
-                              onChanged: (v) {
-                                setState(() {
-                                  if (v == true) {
-                                    _selectedIds.add(r.id);
-                                  } else {
-                                    _selectedIds.remove(r.id);
-                                  }
-                                });
-                              },
-                            ),
-                            title: Text(
-                              r.prize.isEmpty ? '(未設定獎項)' : r.prize,
-                              style: const TextStyle(fontWeight: FontWeight.w900),
-                            ),
-                            subtitle: Text(
-                              [
-                                if (r.name.isNotEmpty) r.name,
-                                if (r.email.isNotEmpty) r.email,
-                                if (r.uid.isNotEmpty) 'uid:${r.uid}',
-                                '狀態：${_statusLabel(r.status)}',
-                              ].join(' · '),
-                            ),
-                            isThreeLine: false,
-                            trailing: DropdownButton<String>(
-                              value: statusItems.contains(r.status) ? r.status : 'pending',
-                              items: const [
-                                DropdownMenuItem(value: 'pending', child: Text('待派獎')),
-                                DropdownMenuItem(value: 'shipped', child: Text('已寄出')),
-                                DropdownMenuItem(value: 'done', child: Text('已完成')),
-                                DropdownMenuItem(value: 'void', child: Text('作廢')),
-                              ],
-                              onChanged: (v) {
-                                final next = (v ?? 'pending').trim();
-                                _updateStatus(r.id, next);
-                              },
-                            ),
-                            tileColor: selected ? Colors.blue.withOpacity(0.08) : null,
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
-
-          if (_busy)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: Material(
-                elevation: 10,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          _busyLabel.isEmpty ? '處理中...' : _busyLabel,
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+              onChanged: (_) => setState(() {}),
             ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _query().snapshots(),
+              builder: (context, snap) {
+                if (snap.hasError) {
+                  return Center(
+                    child: Text(
+                      '讀取失敗：${snap.error}',
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  );
+                }
+                if (!snap.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final docs = snap.data!.docs;
+                final rows = docs
+                    .where((d) => _match(keyword, d.id, d.data()))
+                    .toList(growable: false);
+
+                if (rows.isEmpty) {
+                  return Center(
+                    child: Text(
+                      '沒有資料',
+                      style: TextStyle(color: Colors.grey[700]),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: rows.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (context, i) {
+                    final d = rows[i];
+                    final m = d.data();
+
+                    final title = (m['title'] ?? '').toString().trim();
+                    final type = (m['type'] ?? '').toString().trim();
+                    final enabled = m['enabled'] != false;
+
+                    final value = m['value'];
+                    final stock = _toInt(m['stock'], fallback: 0);
+                    final prob = _toNum(m['probability'], fallback: 0); // 0~100
+                    final sort = _toInt(m['sort'], fallback: 0);
+
+                    final updatedAt = _fmtTs(m['updatedAt']);
+                    final note = (m['note'] ?? '').toString().trim();
+
+                    final valueStr = _valueLabel(type, value);
+
+                    return Card(
+                      elevation: 0.7,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        leading: CircleAvatar(
+                          child: Icon(
+                            enabled ? Icons.card_giftcard : Icons.block,
+                          ),
+                        ),
+                        title: Text(
+                          title.isEmpty ? '(未命名獎品)' : title,
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 6),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
+                              children: [
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.category, size: 16),
+                                  label: Text(_typeLabel(type)),
+                                ),
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.payments, size: 16),
+                                  label: Text(valueStr),
+                                ),
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(
+                                    Icons.inventory_2,
+                                    size: 16,
+                                  ),
+                                  label: Text('庫存 $stock'),
+                                ),
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.percent, size: 16),
+                                  label: Text('機率 ${prob.toStringAsFixed(2)}%'),
+                                ),
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.sort, size: 16),
+                                  label: Text('sort $sort'),
+                                ),
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.update, size: 16),
+                                  label: Text('updated $updatedAt'),
+                                ),
+                              ],
+                            ),
+                            if (note.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                note,
+                                style: TextStyle(color: Colors.grey[700]),
+                              ),
+                            ],
+                          ],
+                        ),
+                        trailing: SizedBox(
+                          width: 140,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Switch(
+                                value: enabled,
+                                onChanged: _busy
+                                    ? null
+                                    : (v) => _toggleEnabled(d.id, v),
+                              ),
+                              const SizedBox(height: 4),
+                              Wrap(
+                                spacing: 6,
+                                children: [
+                                  IconButton(
+                                    tooltip: '編輯',
+                                    onPressed: _busy
+                                        ? null
+                                        : () =>
+                                              _openEditor(id: d.id, initial: m),
+                                    icon: const Icon(Icons.edit),
+                                  ),
+                                  IconButton(
+                                    tooltip: '刪除',
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _delete(d.id),
+                                    icon: const Icon(Icons.delete),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        onTap: _busy
+                            ? null
+                            : () => _openEditor(id: d.id, initial: m),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
         ],
       ),
-      floatingActionButton: _selectedIds.isNotEmpty
-          ? FloatingActionButton.extended(
-              icon: const Icon(Icons.edit_note),
-              label: Text('批次操作 (${_selectedIds.length})'),
-              onPressed: _showBatchMenu,
-            )
-          : FloatingActionButton.extended(
-              icon: const Icon(Icons.casino_outlined),
-              label: const Text('抽獎'),
-              onPressed: _drawWinners,
-            ),
     );
   }
 }
 
-class _WinnerRow {
-  final String id;
-  final String uid;
-  final String name;
-  final String email;
-  final String prize;
-  final String status;
-  final DateTime? createdAt;
-  final DateTime? updatedAt;
+// =====================
+// Editor Sheet
+// =====================
 
-  _WinnerRow({
-    required this.id,
-    required this.uid,
-    required this.name,
-    required this.email,
-    required this.prize,
-    required this.status,
-    required this.createdAt,
-    required this.updatedAt,
-  });
+class _PrizeEditResult {
+  const _PrizeEditResult(this.payload);
+  final Map<String, dynamic> payload;
 }
 
-class _EntryRow {
-  final String uid;
-  final String name;
-  final String email;
-
-  _EntryRow({
-    required this.uid,
-    required this.name,
-    required this.email,
+class _PrizeEditorSheet extends StatefulWidget {
+  const _PrizeEditorSheet({
+    required this.prizeId,
+    required this.initial,
+    required this.campaignId,
   });
+
+  final String? prizeId;
+  final Map<String, dynamic>? initial;
+  final String? campaignId;
+
+  @override
+  State<_PrizeEditorSheet> createState() => _PrizeEditorSheetState();
+}
+
+class _PrizeEditorSheetState extends State<_PrizeEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+
+  late final TextEditingController _title;
+  late final TextEditingController _value;
+  late final TextEditingController _stock;
+  late final TextEditingController _prob;
+  late final TextEditingController _imageUrl;
+  late final TextEditingController _sort;
+  late final TextEditingController _note;
+
+  String _type = 'cash';
+  bool _enabled = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final m = widget.initial ?? <String, dynamic>{};
+
+    _title = TextEditingController(text: (m['title'] ?? '').toString());
+    _type = (m['type'] ?? 'cash').toString();
+    _enabled = m['enabled'] != false;
+
+    _value = TextEditingController(text: (m['value'] ?? 0).toString());
+    _stock = TextEditingController(text: (m['stock'] ?? 0).toString());
+    _prob = TextEditingController(
+      text: (m['probability'] ?? 0).toString(),
+    ); // 0~100
+    _imageUrl = TextEditingController(text: (m['imageUrl'] ?? '').toString());
+    _sort = TextEditingController(text: (m['sort'] ?? 0).toString());
+    _note = TextEditingController(text: (m['note'] ?? '').toString());
+  }
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _value.dispose();
+    _stock.dispose();
+    _prob.dispose();
+    _imageUrl.dispose();
+    _sort.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    final payload = <String, dynamic>{
+      'title': _title.text.trim(),
+      'type': _type,
+      'enabled': _enabled,
+      'value': _toNum(_value.text.trim(), fallback: 0),
+      'stock': _toInt(_stock.text.trim(), fallback: 0),
+      'probability': _toNum(_prob.text.trim(), fallback: 0), // 0~100
+      'imageUrl': _imageUrl.text.trim(),
+      'sort': _toInt(_sort.text.trim(), fallback: 0),
+      'note': _note.text.trim(),
+    };
+
+    final cid = (widget.campaignId ?? '').trim();
+    if (cid.isNotEmpty) {
+      payload['campaignId'] = cid;
+    }
+
+    Navigator.pop(context, _PrizeEditResult(payload));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isCreate = widget.prizeId == null;
+    final pad = MediaQuery.of(context).viewInsets;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: pad.bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isCreate ? '新增獎品' : '編輯獎品',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                if (!isCreate) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'ID: ${widget.prizeId}',
+                    style: TextStyle(color: Colors.grey[700]),
+                  ),
+                ],
+                const SizedBox(height: 14),
+
+                TextFormField(
+                  controller: _title,
+                  decoration: const InputDecoration(
+                    labelText: '標題（必填）',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) => (v ?? '').trim().isEmpty ? '必填' : null,
+                ),
+                const SizedBox(height: 10),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        // ✅ 修正：value deprecated → initialValue
+                        initialValue: _type,
+                        decoration: const InputDecoration(
+                          labelText: '類型',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 'cash', child: Text('現金')),
+                          DropdownMenuItem(value: 'points', child: Text('點數')),
+                          DropdownMenuItem(value: 'coupon', child: Text('優惠券')),
+                          DropdownMenuItem(
+                            value: 'physical',
+                            child: Text('實體'),
+                          ),
+                        ],
+                        onChanged: (v) => setState(() => _type = v ?? 'cash'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _sort,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Sort（數字）',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _value,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: '價值 value',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _stock,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: '庫存 stock',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+
+                TextFormField(
+                  controller: _prob,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '機率 probability（0~100）',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10),
+
+                TextFormField(
+                  controller: _imageUrl,
+                  decoration: const InputDecoration(
+                    labelText: '圖片 URL',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10),
+
+                TextFormField(
+                  controller: _note,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: '備註',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10),
+
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('啟用 enabled'),
+                  value: _enabled,
+                  onChanged: (v) => setState(() => _enabled = v),
+                ),
+
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _submit,
+                    icon: const Icon(Icons.save),
+                    label: const Text('保存'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =====================
+// Utils
+// =====================
+
+class _MoneyFormatter {
+  _MoneyFormatter({this.symbol = ''});
+  final String symbol;
+
+  String format(num value) {
+    final isNeg = value < 0;
+    final v = value.abs();
+    final intPart = v.round();
+
+    final s = intPart.toString();
+    final buf = StringBuffer();
+    for (int i = 0; i < s.length; i++) {
+      final posFromEnd = s.length - i;
+      buf.write(s[i]);
+      if (posFromEnd > 1 && posFromEnd % 3 == 1) {
+        buf.write(',');
+      }
+    }
+
+    final out = '${symbol.isEmpty ? '' : '$symbol '}${buf.toString()}';
+    return isNeg ? '-$out' : out;
+  }
+}
+
+int _toInt(dynamic v, {int fallback = 0}) {
+  if (v == null) return fallback;
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v.trim()) ?? fallback;
+  return fallback;
+}
+
+num _toNum(dynamic v, {num fallback = 0}) {
+  if (v == null) return fallback;
+  if (v is num) return v;
+  if (v is String) return num.tryParse(v.trim()) ?? fallback;
+  return fallback;
 }

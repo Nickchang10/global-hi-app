@@ -28,11 +28,7 @@ class _DashboardEventsBannerState extends State<DashboardEventsBanner> {
       "subtitle": "每日簽到加倍送，完成 3 個任務再抽 ED1000！",
       "tag": "限時活動",
     },
-    {
-      "title": "🎰 抽獎週進行中",
-      "subtitle": "轉盤抽獎中獎機率提升中，快來試試手氣～",
-      "tag": "抽獎週",
-    },
+    {"title": "🎰 抽獎週進行中", "subtitle": "轉盤抽獎中獎機率提升中，快來試試手氣～", "tag": "抽獎週"},
     {
       "title": "🛒 智慧照護專區 9 折",
       "subtitle": "ED1000、Lumi 2、體脂秤限定優惠中！",
@@ -94,28 +90,30 @@ class _DashboardEventsBannerState extends State<DashboardEventsBanner> {
                   borderRadius: BorderRadius.circular(18),
                   gradient: LinearGradient(
                     colors: [
-                      Colors.blueAccent.withOpacity(0.9),
-                      Colors.purpleAccent.withOpacity(0.8),
+                      // ✅ withOpacity(deprecated) → withValues(alpha: ...)
+                      Colors.blueAccent.withValues(alpha: 0.9),
+                      Colors.purpleAccent.withValues(alpha: 0.8),
                     ],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.12),
+                      // ✅ withOpacity(deprecated) → withValues(alpha: ...)
+                      color: Colors.black.withValues(alpha: 0.12),
                       blurRadius: 10,
                       offset: const Offset(0, 4),
                     ),
                   ],
                 ),
                 child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
                   child: Row(
                     children: [
-                      Expanded(
-                        child: _buildEventText(e),
-                      ),
+                      Expanded(child: _buildEventText(e)),
                       const SizedBox(width: 8),
                       const Icon(
                         Icons.campaign_rounded,
@@ -162,7 +160,8 @@ class _DashboardEventsBannerState extends State<DashboardEventsBanner> {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             margin: const EdgeInsets.only(bottom: 6),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
+              // ✅ withOpacity(deprecated) → withValues(alpha: ...)
+              color: Colors.white.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
@@ -189,10 +188,7 @@ class _DashboardEventsBannerState extends State<DashboardEventsBanner> {
           e["subtitle"] ?? "",
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 13,
-          ),
+          style: const TextStyle(color: Colors.white, fontSize: 13),
         ),
       ],
     );

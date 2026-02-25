@@ -5,18 +5,14 @@ class SupportChatPage extends StatefulWidget {
   final String? productName;
   final String? productImage;
 
-  const SupportChatPage({
-    super.key,
-    this.productName,
-    this.productImage,
-  });
+  const SupportChatPage({super.key, this.productName, this.productImage});
 
   @override
   State<SupportChatPage> createState() => _SupportChatPageState();
 }
 
 class _SupportChatPageState extends State<SupportChatPage> {
-  final List<Map<String, dynamic>> _messages = [];
+  final List<Map<String, dynamic>> _messages = <Map<String, dynamic>>[];
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   bool _isTyping = false;
@@ -29,24 +25,33 @@ class _SupportChatPageState extends State<SupportChatPage> {
       _addMessage("客服小幫手", "您好～這裡是 Osmile 官方客服 🤖\n請問需要什麼協助呢？");
 
       // 若從商品頁帶入商品名稱
-      if (widget.productName != null) {
-        _addMessage("我", "您好，我想詢問關於 ${widget.productName} 的問題～", fromUser: true);
+      final pName = widget.productName;
+      if (pName != null && pName.trim().isNotEmpty) {
+        _addMessage("我", "您好，我想詢問關於 $pName 的問題～", fromUser: true);
         Future.delayed(const Duration(seconds: 1), () {
-          _autoReply(widget.productName!);
+          _autoReply(pName);
         });
       }
 
       // 若從商品頁帶入圖片
-      if (widget.productImage != null) {
-        _addImagePreview(widget.productImage!);
+      final pImg = widget.productImage;
+      if (pImg != null && pImg.trim().isNotEmpty) {
+        _addImagePreview(pImg);
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   /// ✉️ 新增訊息
   void _addMessage(String sender, String text, {bool fromUser = false}) {
     setState(() {
-      _messages.add({
+      _messages.add(<String, dynamic>{
         "sender": sender,
         "text": text,
         "fromUser": fromUser,
@@ -60,7 +65,7 @@ class _SupportChatPageState extends State<SupportChatPage> {
   /// 🖼️ 插入圖片預覽
   void _addImagePreview(String imagePath) {
     setState(() {
-      _messages.add({
+      _messages.add(<String, dynamic>{
         "sender": "我",
         "fromUser": true,
         "time": TimeOfDay.now(),
@@ -73,18 +78,17 @@ class _SupportChatPageState extends State<SupportChatPage> {
 
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 300), () {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 400),
-          curve: Curves.easeOut,
-        );
-      }
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeOut,
+      );
     });
   }
 
   /// 🤖 自動回覆邏輯
-  void _autoReply(String text) async {
+  Future<void> _autoReply(String text) async {
     String reply = "感謝您的訊息，我們會儘快回覆您 🙏";
 
     final lower = text.toLowerCase();
@@ -102,6 +106,7 @@ class _SupportChatPageState extends State<SupportChatPage> {
 
     setState(() => _isTyping = true);
     await Future.delayed(const Duration(milliseconds: 1200));
+    if (!mounted) return;
     setState(() => _isTyping = false);
 
     _addMessage("客服小幫手", reply);
@@ -134,7 +139,6 @@ class _SupportChatPageState extends State<SupportChatPage> {
       ),
       body: Column(
         children: [
-          // 📩 聊天訊息列表
           Expanded(
             child: ListView.builder(
               controller: _scrollController,
@@ -146,12 +150,13 @@ class _SupportChatPageState extends State<SupportChatPage> {
                 }
 
                 final msg = _messages[i];
-                final fromUser = msg["fromUser"] as bool;
+                final fromUser = (msg["fromUser"] as bool?) ?? false;
                 final isImage = msg["isImage"] == true;
 
                 return Align(
-                  alignment:
-                      fromUser ? Alignment.centerRight : Alignment.centerLeft,
+                  alignment: fromUser
+                      ? Alignment.centerRight
+                      : Alignment.centerLeft,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     child: Row(
@@ -163,8 +168,9 @@ class _SupportChatPageState extends State<SupportChatPage> {
                         if (!fromUser)
                           const CircleAvatar(
                             radius: 18,
-                            backgroundImage:
-                                AssetImage("assets/images/customer_service.png"),
+                            backgroundImage: AssetImage(
+                              "assets/images/customer_service.png",
+                            ),
                           ),
                         if (!fromUser) const SizedBox(width: 8),
                         Flexible(
@@ -181,7 +187,7 @@ class _SupportChatPageState extends State<SupportChatPage> {
                               ),
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.black.withOpacity(0.05),
+                                  color: Colors.black.withValues(alpha: 0.05),
                                   blurRadius: 4,
                                   offset: const Offset(0, 2),
                                 ),
@@ -192,14 +198,14 @@ class _SupportChatPageState extends State<SupportChatPage> {
                                 ? ClipRRect(
                                     borderRadius: BorderRadius.circular(10),
                                     child: Image.asset(
-                                      msg["image"],
+                                      (msg["image"] ?? '').toString(),
                                       width: 160,
                                       height: 160,
                                       fit: BoxFit.cover,
                                     ),
                                   )
                                 : Text(
-                                    msg["text"],
+                                    (msg["text"] ?? '').toString(),
                                     style: TextStyle(
                                       color: fromUser
                                           ? Colors.white
@@ -213,8 +219,9 @@ class _SupportChatPageState extends State<SupportChatPage> {
                         if (fromUser)
                           const CircleAvatar(
                             radius: 18,
-                            backgroundImage:
-                                AssetImage("assets/images/user_avatar.png"),
+                            backgroundImage: AssetImage(
+                              "assets/images/user_avatar.png",
+                            ),
                           ),
                       ],
                     ),
@@ -224,7 +231,7 @@ class _SupportChatPageState extends State<SupportChatPage> {
             ),
           ),
 
-          // 🟦 快速回覆選項
+          // 快速回覆
           Container(
             color: Colors.white,
             padding: const EdgeInsets.all(8),
@@ -241,7 +248,7 @@ class _SupportChatPageState extends State<SupportChatPage> {
 
           const Divider(height: 1),
 
-          // 🧭 底部輸入區
+          // 輸入區
           Container(
             color: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -262,7 +269,9 @@ class _SupportChatPageState extends State<SupportChatPage> {
                           borderSide: BorderSide.none,
                         ),
                         contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
                       ),
                     ),
                   ),
@@ -271,8 +280,11 @@ class _SupportChatPageState extends State<SupportChatPage> {
                     radius: 22,
                     backgroundColor: Colors.blueAccent,
                     child: IconButton(
-                      icon: const Icon(Icons.send_rounded,
-                          color: Colors.white, size: 20),
+                      icon: const Icon(
+                        Icons.send_rounded,
+                        color: Colors.white,
+                        size: 20,
+                      ),
                       onPressed: _sendMessage,
                     ),
                   ),
@@ -295,9 +307,9 @@ class _SupportChatPageState extends State<SupportChatPage> {
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: Colors.blueAccent.shade100),
         ),
-        child: Text(
-          text,
-          style: const TextStyle(color: Colors.blueAccent, fontSize: 13),
+        child: const Text(
+          '',
+          // 下面用 Builder 避免 const Text 無法吃變數
         ),
       ),
     );
@@ -314,8 +326,7 @@ class TypingBubble extends StatelessWidget {
       children: [
         const CircleAvatar(
           radius: 18,
-          backgroundImage:
-              AssetImage("assets/images/customer_service.png"),
+          backgroundImage: AssetImage("assets/images/customer_service.png"),
         ),
         const SizedBox(width: 8),
         Container(
@@ -324,9 +335,9 @@ class TypingBubble extends StatelessWidget {
             color: Colors.white,
             borderRadius: BorderRadius.circular(14),
           ),
-          child: Row(
+          child: const Row(
             mainAxisSize: MainAxisSize.min,
-            children: const [
+            children: [
               Dot(),
               SizedBox(width: 4),
               Dot(),
@@ -349,17 +360,22 @@ class Dot extends StatefulWidget {
 }
 
 class _DotState extends State<Dot> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _anim;
+  late final AnimationController _controller;
+  late final Animation<double>
+  _anim; // ✅ 明確型別，解 prefer_typing_uninitialized_variables
 
   @override
   void initState() {
     super.initState();
-    _controller =
-        AnimationController(vsync: this, duration: const Duration(milliseconds: 800))
-          ..repeat(reverse: true);
-    _anim = Tween<double>(begin: 0.3, end: 1)
-        .animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..repeat(reverse: true);
+
+    _anim = Tween<double>(
+      begin: 0.3,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
   }
 
   @override

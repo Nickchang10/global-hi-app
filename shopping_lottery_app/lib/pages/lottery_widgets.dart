@@ -18,12 +18,13 @@ class PointsCard extends StatelessWidget {
   final bool freeUsed;
   final bool spinning;
   final VoidCallback onSpin;
-  const PointsCard(
-      {super.key,
-      required this.points,
-      required this.freeUsed,
-      required this.spinning,
-      required this.onSpin});
+  const PointsCard({
+    super.key,
+    required this.points,
+    required this.freeUsed,
+    required this.spinning,
+    required this.onSpin,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -45,46 +46,61 @@ class PointsCard extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('我的積分',
-                          style:
-                              TextStyle(fontSize: 14, color: Colors.black54)),
-                      const SizedBox(height: 6),
-                      Text('$points',
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 22,
-                              color: Colors.green)),
-                      const SizedBox(height: 6),
-                      Text(freeUsed ? '今日免費已使用' : '今日第一次抽獎免費',
-                          style: const TextStyle(
-                              fontSize: 12, color: Colors.black45)),
-                      const SizedBox(height: 8),
-                      LinearProgressIndicator(
-                        value: progress,
-                        color: Colors.orange,
-                        backgroundColor: Colors.orange.shade100,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '我的積分',
+                      style: TextStyle(fontSize: 14, color: Colors.black54),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '$points',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 22,
+                        color: Colors.green,
                       ),
-                      const SizedBox(height: 4),
-                      const Text('積分越高，中獎機率越大！',
-                          style:
-                              TextStyle(fontSize: 12, color: Colors.black45)),
-                    ]),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      freeUsed ? '今日免費已使用' : '今日第一次抽獎免費',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black45,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(
+                      value: progress,
+                      color: Colors.orange,
+                      backgroundColor: Colors.orange.shade100,
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      '積分越高，中獎機率越大！',
+                      style: TextStyle(fontSize: 12, color: Colors.black45),
+                    ),
+                  ],
+                ),
               ),
               ElevatedButton(
                 onPressed: spinning ? null : onSpin,
                 style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange,
-                    minimumSize: const Size(100, 44),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10))),
+                  backgroundColor: Colors.orange,
+                  minimumSize: const Size(100, 44),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
                 child: spinning
                     ? const SizedBox(
                         width: 20,
                         height: 20,
                         child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2))
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
                     : const Text('立即抽獎'),
               ),
             ],
@@ -118,8 +134,7 @@ class DailyMissionSection extends StatelessWidget {
     return ListTile(
       title: Text(title),
       subtitle: Text(reward, style: const TextStyle(color: Colors.green)),
-      trailing:
-          ElevatedButton(onPressed: onTap, child: const Text('完成任務')),
+      trailing: ElevatedButton(onPressed: onTap, child: const Text('完成任務')),
     );
   }
 }
@@ -134,26 +149,32 @@ class SignInSection extends StatefulWidget {
 
 class _SignInSectionState extends State<SignInSection> {
   int day = 0;
+
   @override
   Widget build(BuildContext context) {
     return _sectionCard(
       title: '📅 連續簽到',
       child: Column(
         children: [
-          Text('已連續簽到 $day 天',
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          Text(
+            '已連續簽到 $day 天',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 8),
           ElevatedButton(
-              onPressed: () {
-                setState(() => day++);
-                int bonus = (day % 7 == 0) ? 50 : 10;
-                widget.onSigned(bonus);
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                    content: Text('簽到成功！獲得 $bonus 積分'),
-                    duration: const Duration(seconds: 2)));
-              },
-              child: const Text('立即簽到')),
+            onPressed: () {
+              setState(() => day++);
+              final bonus = (day % 7 == 0) ? 50 : 10;
+              widget.onSigned(bonus);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('簽到成功！獲得 $bonus 積分'),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+            child: const Text('立即簽到'),
+          ),
         ],
       ),
     );
@@ -163,6 +184,7 @@ class _SignInSectionState extends State<SignInSection> {
 /// 排行榜
 class LeaderboardSection extends StatelessWidget {
   const LeaderboardSection({super.key});
+
   @override
   Widget build(BuildContext context) {
     final List<Map<String, dynamic>> players = List.generate(
@@ -174,15 +196,22 @@ class LeaderboardSection extends StatelessWidget {
       title: '🏆 本週積分排行榜',
       child: Column(
         children: players
-            .map((p) => ListTile(
-                  leading: CircleAvatar(
-                      backgroundColor: Colors.blue.shade100,
-                      child: Text('${players.indexOf(p) + 1}')),
-                  title: Text(p['name'] as String),
-                  trailing: Text('${p['points']} 分',
-                      style: const TextStyle(
-                          color: Colors.orange, fontWeight: FontWeight.bold)),
-                ))
+            .map(
+              (p) => ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: Colors.blue.shade100,
+                  child: Text('${players.indexOf(p) + 1}'),
+                ),
+                title: Text(p['name'] as String),
+                trailing: Text(
+                  '${p['points']} 分',
+                  style: const TextStyle(
+                    color: Colors.orange,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            )
             .toList(),
       ),
     );
@@ -192,6 +221,7 @@ class LeaderboardSection extends StatelessWidget {
 /// 分享
 class ShareSection extends StatelessWidget {
   const ShareSection({super.key});
+
   @override
   Widget build(BuildContext context) {
     return _sectionCard(
@@ -201,12 +231,14 @@ class ShareSection extends StatelessWidget {
           const Text('分享至 LINE / FB 可再獲一次免費抽獎機會！'),
           const SizedBox(height: 12),
           ElevatedButton.icon(
-              onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('已模擬分享成功，獲得 1 次免費抽獎！')));
-              },
-              icon: const Icon(Icons.share),
-              label: const Text('立即分享')),
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('已模擬分享成功，獲得 1 次免費抽獎！')),
+              );
+            },
+            icon: const Icon(Icons.share),
+            label: const Text('立即分享'),
+          ),
         ],
       ),
     );
@@ -234,6 +266,7 @@ class PrizeWheelPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final n = prizes.length;
     if (n == 0) return;
+
     final center = Offset(size.width / 2, size.height / 2);
     final radius = min(size.width, size.height) / 2;
     final rect = Rect.fromCircle(center: center, radius: radius);
@@ -244,18 +277,20 @@ class PrizeWheelPainter extends CustomPainter {
       final sweep = sector;
       final base = palette[i % palette.length];
       final isHighlight = i == highlightIndex;
+
       final paint = Paint()
         ..shader = ui.Gradient.linear(rect.topLeft, rect.bottomRight, base)
         ..colorFilter = isHighlight
             ? const ui.ColorFilter.mode(Colors.white70, BlendMode.softLight)
             : null;
+
       canvas.drawArc(rect, start, sweep, true, paint);
     }
 
     final outer = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = radius * 0.03
-      ..color = Colors.white.withOpacity(0.95);
+      ..color = Colors.white.withValues(alpha: 0.95); // ✅ 修正
     canvas.drawCircle(center, radius, outer);
 
     final innerR = radius * 0.3;
@@ -269,40 +304,58 @@ class PrizeWheelPainter extends CustomPainter {
       final bright = bg.computeLuminance() > 0.65;
       final textColor = bright ? Colors.black87 : Colors.white;
 
-      final icon = Offset(center.dx + cos(mid) * iconR,
-          center.dy + sin(mid) * iconR);
+      final icon = Offset(
+        center.dx + cos(mid) * iconR,
+        center.dy + sin(mid) * iconR,
+      );
       final emoji = _emojiForType(prize.type);
       final tpEmoji = TextPainter(
-          text:
-              TextSpan(text: emoji, style: TextStyle(fontSize: radius * 0.10)),
-          textDirection: TextDirection.ltr);
+        text: TextSpan(
+          text: emoji,
+          style: TextStyle(fontSize: radius * 0.10),
+        ),
+        textDirection: TextDirection.ltr,
+      );
       tpEmoji.layout();
       tpEmoji.paint(
-          canvas, Offset(icon.dx - tpEmoji.width / 2, icon.dy - tpEmoji.height / 2));
+        canvas,
+        Offset(icon.dx - tpEmoji.width / 2, icon.dy - tpEmoji.height / 2),
+      );
 
-      final textPos = Offset(center.dx + cos(mid) * textR,
-          center.dy + sin(mid) * textR);
+      final textPos = Offset(
+        center.dx + cos(mid) * textR,
+        center.dy + sin(mid) * textR,
+      );
       final titleTp = TextPainter(
         text: TextSpan(
-            text: prize.name,
-            style: TextStyle(
-                color: textColor,
-                fontWeight: FontWeight.bold,
-                fontSize: radius * 0.055)),
+          text: prize.name,
+          style: TextStyle(
+            color: textColor,
+            fontWeight: FontWeight.bold,
+            fontSize: radius * 0.055,
+          ),
+        ),
         textDirection: TextDirection.ltr,
         textAlign: TextAlign.center,
       );
       titleTp.layout(maxWidth: radius * 0.46);
       titleTp.paint(
-          canvas, Offset(textPos.dx - titleTp.width / 2, textPos.dy - titleTp.height / 2));
+        canvas,
+        Offset(textPos.dx - titleTp.width / 2, textPos.dy - titleTp.height / 2),
+      );
     }
 
-    final innerPaint =
-        Paint()..shader = ui.Gradient.radial(center, innerR, [Colors.white, Colors.blue.shade50]);
+    final innerPaint = Paint()
+      ..shader = ui.Gradient.radial(center, innerR, [
+        Colors.white,
+        Colors.blue.shade50,
+      ]);
     canvas.drawCircle(center, innerR, innerPaint);
+
     final innerBorder = Paint()
       ..style = PaintingStyle.stroke
-      ..color = Colors.white.withOpacity(0.95)
+      ..color = Colors.white
+          .withValues(alpha: 0.95) // ✅ 修正
       ..strokeWidth = max(3.0, radius * 0.02);
     canvas.drawCircle(center, innerR, innerBorder);
   }
@@ -315,7 +368,7 @@ class PrizeWheelPainter extends CustomPainter {
         return '💠';
       case PrizeType.voucher:
         return '🎟️';
-      default:
+      case PrizeType.none:
         return '✨';
     }
   }
@@ -336,9 +389,10 @@ Widget _sectionCard({required String title, required Widget child}) {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(title,
-                style:
-                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
             const SizedBox(height: 8),
             child,
           ],

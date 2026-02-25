@@ -31,9 +31,14 @@ class _AdminModeSwitcherState extends State<AdminModeSwitcher>
   @override
   void initState() {
     super.initState();
-    _controller =
-        AnimationController(vsync: this, duration: const Duration(milliseconds: 300));
-    _glowAnim = CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _glowAnim = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+    );
   }
 
   @override
@@ -70,9 +75,9 @@ class _AdminModeSwitcherState extends State<AdminModeSwitcher>
         Navigator.pushReplacementNamed(context, targetRoute);
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('切換模式發生錯誤：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('切換模式發生錯誤：$e')));
     } finally {
       Future.delayed(const Duration(milliseconds: 500), () {
         if (mounted) setState(() => _busy = false);
@@ -82,7 +87,9 @@ class _AdminModeSwitcherState extends State<AdminModeSwitcher>
 
   @override
   Widget build(BuildContext context) {
-    final isSimple = context.select<AdminModeController, bool>((m) => m.isSimpleMode);
+    final isSimple = context.select<AdminModeController, bool>(
+      (m) => m.isSimpleMode,
+    );
     final cs = Theme.of(context).colorScheme;
 
     final label = isSimple ? '切換為完整模式' : '切換為簡潔模式';
@@ -110,7 +117,10 @@ class _AdminModeSwitcherState extends State<AdminModeSwitcher>
                     color: baseColor,
                     boxShadow: [
                       BoxShadow(
-                        color: baseColor.withOpacity(0.5 * _glowAnim.value),
+                        // ✅ deprecated 修正：withOpacity -> withValues(alpha: ...)
+                        color: baseColor.withValues(
+                          alpha: 0.5 * _glowAnim.value,
+                        ),
                         blurRadius: 22 * _glowAnim.value,
                         spreadRadius: 2,
                       ),

@@ -1,38 +1,34 @@
 // lib/pages/admin/internal/admin_approvals_page.dart
 //
-// ✅ AdminApprovalsPage（最終完整版｜多用途審核中心｜可直接使用）
+// ✅ AdminApprovalsPage（正式版｜完整版｜可直接編譯）
 // ------------------------------------------------------------
-// Firestore：approvals/{id}
-//
-// 建議欄位（可彈性存在）：
-// {
-//   type: "refund" | "support" | "vendor" | "content" | ...
-//   title: "退款申請 - 訂單 #A001" (可選)
-//   applicantName: "王小明" (可選)
-//   userId: "uid" (可選)
-//   orderId: "orderId" (可選)
-//   status: "pending" | "approved" | "rejected" | "closed"
-//   remark: "備註" (可選)
-//   createdAt: Timestamp
-//   updatedAt: Timestamp
-//   reviewedAt: Timestamp (可選)
-//   reviewedBy: "admin/uid" (可選)
-// }
+// Firestore collection: approvals
 //
 // 功能：
-// - 篩選：狀態（all/pending/approved/rejected/closed）
-// - 搜尋：申請人 / 類型 / 標題 / ID / 訂單 / 備註
-// - 操作：通過 / 退回 / 結案（可填備註）
-// - 詳情：一鍵查看整份 doc 欄位
+// ✅ 列表（依 createdAt desc）
+// ✅ 搜尋（前端 filter：title/summary/type/status/requester）
+// ✅ 狀態操作：approve / reject / close / reopen（寫回 status + resolver + timestamps）
+// ✅ 快速篩選：All / Pending / Approved / Rejected / Closed
 //
-// ⚠️ 注意：為避免 where+orderBy 造成索引/權限問題，本頁採用：
-//   - 先 orderBy(createdAt desc).limit(1000) 取回
-//   - 再在前端做狀態/搜尋篩選
+// 欄位建議：
+// title        String
+// summary      String
+// type         String (e.g. vendor_join / refund / content / other)
+// status       String (pending|approved|rejected|closed)
+// requesterUid String (optional)
+// requesterName String (optional)
+// payload      Map (optional)
+// createdAt    Timestamp
+// updatedAt    Timestamp
+// resolvedAt   Timestamp (optional)
+// resolverUid  String (optional)
+// resolverName String (optional)
+// note         String (optional)   // 審核備註
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 class AdminApprovalsPage extends StatefulWidget {
   const AdminApprovalsPage({super.key});
@@ -42,537 +38,596 @@ class AdminApprovalsPage extends StatefulWidget {
 }
 
 class _AdminApprovalsPageState extends State<AdminApprovalsPage> {
-  final _db = FirebaseFirestore.instance;
-  late final CollectionReference<Map<String, dynamic>> _col =
-      _db.collection('approvals');
+  static const _colName = 'approvals';
 
-  static const _statusAll = 'all';
-  static const _statusPending = 'pending';
-  static const _statusApproved = 'approved';
-  static const _statusRejected = 'rejected';
-  static const _statusClosed = 'closed';
+  final _searchCtrl = TextEditingController();
+  String _keyword = '';
 
-  String _status = _statusPending;
+  String _filter = 'all'; // all/pending/approved/rejected/closed
 
-  String _search = '';
-  final _searchCtl = TextEditingController();
+  CollectionReference<Map<String, dynamic>> get _col =>
+      FirebaseFirestore.instance.collection(_colName);
 
-  final _fmt = DateFormat('yyyy/MM/dd HH:mm');
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl.addListener(() {
+      final v = _searchCtrl.text.trim();
+      if (v == _keyword) return;
+      setState(() => _keyword = v);
+    });
+  }
 
   @override
   void dispose() {
-    _searchCtl.dispose();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _stream() {
-    // ✅ 先抓回來再前端篩選，避免 index / where+orderBy 陷阱
-    return _col.orderBy('createdAt', descending: true).limit(1000).snapshots();
+  Query<Map<String, dynamic>> _query() {
+    // ✅ 避免複合索引：只 orderBy createdAt，status 篩選走前端
+    return _col.orderBy('createdAt', descending: true).limit(400);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+  String _s(dynamic v, [String fallback = '']) => (v ?? fallback).toString();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('審核 / 工單管理', style: TextStyle(fontWeight: FontWeight.w900)),
-        actions: [
-          _statusDropdown(),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Column(
-        children: [
-          _searchBar(),
-          const Divider(height: 1),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _stream(),
-              builder: (context, snap) {
-                if (snap.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snap.hasError) {
-                  return _ErrorView(
-                    title: '載入失敗',
-                    message: snap.error.toString(),
-                    hint: '若出現 permission-denied，請確認 rules：/approvals 允許 isAdmin() 讀寫。',
-                    onRetry: () => setState(() {}),
-                  );
-                }
-
-                final docs = (snap.data?.docs ?? const [])
-                    .map((d) => _ApprovalDoc.fromDoc(d))
-                    .toList();
-
-                final filtered = _applyFilter(docs);
-
-                return Column(
-                  children: [
-                    _summaryRow(filtered.length, cs),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: filtered.isEmpty
-                          ? const Center(child: Text('目前沒有符合條件的審核項目'))
-                          : ListView.builder(
-                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
-                              itemCount: filtered.length,
-                              itemBuilder: (_, i) => _buildCard(filtered[i], cs),
-                            ),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ============================================================
-  // UI
-  // ============================================================
-
-  Widget _statusDropdown() {
-    return DropdownButton<String>(
-      value: _status,
-      underline: const SizedBox(),
-      onChanged: (v) => setState(() => _status = v ?? _statusPending),
-      items: const [
-        DropdownMenuItem(value: _statusAll, child: Text('全部')),
-        DropdownMenuItem(value: _statusPending, child: Text('待審核')),
-        DropdownMenuItem(value: _statusApproved, child: Text('已通過')),
-        DropdownMenuItem(value: _statusRejected, child: Text('已退回')),
-        DropdownMenuItem(value: _statusClosed, child: Text('已結案')),
-      ],
-    );
-  }
-
-  Widget _searchBar() {
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: TextField(
-        controller: _searchCtl,
-        onChanged: (v) => setState(() => _search = v.trim()),
-        decoration: InputDecoration(
-          prefixIcon: const Icon(Icons.search),
-          hintText: '搜尋：申請人 / 類型 / 標題 / ID / 訂單 / 備註',
-          isDense: true,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          suffixIcon: _searchCtl.text.trim().isEmpty
-              ? null
-              : IconButton(
-                  tooltip: '清除',
-                  icon: const Icon(Icons.close),
-                  onPressed: () {
-                    setState(() {
-                      _searchCtl.clear();
-                      _search = '';
-                    });
-                  },
-                ),
-        ),
-      ),
-    );
-  }
-
-  Widget _summaryRow(int count, ColorScheme cs) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      child: Row(
-        children: [
-          Text('共 $count 筆', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700)),
-          const Spacer(),
-          FilledButton.tonalIcon(
-            onPressed: () => setState(() {}),
-            icon: const Icon(Icons.refresh),
-            label: const Text('重新整理'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ============================================================
-  // Filter
-  // ============================================================
-
-  List<_ApprovalDoc> _applyFilter(List<_ApprovalDoc> input) {
-    final s = _search.trim().toLowerCase();
-
-    return input.where((d) {
-      final matchStatus = (_status == _statusAll) || d.status == _status;
-
-      if (!matchStatus) return false;
-
-      if (s.isEmpty) return true;
-
-      final hay = <String>[
-        d.id,
-        d.type,
-        d.title,
-        d.applicantName,
-        d.userId,
-        d.orderId,
-        d.remark,
-      ].join(' ').toLowerCase();
-
-      return hay.contains(s);
-    }).toList();
-  }
-
-  // ============================================================
-  // Card
-  // ============================================================
-
-  Widget _buildCard(_ApprovalDoc a, ColorScheme cs) {
-    final statusText = _statusLabel(a.status);
-    final typeText = a.type.isEmpty ? '未指定類型' : a.type;
-
-    final createdText = a.createdAt == null ? '—' : _fmt.format(a.createdAt!);
-    final updatedText = a.updatedAt == null ? '—' : _fmt.format(a.updatedAt!);
-
-    return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: _statusColor(a.status, cs),
-          child: Icon(_statusIcon(a.status), color: Colors.white),
-        ),
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                a.title.isNotEmpty ? a.title : '$typeText（${a.applicantName.isEmpty ? '未指定申請人' : a.applicantName}）',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w900),
-              ),
-            ),
-            const SizedBox(width: 8),
-            _chip(statusText, bg: _statusColor(a.status, cs).withOpacity(0.12), fg: _statusColor(a.status, cs)),
-            const SizedBox(width: 6),
-            _chip(typeText, bg: cs.secondaryContainer.withOpacity(0.45), fg: cs.onSecondaryContainer),
-          ],
-        ),
-        subtitle: Text(
-          [
-            'ID: ${a.id}',
-            if (a.orderId.isNotEmpty) '訂單: ${a.orderId}',
-            '建立：$createdText',
-            '更新：$updatedText',
-            if (a.remark.isNotEmpty) '備註：${a.remark}',
-          ].join('\n'),
-          style: TextStyle(height: 1.3, color: cs.onSurfaceVariant),
-        ),
-        trailing: PopupMenuButton<String>(
-          onSelected: (v) => _handleAction(v, a),
-          itemBuilder: (_) => [
-            const PopupMenuItem(value: 'approve', child: Text('通過')),
-            const PopupMenuItem(value: 'reject', child: Text('退回')),
-            const PopupMenuItem(value: 'close', child: Text('結案')),
-            const PopupMenuDivider(),
-            const PopupMenuItem(value: 'view', child: Text('查看詳情')),
-          ],
-        ),
-        onTap: () => _openDetailDialog(a.id, a.raw),
-      ),
-    );
-  }
-
-  Widget _chip(String text, {required Color bg, required Color fg}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(999)),
-      child: Text(text, style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: fg)),
-    );
-  }
-
-  // ============================================================
-  // Actions
-  // ============================================================
-
-  Future<void> _handleAction(String action, _ApprovalDoc a) async {
-    if (action == 'view') {
-      _openDetailDialog(a.id, a.raw);
-      return;
-    }
-
-    final String nextStatus = switch (action) {
-      'approve' => _statusApproved,
-      'reject' => _statusRejected,
-      'close' => _statusClosed,
-      _ => a.status,
-    };
-
-    final noteCtl = TextEditingController(text: a.remark);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(
-          action == 'approve'
-              ? '通過審核'
-              : action == 'reject'
-                  ? '退回審核'
-                  : '結案',
-          style: const TextStyle(fontWeight: FontWeight.w900),
-        ),
-        content: TextField(
-          controller: noteCtl,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: '備註（選填）',
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('確認')),
-        ],
-      ),
-    );
-
-    if (ok != true) {
-      noteCtl.dispose();
-      return;
-    }
-
+  String _fmtTs(dynamic ts) {
     try {
-      await _col.doc(a.id).set({
-        'status': nextStatus,
-        // ✅ 保留 remark（你原本的欄位），同時加上 reviewNote（更語意化）
-        'remark': noteCtl.text.trim(),
-        'reviewNote': noteCtl.text.trim(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'reviewedAt': FieldValue.serverTimestamp(),
-        // 你若之後要填 uid，可改成 request.auth.uid（後端）或從 App 端傳入
-        'reviewedBy': 'admin',
-      }, SetOptions(merge: true));
-
-      _toast('已更新審核狀態');
-    } catch (e) {
-      _toast('操作失敗：$e');
-    } finally {
-      noteCtl.dispose();
+      DateTime? dt;
+      if (ts is Timestamp) dt = ts.toDate();
+      if (ts is DateTime) dt = ts;
+      if (dt == null) return '';
+      final y = dt.year.toString().padLeft(4, '0');
+      final m = dt.month.toString().padLeft(2, '0');
+      final d = dt.day.toString().padLeft(2, '0');
+      final hh = dt.hour.toString().padLeft(2, '0');
+      final mm = dt.minute.toString().padLeft(2, '0');
+      return '$y-$m-$d $hh:$mm';
+    } catch (_) {
+      return '';
     }
   }
 
-  void _openDetailDialog(String id, Map<String, dynamic> d) {
-    final cs = Theme.of(context).colorScheme;
+  bool _match(Map<String, dynamic> data) {
+    // 狀態 filter
+    final status = _s(data['status'], 'pending').trim().toLowerCase();
+    if (_filter != 'all' && status != _filter) return false;
 
-    final entries = d.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
+    // keyword filter
+    final k = _keyword.trim().toLowerCase();
+    if (k.isEmpty) return true;
 
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('審核詳情：$id', style: const TextStyle(fontWeight: FontWeight.w900)),
-        content: SizedBox(
-          width: 560,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: entries.map((e) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 160,
-                        child: Text('${e.key}:', style: const TextStyle(fontWeight: FontWeight.w800)),
-                      ),
-                      Expanded(
-                        child: Text(
-                          _prettyValue(e.value),
-                          style: TextStyle(color: cs.onSurfaceVariant),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('關閉')),
-        ],
-      ),
-    );
+    final title = _s(data['title']).toLowerCase();
+    final summary = _s(data['summary']).toLowerCase();
+    final type = _s(data['type']).toLowerCase();
+    final requester = _s(data['requesterName']).toLowerCase();
+    final requesterUid = _s(data['requesterUid']).toLowerCase();
+
+    return title.contains(k) ||
+        summary.contains(k) ||
+        type.contains(k) ||
+        requester.contains(k) ||
+        requesterUid.contains(k) ||
+        status.contains(k);
   }
 
-  String _prettyValue(dynamic v) {
-    if (v == null) return 'null';
-    if (v is Timestamp) return _fmt.format(v.toDate());
-    if (v is DateTime) return _fmt.format(v);
-    return v.toString();
+  Color _statusColor(String status) {
+    switch (status) {
+      case 'approved':
+        return Colors.green;
+      case 'rejected':
+        return Colors.red;
+      case 'closed':
+        return Colors.blueGrey;
+      default:
+        return Colors.orange;
+    }
   }
-
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  // ============================================================
-  // Status UI helpers
-  // ============================================================
 
   String _statusLabel(String status) {
     switch (status) {
-      case _statusApproved:
+      case 'approved':
         return '已通過';
-      case _statusRejected:
-        return '已退回';
-      case _statusClosed:
+      case 'rejected':
+        return '已拒絕';
+      case 'closed':
         return '已結案';
-      case _statusPending:
       default:
         return '待審核';
     }
   }
 
-  Color _statusColor(String status, ColorScheme cs) {
-    switch (status) {
-      case _statusApproved:
-        return Colors.green;
-      case _statusRejected:
-        return Colors.redAccent;
-      case _statusClosed:
-        return Colors.grey;
-      case _statusPending:
-      default:
-        return cs.primary;
+  Future<void> _updateStatus(
+    DocumentSnapshot<Map<String, dynamic>> doc, {
+    required String nextStatus,
+    String? note,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    try {
+      await doc.reference.update({
+        'status': nextStatus,
+        'note': note,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'resolvedAt': (nextStatus == 'pending')
+            ? null
+            : FieldValue.serverTimestamp(),
+        'resolverUid': user?.uid,
+        'resolverName': user?.displayName ?? user?.email,
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已更新狀態：${_statusLabel(nextStatus)}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
-  IconData _statusIcon(String status) {
-    switch (status) {
-      case _statusApproved:
-        return Icons.check_circle;
-      case _statusRejected:
-        return Icons.cancel;
-      case _statusClosed:
-        return Icons.archive;
-      case _statusPending:
-      default:
-        return Icons.hourglass_top;
-    }
+  Future<String?> _askNote({required String title}) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            hintText: '可填寫審核備註（選填）',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('確定'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return null;
+    return ctrl.text.trim();
   }
-}
 
-// ============================================================
-// Model
-// ============================================================
+  void _openDetail(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final d = doc.data() ?? <String, dynamic>{};
 
-class _ApprovalDoc {
-  final String id;
-  final String type;
-  final String title;
-  final String applicantName;
-  final String userId;
-  final String orderId;
-  final String status;
-  final String remark;
-  final DateTime? createdAt;
-  final DateTime? updatedAt;
-  final Map<String, dynamic> raw;
+    final title = _s(d['title'], '(未命名)');
+    final summary = _s(d['summary'], '');
+    final type = _s(d['type'], '');
+    final status = _s(d['status'], 'pending').toLowerCase();
 
-  const _ApprovalDoc({
-    required this.id,
-    required this.type,
-    required this.title,
-    required this.applicantName,
-    required this.userId,
-    required this.orderId,
-    required this.status,
-    required this.remark,
-    required this.createdAt,
-    required this.updatedAt,
-    required this.raw,
-  });
+    final requesterName = _s(d['requesterName'], '');
+    final requesterUid = _s(d['requesterUid'], '');
+    final createdAt = _fmtTs(d['createdAt']);
+    final updatedAt = _fmtTs(d['updatedAt']);
+    final resolvedAt = _fmtTs(d['resolvedAt']);
+    final resolverName = _s(d['resolverName'], '');
+    final note = _s(d['note'], '');
 
-  factory _ApprovalDoc.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data();
-    return _ApprovalDoc(
-      id: doc.id,
-      type: (d['type'] ?? '').toString(),
-      title: (d['title'] ?? '').toString(),
-      applicantName: (d['applicantName'] ?? '').toString(),
-      userId: (d['userId'] ?? '').toString(),
-      orderId: (d['orderId'] ?? '').toString(),
-      status: (d['status'] ?? 'pending').toString(),
-      remark: (d['remark'] ?? d['reviewNote'] ?? '').toString(),
-      createdAt: _toDateTime(d['createdAt']),
-      updatedAt: _toDateTime(d['updatedAt']),
-      raw: d,
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 14,
+            bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 820),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const Divider(height: 1),
+                const SizedBox(height: 10),
+                _kv('ID', doc.id),
+                if (type.isNotEmpty) _kv('Type', type),
+                _kv('狀態', _statusLabel(status)),
+                if (summary.trim().isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    '摘要',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(summary),
+                ],
+                const SizedBox(height: 10),
+                _kv(
+                  'Requester',
+                  [
+                    if (requesterName.isNotEmpty) requesterName,
+                    if (requesterUid.isNotEmpty) requesterUid,
+                  ].join(' / '),
+                ),
+                if (createdAt.isNotEmpty) _kv('建立', createdAt),
+                if (updatedAt.isNotEmpty) _kv('更新', updatedAt),
+                if (resolvedAt.isNotEmpty) _kv('處理時間', resolvedAt),
+                if (resolverName.isNotEmpty) _kv('處理人', resolverName),
+                if (note.trim().isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    '備註',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(note),
+                ],
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    if (status == 'pending') ...[
+                      FilledButton.icon(
+                        onPressed: () async {
+                          final n = await _askNote(title: '通過（可填備註）');
+                          if (n == null && !mounted) return;
+                          Navigator.pop(context);
+                          await _updateStatus(
+                            doc,
+                            nextStatus: 'approved',
+                            note: n,
+                          );
+                        },
+                        icon: const Icon(Icons.check),
+                        label: const Text('通過'),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: () async {
+                          final n = await _askNote(title: '拒絕（可填備註）');
+                          if (n == null && !mounted) return;
+                          Navigator.pop(context);
+                          await _updateStatus(
+                            doc,
+                            nextStatus: 'rejected',
+                            note: n,
+                          );
+                        },
+                        icon: const Icon(Icons.close),
+                        label: const Text('拒絕'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final n = await _askNote(title: '結案（可填備註）');
+                          if (n == null && !mounted) return;
+                          Navigator.pop(context);
+                          await _updateStatus(
+                            doc,
+                            nextStatus: 'closed',
+                            note: n,
+                          );
+                        },
+                        icon: const Icon(Icons.archive_outlined),
+                        label: const Text('結案'),
+                      ),
+                    ] else ...[
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          await _updateStatus(
+                            doc,
+                            nextStatus: 'pending',
+                            note: note,
+                          );
+                        },
+                        icon: const Icon(Icons.undo),
+                        label: const Text('重新開啟'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final n = await _askNote(title: '更新備註');
+                          if (n == null && !mounted) return;
+                          Navigator.pop(context);
+                          await _updateStatus(doc, nextStatus: status, note: n);
+                        },
+                        icon: const Icon(Icons.edit_note_outlined),
+                        label: const Text('更新備註'),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    if (v.trim().isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 88,
+            child: Text(k, style: const TextStyle(color: Colors.grey)),
+          ),
+          Expanded(
+            child: Text(v, style: const TextStyle(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('審核 / 工單'),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(112),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _searchCtrl,
+                  decoration: InputDecoration(
+                    hintText: '搜尋 title / summary / type / status / requester',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _keyword.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: '清除',
+                            onPressed: () => _searchCtrl.clear(),
+                            icon: const Icon(Icons.clear),
+                          ),
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 36,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    children: [
+                      _filterChip('all', '全部'),
+                      _filterChip('pending', '待審核'),
+                      _filterChip('approved', '已通過'),
+                      _filterChip('rejected', '已拒絕'),
+                      _filterChip('closed', '已結案'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: _query().snapshots(),
+        builder: (context, snap) {
+          if (snap.hasError) {
+            return Center(child: Text('讀取失敗：${snap.error}'));
+          }
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final docs = snap.data!.docs.where((d) => _match(d.data())).toList();
+
+          if (docs.isEmpty) {
+            return const Center(child: Text('沒有符合條件的資料'));
+          }
+
+          return ListView.separated(
+            padding: const EdgeInsets.all(12),
+            itemCount: docs.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            itemBuilder: (context, i) {
+              final doc = docs[i];
+              final d = doc.data();
+
+              final title = _s(d['title'], '(未命名)');
+              final summary = _s(d['summary'], '');
+              final type = _s(d['type'], '');
+              final status = _s(d['status'], 'pending').toLowerCase();
+
+              final createdAt = _fmtTs(d['createdAt']);
+              final color = _statusColor(status);
+
+              return Card(
+                elevation: 0.8,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => _openDetail(doc),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            _Tag(text: _statusLabel(status), color: color),
+                          ],
+                        ),
+                        if (summary.trim().isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            summary,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: Colors.black87,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 10),
+                        Text(
+                          [
+                            if (type.isNotEmpty) 'type: $type',
+                            if (createdAt.isNotEmpty) '建立: $createdAt',
+                            'id: ${doc.id}',
+                          ].join('   •   '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: Colors.grey[700],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            if (status == 'pending') ...[
+                              FilledButton.icon(
+                                onPressed: () async {
+                                  final n = await _askNote(title: '通過（可填備註）');
+                                  await _updateStatus(
+                                    doc,
+                                    nextStatus: 'approved',
+                                    note: n,
+                                  );
+                                },
+                                icon: const Icon(Icons.check),
+                                label: const Text('通過'),
+                              ),
+                              FilledButton.tonalIcon(
+                                onPressed: () async {
+                                  final n = await _askNote(title: '拒絕（可填備註）');
+                                  await _updateStatus(
+                                    doc,
+                                    nextStatus: 'rejected',
+                                    note: n,
+                                  );
+                                },
+                                icon: const Icon(Icons.close),
+                                label: const Text('拒絕'),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: () async {
+                                  final n = await _askNote(title: '結案（可填備註）');
+                                  await _updateStatus(
+                                    doc,
+                                    nextStatus: 'closed',
+                                    note: n,
+                                  );
+                                },
+                                icon: const Icon(Icons.archive_outlined),
+                                label: const Text('結案'),
+                              ),
+                            ] else ...[
+                              OutlinedButton.icon(
+                                onPressed: () => _openDetail(doc),
+                                icon: const Icon(Icons.open_in_new),
+                                label: const Text('查看'),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: () async {
+                                  await _updateStatus(
+                                    doc,
+                                    nextStatus: 'pending',
+                                  );
+                                },
+                                icon: const Icon(Icons.undo),
+                                label: const Text('重新開啟'),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _filterChip(String v, String label) {
+    final selected = _filter == v;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        onSelected: (_) => setState(() => _filter = v),
+      ),
     );
   }
 }
 
-DateTime? _toDateTime(dynamic v) {
-  if (v == null) return null;
-  if (v is DateTime) return v;
-  if (v is Timestamp) return v.toDate();
-  if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
-  return null;
-}
+class _Tag extends StatelessWidget {
+  const _Tag({required this.text, required this.color});
 
-// ============================================================
-// Error View
-// ============================================================
-
-class _ErrorView extends StatelessWidget {
-  final String title;
-  final String message;
-  final String? hint;
-  final VoidCallback onRetry;
-
-  const _ErrorView({
-    required this.title,
-    required this.message,
-    required this.onRetry,
-    this.hint,
-  });
+  final String text;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 720),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Card(
-            elevation: 0,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.error_outline, size: 44, color: cs.error),
-                  const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 10),
-                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
-                  if (hint != null) ...[
-                    const SizedBox(height: 10),
-                    Text(hint!, style: TextStyle(color: cs.onSurfaceVariant)),
-                  ],
-                  const SizedBox(height: 14),
-                  FilledButton.icon(
-                    onPressed: onRetry,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('重試'),
-                  ),
-                ],
-              ),
-            ),
-          ),
+    // ✅ 修正 deprecated: withOpacity -> withValues(alpha: )
+    // 0.12 * 255 ≈ 31；0.35 * 255 ≈ 89
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 31),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 89)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12,
+          color: color,
+          fontWeight: FontWeight.w800,
         ),
       ),
     );

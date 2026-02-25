@@ -1,35 +1,16 @@
-// lib/pages/admin/content/admin_news_page.dart
+// lib/pages/admin/dashboard/admin_news_page.dart
 //
-// ✅ AdminNewsPage（內容管理｜最新消息｜專業單檔完整版｜可編譯）
+// ✅ AdminNewsPage（最新消息管理｜單檔完整版｜可直接使用｜可編譯）
 // ------------------------------------------------------------
+// Firestore：news 集合
 // 功能：
-// - Firestore 即時列表：news
-// - 搜尋：標題/副標/內容/slug
-// - 篩選：狀態（draft/published/archived）、公開（isPublic）
-// - 拖曳排序：ReorderableListView（寫回 sortOrder）
-// - 多選批次：上架/下架/封存/刪除
-// - 新增/編輯：同檔 Dialog（title/subtitle/content/coverImageUrl/slug/publishAt/pinned/status/isPublic）
-// - 欄位容錯：避免 Object?/null 造成崩潰
+// 1) 列表：搜尋 / 狀態篩選（draft/published）/ 公開篩選
+// 2) 新增/編輯：標題、摘要、封面連結、內容、狀態、公開
+// 3) 拖曳排序：ReorderableListView（✅ 只允許在「無篩選」狀態排序）
+// 4) 多選批次：公開/不公開/刪除
+// 5) 欄位容錯：Timestamp → DateTime、缺欄位不崩潰
 //
-// 建議 Firestore 結構：news/{id}
-// {
-//   title: "xxx",
-//   subtitle: "xxx",
-//   content: "長文...",
-//   coverImageUrl: "https://...",
-//   slug: "xxx-yyy",
-//   status: "draft" | "published" | "archived",
-//   isPublic: true/false,
-//   pinned: true/false,
-//   publishAt: Timestamp?,
-//   sortOrder: 0,
-//   createdAt: Timestamp,
-//   updatedAt: Timestamp
-// }
-//
-// ✅ Query index 建議：
-// - orderBy(sortOrder) + orderBy(updatedAt) 會需要複合索引（Firestore 會提示建立）
-//
+// 依賴：cloud_firestore, intl
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -45,22 +26,26 @@ class AdminNewsPage extends StatefulWidget {
 
 class _AdminNewsPageState extends State<AdminNewsPage> {
   final _db = FirebaseFirestore.instance;
+  late final CollectionReference<Map<String, dynamic>> _col = _db.collection(
+    'news',
+  );
 
   final _search = TextEditingController();
+
   bool _selectionMode = false;
   final Set<String> _selected = {};
 
-  static const _statusAll = 'all';
-  static const _statusDraft = 'draft';
-  static const _statusPublished = 'published';
-  static const _statusArchived = 'archived';
+  static const String _statusAll = 'all';
+  static const String _statusDraft = 'draft';
+  static const String _statusPublished = 'published';
+  String _status = _statusAll;
 
-  static const _publicAll = 'all';
-  static const _publicOnly = 'public';
-  static const _privateOnly = 'private';
+  static const String _pubAll = 'all';
+  static const String _pubPublic = 'public';
+  static const String _pubHidden = 'hidden';
+  String _pub = _pubAll;
 
-  String _statusFilter = _statusAll;
-  String _publicFilter = _publicAll;
+  final _dtFmt = DateFormat('yyyy/MM/dd HH:mm');
 
   @override
   void dispose() {
@@ -68,16 +53,20 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
     super.dispose();
   }
 
-  CollectionReference<Map<String, dynamic>> get _col => _db.collection('news');
+  int _alpha255(double opacity01) => (opacity01 * 255).round().clamp(0, 255);
 
-  Query<Map<String, dynamic>> _baseQuery() {
-    // ✅ 以 sortOrder 為主排序；若你沒有 sortOrder，也可改成 createdAt
-    return _col.orderBy('sortOrder', descending: false).orderBy('updatedAt', descending: true);
+  Stream<QuerySnapshot<Map<String, dynamic>>> _stream() {
+    // ✅ 不 orderBy：避免 sortOrder / updatedAt 欄位不存在時 query 直接炸
+    return _col.limit(800).snapshots();
   }
 
-  // ============================================================
-  // UI
-  // ============================================================
+  bool _canReorderNow() {
+    final q = _search.text.trim();
+    return q.isEmpty &&
+        _status == _statusAll &&
+        _pub == _pubAll &&
+        !_selectionMode;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -85,28 +74,28 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('最新消息管理', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '最新消息管理',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           if (_selectionMode) ...[
             IconButton(
-              tooltip: '批次上架',
-              icon: const Icon(Icons.visibility),
-              onPressed: _selected.isEmpty ? null : () => _batchPublish(true),
-            ),
-            IconButton(
-              tooltip: '批次下架',
+              tooltip: '批次設為不公開',
               icon: const Icon(Icons.visibility_off),
-              onPressed: _selected.isEmpty ? null : () => _batchPublish(false),
+              onPressed: _selected.isEmpty
+                  ? null
+                  : () => _batchSetPublic(false),
             ),
             IconButton(
-              tooltip: '批次封存',
-              icon: const Icon(Icons.inventory_2_outlined),
-              onPressed: _selected.isEmpty ? null : _batchArchive,
+              tooltip: '批次設為公開',
+              icon: const Icon(Icons.visibility),
+              onPressed: _selected.isEmpty ? null : () => _batchSetPublic(true),
             ),
             IconButton(
               tooltip: '批次刪除',
               icon: const Icon(Icons.delete_outline),
-              onPressed: _selected.isEmpty ? null : _batchDelete,
+              onPressed: _selected.isEmpty ? null : _confirmBatchDelete,
             ),
           ],
           IconButton(
@@ -137,38 +126,58 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
           const Divider(height: 1),
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _baseQuery().snapshots(),
+              stream: _stream(),
               builder: (context, snap) {
                 if (snap.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
                 if (snap.hasError) {
-                  return Center(child: Text('載入失敗：${snap.error}'));
+                  return _ErrorView(
+                    title: '載入失敗',
+                    message: snap.error.toString(),
+                    hint: '請確認 Firestore rules：news 允許 admin 讀寫。',
+                    onRetry: () => setState(() {}),
+                  );
                 }
 
-                final docs = snap.data?.docs ?? const [];
-                if (docs.isEmpty) return const Center(child: Text('目前沒有最新消息'));
+                final items = (snap.data?.docs ?? const [])
+                    .map((d) => _NewsDoc.fromDoc(d))
+                    .toList();
 
-                final filtered = _applyFilters(docs);
+                // ✅ client-side sort：sortOrder -> updatedAt/createdAt desc -> id
+                items.sort((a, b) {
+                  final so = a.sortOrder.compareTo(b.sortOrder);
+                  if (so != 0) return so;
 
-                if (filtered.isEmpty) {
-                  return const Center(child: Text('沒有符合條件的內容'));
-                }
+                  final at =
+                      (a.updatedAt ?? a.createdAt)?.millisecondsSinceEpoch ?? 0;
+                  final bt =
+                      (b.updatedAt ?? b.createdAt)?.millisecondsSinceEpoch ?? 0;
+                  final c = bt.compareTo(at);
+                  if (c != 0) return c;
 
-                return ReorderableListView.builder(
-                  padding: const EdgeInsets.only(bottom: 90),
-                  buildDefaultDragHandles: false,
-                  itemCount: filtered.length,
-                  onReorder: (oldIndex, newIndex) => _onReorder(filtered, oldIndex, newIndex),
-                  itemBuilder: (context, i) {
-                    final doc = filtered[i];
-                    return _newsTile(
-                      doc,
-                      index: i,
-                      key: ValueKey(doc.id),
+                  return a.id.compareTo(b.id);
+                });
+
+                final filtered = _applyFilters(items);
+
+                return Column(
+                  children: [
+                    _summaryRow(
+                      total: items.length,
+                      showing: filtered.length,
                       cs: cs,
-                    );
-                  },
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? const Center(child: Text('沒有符合條件的消息'))
+                          : _buildList(
+                              filtered,
+                              allowReorder: _canReorderNow(),
+                            ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -179,85 +188,136 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
   }
 
   // ============================================================
-  // Filter Bar
+  // Filter UI
   // ============================================================
 
   Widget _filterBar() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
       child: LayoutBuilder(
         builder: (context, c) {
-          final isNarrow = c.maxWidth < 760;
+          final cs = Theme.of(context).colorScheme;
+          final narrow = c.maxWidth < 980;
 
           final searchField = TextField(
             controller: _search,
             onChanged: (_) => setState(() {}),
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search),
-              hintText: '搜尋（標題/副標/內容/slug）',
+              hintText: '搜尋（title / summary / status / id）',
               isDense: true,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
             ),
           );
 
-          final statusDropdown = DropdownButtonFormField<String>(
+          final statusDD = DropdownButtonFormField<String>(
+            key: ValueKey('status_$_status'),
             isExpanded: true,
-            value: _statusFilter,
+            initialValue: _status,
             decoration: InputDecoration(
               isDense: true,
               labelText: '狀態',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
             ),
             items: const [
               DropdownMenuItem(value: _statusAll, child: Text('全部')),
               DropdownMenuItem(value: _statusDraft, child: Text('草稿')),
               DropdownMenuItem(value: _statusPublished, child: Text('已上架')),
-              DropdownMenuItem(value: _statusArchived, child: Text('封存')),
             ],
-            onChanged: (v) => setState(() => _statusFilter = v ?? _statusAll),
+            onChanged: (v) => setState(() => _status = v ?? _statusAll),
           );
 
-          final publicDropdown = DropdownButtonFormField<String>(
+          final pubDD = DropdownButtonFormField<String>(
+            key: ValueKey('pub_$_pub'),
             isExpanded: true,
-            value: _publicFilter,
+            initialValue: _pub,
             decoration: InputDecoration(
               isDense: true,
               labelText: '公開',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
             ),
             items: const [
-              DropdownMenuItem(value: _publicAll, child: Text('全部')),
-              DropdownMenuItem(value: _publicOnly, child: Text('僅公開')),
-              DropdownMenuItem(value: _privateOnly, child: Text('僅不公開')),
+              DropdownMenuItem(value: _pubAll, child: Text('全部')),
+              DropdownMenuItem(value: _pubPublic, child: Text('公開')),
+              DropdownMenuItem(value: _pubHidden, child: Text('不公開')),
             ],
-            onChanged: (v) => setState(() => _publicFilter = v ?? _publicAll),
+            onChanged: (v) => setState(() => _pub = v ?? _pubAll),
           );
 
-          if (isNarrow) {
+          final hintRow = Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, size: 16, color: cs.onSurfaceVariant),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    _canReorderNow()
+                        ? '提示：可拖曳排序（將寫回 sortOrder）'
+                        : '提示：需清除搜尋/篩選後才可排序',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _search.clear();
+                      _status = _statusAll;
+                      _pub = _pubAll;
+                    });
+                  },
+                  child: const Text('清除篩選'),
+                ),
+              ],
+            ),
+          );
+
+          if (narrow) {
             return Column(
               children: [
                 searchField,
                 const SizedBox(height: 10),
                 Row(
                   children: [
-                    Expanded(child: statusDropdown),
+                    Expanded(child: statusDD),
                     const SizedBox(width: 10),
-                    Expanded(child: publicDropdown),
+                    Expanded(child: pubDD),
                   ],
                 ),
+                hintRow,
               ],
             );
           }
 
-          return Row(
+          return Column(
             children: [
-              Expanded(flex: 3, child: searchField),
-              const SizedBox(width: 12),
-              Expanded(flex: 1, child: statusDropdown),
-              const SizedBox(width: 12),
-              Expanded(flex: 1, child: publicDropdown),
+              Row(
+                children: [
+                  Expanded(flex: 4, child: searchField),
+                  const SizedBox(width: 12),
+                  Expanded(flex: 2, child: statusDD),
+                  const SizedBox(width: 12),
+                  Expanded(flex: 2, child: pubDD),
+                ],
+              ),
+              hintRow,
             ],
           );
         },
@@ -265,197 +325,229 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
     );
   }
 
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _applyFilters(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
+  Widget _summaryRow({
+    required int total,
+    required int showing,
+    required ColorScheme cs,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Row(
+        children: [
+          Text(
+            '共 $total 筆｜目前顯示 $showing 筆',
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const Spacer(),
+          FilledButton.tonalIcon(
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh),
+            label: const Text('重新整理'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // List
+  // ============================================================
+
+  List<_NewsDoc> _applyFilters(List<_NewsDoc> input) {
     final q = _search.text.trim().toLowerCase();
 
-    return docs.where((doc) {
-      final d = doc.data();
-      final title = (d['title'] ?? '').toString().toLowerCase();
-      final subtitle = (d['subtitle'] ?? '').toString().toLowerCase();
-      final content = (d['content'] ?? '').toString().toLowerCase();
-      final slug = (d['slug'] ?? '').toString().toLowerCase();
+    return input.where((d) {
+      final matchQ =
+          q.isEmpty ||
+          d.id.toLowerCase().contains(q) ||
+          d.title.toLowerCase().contains(q) ||
+          d.summary.toLowerCase().contains(q) ||
+          d.status.toLowerCase().contains(q);
 
-      final matchSearch = q.isEmpty ||
-          title.contains(q) ||
-          subtitle.contains(q) ||
-          content.contains(q) ||
-          slug.contains(q) ||
-          doc.id.toLowerCase().contains(q);
-
-      final status = _normalizeStatus(d);
-      final isPublic = _asBool(d['isPublic']) || status == _statusPublished;
-
-      final matchStatus = _statusFilter == _statusAll ? true : status == _statusFilter;
-
-      final matchPublic = switch (_publicFilter) {
-        _publicAll => true,
-        _publicOnly => isPublic,
-        _privateOnly => !isPublic,
+      final matchStatus = switch (_status) {
+        _statusAll => true,
+        _statusDraft => d.status == _statusDraft,
+        _statusPublished => d.status == _statusPublished,
         _ => true,
       };
 
-      return matchSearch && matchStatus && matchPublic;
+      final matchPub = switch (_pub) {
+        _pubAll => true,
+        _pubPublic => d.isPublic == true,
+        _pubHidden => d.isPublic != true,
+        _ => true,
+      };
+
+      return matchQ && matchStatus && matchPub;
     }).toList();
   }
 
-  // ============================================================
-  // Tile
-  // ============================================================
-
-  Widget _newsTile(
-    QueryDocumentSnapshot<Map<String, dynamic>> doc, {
-    required int index,
-    required Key key,
-    required ColorScheme cs,
-  }) {
-    final d = doc.data();
-
-    final title = (d['title'] ?? '').toString().trim();
-    final subtitle = (d['subtitle'] ?? '').toString().trim();
-    final status = _normalizeStatus(d);
-    final pinned = _asBool(d['pinned']);
-    final isPublic = _asBool(d['isPublic']) || status == _statusPublished;
-
-    final publishAt = _toDateTime(d['publishAt']);
-    final publishText = publishAt == null ? '' : DateFormat('yyyy/MM/dd HH:mm').format(publishAt);
-
-    final cover = (d['coverImageUrl'] ?? '').toString().trim();
-    final selected = _selected.contains(doc.id);
-
-    return ListTile(
-      key: key,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      leading: _thumb(cover),
-      title: Row(
-        children: [
-          Expanded(
-            child: Text(
-              title.isEmpty ? '(未命名消息)' : title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w900),
-            ),
-          ),
-          if (pinned) const SizedBox(width: 6),
-          if (pinned) const Icon(Icons.push_pin, size: 18),
-        ],
-      ),
-      subtitle: Text(
-        [
-          if (subtitle.isNotEmpty) subtitle,
-          if (publishText.isNotEmpty) '上架時間：$publishText',
-          'ID: ${doc.id}',
-        ].join('\n'),
-        maxLines: 3,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: _selectionMode
-          ? Checkbox(
-              value: selected,
-              onChanged: (v) => _toggleSelect(doc.id, v == true),
-            )
-          : SizedBox(
-              width: 160,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  _statusChip(status),
-                  const SizedBox(width: 8),
-                  Icon(isPublic ? Icons.public : Icons.lock_outline,
-                      size: 18, color: isPublic ? Colors.green.shade700 : cs.onSurfaceVariant),
-                  const SizedBox(width: 10),
-                  ReorderableDragStartListener(
-                    index: index,
-                    child: const Icon(Icons.drag_handle),
-                  ),
-                ],
-              ),
-            ),
-      onTap: () {
-        if (_selectionMode) {
-          _toggleSelect(doc.id, !selected);
-          return;
-        }
-        _openEdit(doc);
-      },
-      onLongPress: () {
-        setState(() {
-          _selectionMode = true;
-          _selected.add(doc.id);
-        });
-      },
-    );
-  }
-
-  Widget _thumb(String url) {
-    if (url.isEmpty) {
-      return Container(
-        width: 52,
-        height: 52,
-        decoration: BoxDecoration(
-          color: Colors.grey.shade200,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: const Icon(Icons.image_not_supported),
+  Widget _buildList(List<_NewsDoc> items, {required bool allowReorder}) {
+    if (!allowReorder) {
+      return ListView.builder(
+        padding: const EdgeInsets.only(bottom: 90),
+        itemCount: items.length,
+        itemBuilder: (context, i) =>
+            _tile(items[i], index: i, allowReorder: false),
       );
     }
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: Image.network(
-        url,
-        width: 52,
-        height: 52,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => Container(
-          width: 52,
-          height: 52,
-          color: Colors.grey.shade200,
-          child: const Icon(Icons.broken_image),
-        ),
+
+    return ReorderableListView.builder(
+      padding: const EdgeInsets.only(bottom: 90),
+      buildDefaultDragHandles: false,
+      itemCount: items.length,
+      onReorder: (oldIndex, newIndex) async {
+        if (!_canReorderNow()) {
+          _toast('請清除篩選後再排序');
+          return;
+        }
+        await _onReorder(items, oldIndex, newIndex);
+      },
+      itemBuilder: (context, i) => _tile(
+        items[i],
+        index: i,
+        allowReorder: true,
+        key: ValueKey(items[i].id),
       ),
     );
   }
 
-  Widget _statusChip(String status) {
-    String text = status;
-    Color bg = Colors.grey.shade200;
-    Color fg = Colors.black87;
+  Widget _tile(
+    _NewsDoc d, {
+    required int index,
+    required bool allowReorder,
+    Key? key,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final selected = _selected.contains(d.id);
 
-    switch (status) {
-      case _statusDraft:
-        text = '草稿';
-        bg = Colors.orange.shade100;
-        fg = Colors.orange.shade900;
-        break;
-      case _statusPublished:
-        text = '上架';
-        bg = Colors.green.shade100;
-        fg = Colors.green.shade900;
-        break;
-      case _statusArchived:
-        text = '封存';
-        bg = Colors.blueGrey.shade100;
-        fg = Colors.blueGrey.shade900;
-        break;
-    }
+    final time = d.updatedAt ?? d.createdAt;
+    final timeText = time == null ? '—' : _dtFmt.format(time);
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(999)),
-      child: Text(text, style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: fg)),
+    return Card(
+      key: key ?? ValueKey(d.id),
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: ListTile(
+        onTap: () {
+          if (_selectionMode) {
+            setState(() {
+              if (selected) {
+                _selected.remove(d.id);
+              } else {
+                _selected.add(d.id);
+              }
+            });
+            return;
+          }
+          _openEdit(d);
+        },
+        onLongPress: () {
+          setState(() {
+            _selectionMode = true;
+            _selected.add(d.id);
+          });
+        },
+        tileColor: selected
+            ? cs.primaryContainer.withAlpha(_alpha255(0.28))
+            : null,
+        leading: CircleAvatar(
+          backgroundColor: cs.primaryContainer,
+          child: Icon(Icons.article_outlined, color: cs.onPrimaryContainer),
+        ),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                d.title.isEmpty ? '(未命名消息)' : d.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
+            ),
+            const SizedBox(width: 8),
+            _pill(
+              d.status == _statusPublished ? '已上架' : '草稿',
+              enabled: d.status == _statusPublished,
+            ),
+            const SizedBox(width: 6),
+            _pill(d.isPublic ? '公開' : '不公開', enabled: d.isPublic),
+          ],
+        ),
+        subtitle: Text(
+          [
+            if (d.summary.isNotEmpty) d.summary,
+            '更新：$timeText',
+            'id=${d.id}',
+          ].join('  •  '),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: cs.onSurfaceVariant,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        trailing: _selectionMode
+            ? Checkbox(
+                value: selected,
+                onChanged: (v) {
+                  setState(() {
+                    if (v == true) {
+                      _selected.add(d.id);
+                    } else {
+                      _selected.remove(d.id);
+                    }
+                  });
+                },
+              )
+            : SizedBox(
+                width: 240,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Switch(
+                      value: d.isPublic,
+                      onChanged: (v) => _setPublic(d.id, v),
+                    ),
+                    const SizedBox(width: 6),
+                    IconButton(
+                      tooltip: '編輯',
+                      icon: const Icon(Icons.edit_outlined),
+                      onPressed: () => _openEdit(d),
+                    ),
+                    if (allowReorder)
+                      ReorderableDragStartListener(
+                        index: index,
+                        child: const Icon(Icons.drag_handle),
+                      )
+                    else
+                      Icon(
+                        Icons.drag_handle,
+                        color: cs.onSurfaceVariant.withAlpha(_alpha255(0.35)),
+                      ),
+                  ],
+                ),
+              ),
+      ),
     );
   }
 
-  void _toggleSelect(String id, bool add) {
-    setState(() {
-      if (add) {
-        _selected.add(id);
-      } else {
-        _selected.remove(id);
-      }
-    });
+  Widget _pill(String text, {bool enabled = true}) {
+    final bg = enabled ? Colors.green.shade100 : Colors.grey.shade200;
+    final fg = enabled ? Colors.green.shade900 : Colors.grey.shade700;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: fg),
+      ),
+    );
   }
 
   // ============================================================
@@ -463,30 +555,29 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
   // ============================================================
 
   Future<void> _onReorder(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    List<_NewsDoc> items,
     int oldIndex,
     int newIndex,
   ) async {
+    final messenger = ScaffoldMessenger.of(context);
+
     if (newIndex > oldIndex) newIndex--;
-    final moved = docs.removeAt(oldIndex);
-    docs.insert(newIndex, moved);
+
+    final moved = items.removeAt(oldIndex);
+    items.insert(newIndex, moved);
 
     final batch = _db.batch();
-    for (int i = 0; i < docs.length; i++) {
-      batch.update(docs[i].reference, {
+    for (int i = 0; i < items.length; i++) {
+      batch.set(_col.doc(items[i].id), {
         'sortOrder': i,
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+        'updatedBy': 'admin',
+      }, SetOptions(merge: true));
     }
+    await batch.commit();
 
-    try {
-      await batch.commit();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('排序已更新')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('排序更新失敗：$e')));
-    }
+    if (!mounted) return;
+    messenger.showSnackBar(const SnackBar(content: Text('排序已更新')));
   }
 
   // ============================================================
@@ -494,82 +585,70 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
   // ============================================================
 
   Future<void> _openCreate() async {
-    final created = await showDialog<bool>(
+    await showDialog(
       context: context,
-      builder: (_) => _NewsEditDialog(
-        titleText: '新增最新消息',
+      builder: (_) => _NewsEditorDialog(
+        title: '新增消息',
         initial: const {},
-        onSave: (payload) => _create(payload),
+        onSave: (payload) async {
+          final nextOrder = await _nextSortOrder();
+          await _col.add({
+            ...payload,
+            'sortOrder': nextOrder,
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+            'updatedBy': 'admin',
+          });
+        },
       ),
     );
-
-    if (created == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已新增消息')));
-    }
   }
 
-  Future<void> _openEdit(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
-    final updated = await showDialog<bool>(
+  Future<void> _openEdit(_NewsDoc d) async {
+    await showDialog(
       context: context,
-      builder: (_) => _NewsEditDialog(
-        titleText: '編輯最新消息',
-        initial: {...doc.data(), 'id': doc.id},
-        onSave: (payload) => _update(doc.id, payload),
-        onDelete: () => _deleteOne(doc.id),
+      builder: (_) => _NewsEditorDialog(
+        title: '編輯消息',
+        docId: d.id,
+        initial: d.raw,
+        onSave: (payload) async {
+          await _col.doc(d.id).set({
+            ...payload,
+            'updatedAt': FieldValue.serverTimestamp(),
+            'updatedBy': 'admin',
+          }, SetOptions(merge: true));
+        },
+        onDelete: () => _confirmDeleteOne(d.id),
       ),
     );
-
-    if (updated == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已更新消息')));
-    }
-  }
-
-  Future<void> _create(Map<String, dynamic> payload) async {
-    final nextSortOrder = await _nextSortOrder();
-    final nowPatch = <String, dynamic>{
-      ...payload,
-      'sortOrder': payload['sortOrder'] ?? nextSortOrder,
-      'createdAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
-
-    await _col.add(nowPatch);
-  }
-
-  Future<void> _update(String id, Map<String, dynamic> payload) async {
-    await _col.doc(id).set({
-      ...payload,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
-
-  Future<void> _deleteOne(String id) async {
-    final ok = await _confirm(
-      title: '刪除消息',
-      message: '確定要刪除此消息？刪除後無法復原。\nID: $id',
-      confirmText: '刪除',
-      danger: true,
-    );
-    if (ok != true) return;
-
-    await _col.doc(id).delete();
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刪除消息')));
-    }
   }
 
   Future<int> _nextSortOrder() async {
+    final snap = await _col.limit(300).get();
+    int maxOrder = -1;
+    for (final doc in snap.docs) {
+      final so = _asInt(doc.data()['sortOrder'], fallback: -1);
+      if (so > maxOrder) maxOrder = so;
+    }
+    return maxOrder + 1;
+  }
+
+  Future<void> _setPublic(String id, bool isPublic) async {
+    final messenger = ScaffoldMessenger.of(context);
+
     try {
-      final snap = await _col.orderBy('sortOrder', descending: true).limit(1).get();
-      if (snap.docs.isEmpty) return 0;
-      final d = snap.docs.first.data();
-      final v = d['sortOrder'];
-      if (v is int) return v + 1;
-      if (v is num) return v.toInt() + 1;
-      return 0;
-    } catch (_) {
-      return 0;
+      await _col.doc(id).set({
+        'isPublic': isPublic,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': 'admin',
+      }, SetOptions(merge: true));
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text(isPublic ? '已設為公開' : '已設為不公開')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
@@ -577,127 +656,90 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
   // Batch
   // ============================================================
 
-  Future<void> _batchPublish(bool publish) async {
+  Future<void> _batchSetPublic(bool isPublic) async {
     final ok = await _confirm(
-      title: publish ? '批次上架' : '批次下架',
-      message: '共選取 ${_selected.length} 筆，確定要${publish ? '上架' : '下架'}？',
+      title: isPublic ? '批次設為公開' : '批次設為不公開',
+      message: '共選取 ${_selected.length} 筆，確定要執行？',
       confirmText: '確認',
     );
     if (ok != true) return;
 
-    final batch = _db.batch();
-    for (final id in _selected) {
-      batch.update(_col.doc(id), {
-        'status': publish ? _statusPublished : _statusDraft,
-        'isPublic': publish,
-        if (publish) 'publishAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    }
-
-    try {
-      await batch.commit();
-      if (!mounted) return;
-      setState(() {
-        _selectionMode = false;
-        _selected.clear();
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已${publish ? '上架' : '下架'}選取內容')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('批次操作失敗：$e')));
-    }
-  }
-
-  Future<void> _batchArchive() async {
-    final ok = await _confirm(
-      title: '批次封存',
-      message: '共選取 ${_selected.length} 筆，確定要封存？',
-      confirmText: '封存',
-    );
-    if (ok != true) return;
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
 
     final batch = _db.batch();
     for (final id in _selected) {
-      batch.update(_col.doc(id), {
-        'status': _statusArchived,
-        'isPublic': false,
+      batch.set(_col.doc(id), {
+        'isPublic': isPublic,
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+        'updatedBy': 'admin',
+      }, SetOptions(merge: true));
     }
+    await batch.commit();
 
-    try {
-      await batch.commit();
-      if (!mounted) return;
-      setState(() {
-        _selectionMode = false;
-        _selected.clear();
-      });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已封存選取內容')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('批次封存失敗：$e')));
-    }
+    if (!mounted) return;
+    setState(() => _selected.clear());
+    messenger.showSnackBar(const SnackBar(content: Text('已批次更新')));
   }
 
-  Future<void> _batchDelete() async {
+  Future<void> _confirmBatchDelete() async {
     final ok = await _confirm(
       title: '批次刪除',
-      message: '共選取 ${_selected.length} 筆，刪除後無法復原。是否繼續？',
+      message: '共選取 ${_selected.length} 筆，刪除後無法復原。',
       confirmText: '刪除',
-      danger: true,
+      isDanger: true,
     );
     if (ok != true) return;
+
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
 
     final batch = _db.batch();
     for (final id in _selected) {
       batch.delete(_col.doc(id));
     }
+    await batch.commit();
 
-    try {
-      await batch.commit();
-      if (!mounted) return;
-      setState(() {
-        _selectionMode = false;
-        _selected.clear();
-      });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刪除選取內容')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('批次刪除失敗：$e')));
-    }
+    if (!mounted) return;
+    setState(() {
+      _selected.clear();
+      _selectionMode = false;
+    });
+    messenger.showSnackBar(const SnackBar(content: Text('已刪除選取項目')));
+  }
+
+  Future<void> _confirmDeleteOne(String id) async {
+    final ok = await _confirm(
+      title: '刪除消息',
+      message: '確定要刪除這筆資料嗎？\nID: $id',
+      confirmText: '刪除',
+      isDanger: true,
+    );
+    if (ok != true) return;
+
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+
+    await _col.doc(id).delete();
+
+    if (!mounted) return;
+    messenger.showSnackBar(const SnackBar(content: Text('已刪除')));
   }
 
   // ============================================================
   // Helpers
   // ============================================================
 
-  String _normalizeStatus(Map<String, dynamic> d) {
-    final s = (d['status'] ?? '').toString().trim().toLowerCase();
-    if (s == _statusDraft || s == _statusPublished || s == _statusArchived) return s;
-
-    // 兼容舊資料：若沒有 status 但 isPublic==true → 視為 published
-    if (_asBool(d['isPublic'])) return _statusPublished;
-    return _statusDraft;
-  }
-
-  static bool _asBool(dynamic v) => v == true;
-
-  static DateTime? _toDateTime(dynamic v) {
-    if (v == null) return null;
-    if (v is DateTime) return v;
-    if (v is Timestamp) return v.toDate();
-    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
-    return null;
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<bool?> _confirm({
     required String title,
     required String message,
     required String confirmText,
-    bool danger = false,
+    bool isDanger = false,
   }) {
     final cs = Theme.of(context).colorScheme;
     return showDialog<bool>(
@@ -706,11 +748,14 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
         content: Text(message),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: danger ? cs.error : null,
-              foregroundColor: danger ? cs.onError : null,
+              backgroundColor: isDanger ? cs.error : null,
+              foregroundColor: isDanger ? cs.onError : null,
             ),
             onPressed: () => Navigator.pop(context, true),
             child: Text(confirmText),
@@ -722,43 +767,38 @@ class _AdminNewsPageState extends State<AdminNewsPage> {
 }
 
 // ============================================================
-// Edit Dialog (single-file, no extra routes)
+// Editor Dialog
 // ============================================================
 
-class _NewsEditDialog extends StatefulWidget {
-  final String titleText;
+class _NewsEditorDialog extends StatefulWidget {
+  final String title;
+  final String? docId;
   final Map<String, dynamic> initial;
   final Future<void> Function(Map<String, dynamic> payload) onSave;
-  final Future<void> Function()? onDelete;
+  final VoidCallback? onDelete;
 
-  const _NewsEditDialog({
-    required this.titleText,
+  const _NewsEditorDialog({
+    required this.title,
     required this.initial,
     required this.onSave,
+    this.docId,
     this.onDelete,
   });
 
   @override
-  State<_NewsEditDialog> createState() => _NewsEditDialogState();
+  State<_NewsEditorDialog> createState() => _NewsEditorDialogState();
 }
 
-class _NewsEditDialogState extends State<_NewsEditDialog> {
+class _NewsEditorDialogState extends State<_NewsEditorDialog> {
   final _formKey = GlobalKey<FormState>();
 
-  late final TextEditingController _title;
-  late final TextEditingController _subtitle;
-  late final TextEditingController _content;
-  late final TextEditingController _cover;
-  late final TextEditingController _slug;
+  final _title = TextEditingController();
+  final _summary = TextEditingController();
+  final _coverUrl = TextEditingController();
+  final _content = TextEditingController();
 
-  static const _statusDraft = 'draft';
-  static const _statusPublished = 'published';
-  static const _statusArchived = 'archived';
-
-  late String _status;
-  late bool _isPublic;
-  late bool _pinned;
-  DateTime? _publishAt;
+  String _status = 'draft';
+  bool _isPublic = true;
 
   bool _saving = false;
 
@@ -767,198 +807,149 @@ class _NewsEditDialogState extends State<_NewsEditDialog> {
     super.initState();
     final d = widget.initial;
 
-    _title = TextEditingController(text: (d['title'] ?? '').toString());
-    _subtitle = TextEditingController(text: (d['subtitle'] ?? '').toString());
-    _content = TextEditingController(text: (d['content'] ?? '').toString());
-    _cover = TextEditingController(text: (d['coverImageUrl'] ?? '').toString());
-    _slug = TextEditingController(text: (d['slug'] ?? '').toString());
+    _title.text = (d['title'] ?? '').toString();
+    _summary.text = (d['summary'] ?? '').toString();
+    _coverUrl.text = (d['coverUrl'] ?? '').toString();
+    _content.text = (d['content'] ?? '').toString();
 
-    final statusRaw = (d['status'] ?? '').toString().trim().toLowerCase();
-    _status = (statusRaw == _statusDraft || statusRaw == _statusPublished || statusRaw == _statusArchived)
-        ? statusRaw
-        : ((_asBool(d['isPublic'])) ? _statusPublished : _statusDraft);
-
-    _isPublic = _asBool(d['isPublic']) || _status == _statusPublished;
-    _pinned = _asBool(d['pinned']);
-    _publishAt = _toDateTime(d['publishAt']);
+    final st = (d['status'] ?? 'draft').toString();
+    _status = (st == 'published' || st == 'draft') ? st : 'draft';
+    _isPublic = d['isPublic'] == null ? true : (d['isPublic'] == true);
   }
 
   @override
   void dispose() {
     _title.dispose();
-    _subtitle.dispose();
+    _summary.dispose();
+    _coverUrl.dispose();
     _content.dispose();
-    _cover.dispose();
-    _slug.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final hasDelete = widget.onDelete != null && (widget.initial['id'] ?? '').toString().isNotEmpty;
 
     return AlertDialog(
-      title: Text(widget.titleText, style: const TextStyle(fontWeight: FontWeight.w900)),
+      // ✅ FIX: 這行括號已修正（上一版多打一個 ')'）
+      title: Text(
+        widget.title,
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
       content: SizedBox(
-        width: 720,
+        width: 920,
         child: Form(
           key: _formKey,
           child: SingleChildScrollView(
             child: Column(
               children: [
-                _textField(
+                TextFormField(
                   controller: _title,
-                  label: '標題',
-                  hint: '例：新品上市 / 活動公告 / 系統更新',
-                  validator: (v) => (v == null || v.trim().isEmpty) ? '請輸入標題' : null,
-                  onChanged: (v) {
-                    // ✅ 若 slug 空白，跟著 title 自動生成（不覆蓋手動輸入）
-                    if (_slug.text.trim().isEmpty) {
-                      _slug.text = _slugify(v);
-                    }
-                    setState(() {});
-                  },
+                  decoration: const InputDecoration(
+                    labelText: '標題 *',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? '請輸入標題' : null,
                 ),
                 const SizedBox(height: 10),
-                _textField(
-                  controller: _subtitle,
-                  label: '副標（可選）',
-                  hint: '用一句話描述重點',
+                TextFormField(
+                  controller: _summary,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: '摘要（可空）',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _coverUrl,
+                  decoration: const InputDecoration(
+                    labelText: '封面圖片連結 coverUrl（可空）',
+                    hintText: 'https://...',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
                 const SizedBox(height: 10),
 
-                _textField(
-                  controller: _slug,
-                  label: 'Slug（可選）',
-                  hint: '例：2026-new-launch（用於網址或查找）',
+                DropdownButtonFormField<String>(
+                  key: ValueKey('status_$_status'),
+                  isExpanded: true,
+                  initialValue: _status,
+                  decoration: const InputDecoration(
+                    labelText: '狀態（status）',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'draft', child: Text('草稿')),
+                    DropdownMenuItem(value: 'published', child: Text('已上架')),
+                  ],
+                  onChanged: _saving
+                      ? null
+                      : (v) => setState(() => _status = v ?? _status),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 6),
 
-                _textField(
-                  controller: _cover,
-                  label: '封面圖片 URL（可選）',
-                  hint: '貼上 https://... 圖片網址',
-                  onChanged: (_) => setState(() {}),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text(
+                    '前台公開（isPublic）',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: Text(
+                    _isPublic ? '目前：公開' : '目前：不公開',
+                    style: TextStyle(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  value: _isPublic,
+                  onChanged: _saving
+                      ? null
+                      : (v) => setState(() => _isPublic = v),
                 ),
-                if (_cover.text.trim().isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Image.network(
-                      _cover.text.trim(),
-                      height: 160,
-                      width: double.infinity,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                        height: 160,
-                        color: Colors.grey.shade200,
-                        alignment: Alignment.center,
-                        child: const Text('封面預覽失敗（URL 可能無效）'),
+                const SizedBox(height: 6),
+
+                TextFormField(
+                  controller: _content,
+                  maxLines: 10,
+                  decoration: const InputDecoration(
+                    labelText: '內容 content（可用 Markdown / HTML）',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                if (widget.docId != null) ...[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'ID：${widget.docId}',
+                      style: TextStyle(
+                        color: cs.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
                 ],
-
-                const SizedBox(height: 10),
-                _textField(
-                  controller: _content,
-                  label: '內容（可選）',
-                  hint: '支援長文（可先用純文字，後續再升級成 Markdown/HTML 編輯器）',
-                  maxLines: 8,
-                ),
-
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: _status,
-                        isExpanded: true,
-                        decoration: InputDecoration(
-                          isDense: true,
-                          labelText: '狀態',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: _statusDraft, child: Text('草稿')),
-                          DropdownMenuItem(value: _statusPublished, child: Text('已上架')),
-                          DropdownMenuItem(value: _statusArchived, child: Text('封存')),
-                        ],
-                        onChanged: (v) {
-                          setState(() {
-                            _status = v ?? _statusDraft;
-                            // ✅ 狀態與公開同步
-                            if (_status == _statusPublished) _isPublic = true;
-                            if (_status == _statusArchived) _isPublic = false;
-                          });
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _dateTimePicker(cs),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 10),
-                SwitchListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('公開（isPublic）', style: TextStyle(fontWeight: FontWeight.w800)),
-                  subtitle: Text(
-                    _isPublic ? '前台可見' : '前台不可見',
-                    style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600),
-                  ),
-                  value: _isPublic,
-                  onChanged: (v) {
-                    setState(() {
-                      _isPublic = v;
-                      if (_isPublic && _status == _statusDraft) _status = _statusPublished;
-                      if (!_isPublic && _status == _statusPublished) _status = _statusDraft;
-                    });
-                  },
-                ),
-                SwitchListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('置頂（pinned）', style: TextStyle(fontWeight: FontWeight.w800)),
-                  subtitle: Text(
-                    _pinned ? '此內容將優先顯示' : '不置頂',
-                    style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600),
-                  ),
-                  value: _pinned,
-                  onChanged: (v) => setState(() => _pinned = v),
-                ),
               ],
             ),
           ),
         ),
       ),
       actions: [
-        if (hasDelete)
+        if (widget.onDelete != null)
           TextButton.icon(
             onPressed: _saving
                 ? null
-                : () async {
-                    final ok = await _confirm(
-                      context,
-                      title: '刪除',
-                      message: '確定要刪除此消息？刪除後無法復原。',
-                      confirmText: '刪除',
-                      danger: true,
-                    );
-                    if (ok != true) return;
-                    await widget.onDelete!.call();
-                    if (context.mounted) Navigator.pop(context, true);
+                : () {
+                    Navigator.pop(context);
+                    widget.onDelete?.call();
                   },
             icon: const Icon(Icons.delete_outline),
             label: const Text('刪除'),
           ),
         TextButton(
-          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          onPressed: _saving ? null : () => Navigator.pop(context),
           child: const Text('取消'),
         ),
         FilledButton.icon(
@@ -967,7 +958,10 @@ class _NewsEditDialogState extends State<_NewsEditDialog> {
               ? SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: cs.onPrimary),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: cs.onPrimary,
+                  ),
                 )
               : const Icon(Icons.save_outlined),
           label: Text(_saving ? '儲存中...' : '儲存'),
@@ -976,157 +970,164 @@ class _NewsEditDialogState extends State<_NewsEditDialog> {
     );
   }
 
-  Widget _dateTimePicker(ColorScheme cs) {
-    final txt = _publishAt == null ? '未設定' : DateFormat('yyyy/MM/dd HH:mm').format(_publishAt!);
-    return OutlinedButton.icon(
-      onPressed: _saving
-          ? null
-          : () async {
-              final picked = await _pickDateTime(context, initial: _publishAt);
-              if (!mounted) return;
-              if (picked == null) return;
-              setState(() => _publishAt = picked);
-            },
-      icon: const Icon(Icons.schedule),
-      label: Align(
-        alignment: Alignment.centerLeft,
-        child: Text(
-          '上架時間：$txt',
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(color: cs.onSurface),
-        ),
-      ),
-      style: OutlinedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
-  }
-
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    final payload = <String, dynamic>{
+      'title': _title.text.trim(),
+      'summary': _summary.text.trim(),
+      'coverUrl': _coverUrl.text.trim(),
+      'content': _content.text,
+      'status': _status,
+      'isPublic': _isPublic,
+    };
+
+    final nav = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
 
     setState(() => _saving = true);
     try {
-      final payload = <String, dynamic>{
-        'title': _title.text.trim(),
-        'subtitle': _subtitle.text.trim(),
-        'content': _content.text.trim(),
-        'coverImageUrl': _cover.text.trim(),
-        'slug': _slug.text.trim(),
-        'status': _status,
-        'isPublic': _isPublic,
-        'pinned': _pinned,
-        'publishAt': _publishAt == null ? null : Timestamp.fromDate(_publishAt!),
-      };
-
-      // 清理 null（避免覆蓋）
-      payload.removeWhere((k, v) => v == null);
-
       await widget.onSave(payload);
 
       if (!mounted) return;
-      Navigator.pop(context, true);
+      nav.pop();
+      messenger.showSnackBar(const SnackBar(content: Text('已儲存')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+      messenger.showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
+}
 
-  Widget _textField({
-    required TextEditingController controller,
-    required String label,
-    String? hint,
-    int maxLines = 1,
-    String? Function(String?)? validator,
-    void Function(String)? onChanged,
-  }) {
-    return TextFormField(
-      controller: controller,
-      maxLines: maxLines,
-      onChanged: onChanged,
-      validator: validator,
-      decoration: InputDecoration(
-        labelText: label,
-        hintText: hint,
-        isDense: true,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
-  }
+// ============================================================
+// Model + Utils
+// ============================================================
 
-  static bool _asBool(dynamic v) => v == true;
+class _NewsDoc {
+  final String id;
+  final Map<String, dynamic> raw;
 
-  static DateTime? _toDateTime(dynamic v) {
-    if (v == null) return null;
-    if (v is DateTime) return v;
-    if (v is Timestamp) return v.toDate();
-    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
-    return null;
-  }
+  final String title;
+  final String summary;
+  final String coverUrl;
+  final String content;
 
-  static String _slugify(String input) {
-    final s = input.trim().toLowerCase();
-    final cleaned = s
-        .replaceAll(RegExp(r'[\s]+'), '-')
-        .replaceAll(RegExp(r'[^a-z0-9\-]+'), '')
-        .replaceAll(RegExp(r'\-+'), '-')
-        .replaceAll(RegExp(r'^\-|\-$'), '');
-    return cleaned;
-  }
+  final String status; // draft / published
+  final bool isPublic;
 
-  static Future<bool?> _confirm(
-    BuildContext context, {
-    required String title,
-    required String message,
-    required String confirmText,
-    bool danger = false,
-  }) {
-    final cs = Theme.of(context).colorScheme;
-    return showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-        content: Text(message),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: danger ? cs.error : null,
-              foregroundColor: danger ? cs.onError : null,
-            ),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(confirmText),
-          ),
-        ],
-      ),
+  final int sortOrder;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  _NewsDoc({
+    required this.id,
+    required this.raw,
+    required this.title,
+    required this.summary,
+    required this.coverUrl,
+    required this.content,
+    required this.status,
+    required this.isPublic,
+    required this.sortOrder,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  factory _NewsDoc.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final d = doc.data();
+    final st = (d['status'] ?? 'draft').toString();
+    return _NewsDoc(
+      id: doc.id,
+      raw: d,
+      title: (d['title'] ?? '').toString(),
+      summary: (d['summary'] ?? '').toString(),
+      coverUrl: (d['coverUrl'] ?? '').toString(),
+      content: (d['content'] ?? '').toString(),
+      status: (st == 'published' || st == 'draft') ? st : 'draft',
+      isPublic: d['isPublic'] == null ? true : (d['isPublic'] == true),
+      sortOrder: _asInt(d['sortOrder'], fallback: 999999),
+      createdAt: _toDateTime(d['createdAt']),
+      updatedAt: _toDateTime(d['updatedAt']),
     );
   }
 }
 
+int _asInt(dynamic v, {required int fallback}) {
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  final p = int.tryParse(v?.toString() ?? '');
+  return p ?? fallback;
+}
+
+DateTime? _toDateTime(dynamic v) {
+  if (v == null) return null;
+  if (v is DateTime) return v;
+  if (v is Timestamp) return v.toDate();
+  if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+  return null;
+}
+
 // ============================================================
-// DateTime picker helper
+// Error View
 // ============================================================
 
-Future<DateTime?> _pickDateTime(BuildContext context, {DateTime? initial}) async {
-  final now = DateTime.now();
-  final init = initial ?? now;
+class _ErrorView extends StatelessWidget {
+  final String title;
+  final String message;
+  final String? hint;
+  final VoidCallback onRetry;
 
-  final d = await showDatePicker(
-    context: context,
-    initialDate: init,
-    firstDate: DateTime(2020),
-    lastDate: DateTime(2100),
-  );
-  if (d == null) return null;
+  const _ErrorView({
+    required this.title,
+    required this.message,
+    required this.onRetry,
+    this.hint,
+  });
 
-  final t = await showTimePicker(
-    context: context,
-    initialTime: TimeOfDay.fromDateTime(init),
-  );
-  if (t == null) return DateTime(d.year, d.month, d.day);
-
-  return DateTime(d.year, d.month, d.day, t.hour, t.minute);
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Card(
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline, size: 44, color: cs.error),
+                  const SizedBox(height: 10),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
+                  if (hint != null) ...[
+                    const SizedBox(height: 10),
+                    Text(hint!, style: TextStyle(color: cs.onSurfaceVariant)),
+                  ],
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重試'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

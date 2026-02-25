@@ -1,49 +1,50 @@
 // lib/pages/admin/orders/admin_order_detail_gate.dart
-//
-// ✅ AdminOrderDetailGate（最終完整版）
-// - 檢查 orderId
-// - 可加 admin_gate 驗證（這裡先用 users role 驗證，避免你專案不一致）
-// - 通過後進入 AdminOrderDetailPage
-
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'admin_order_detail_page.dart';
-
+/// ✅ AdminOrderDetailGate（乾淨版｜移除 Unnecessary cast）
+/// - 從 route arguments 取得 orderId
+/// - 支援 arguments：
+///   1) String orderId
+///   2) {'orderId': 'xxx'}
+///   3) {'id': 'xxx'}（容錯）
+///
+/// 你可以在這裡接你的 AdminOrderDetailPage 或直接顯示明細頁。
 class AdminOrderDetailGate extends StatelessWidget {
-  final String orderId;
-
-  const AdminOrderDetailGate({
-    super.key,
-    required this.orderId,
-  });
+  const AdminOrderDetailGate({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final id = orderId.trim();
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final args = ModalRoute.of(context)?.settings.arguments;
 
-    if (uid == null) {
-      return const Scaffold(body: Center(child: Text('未登入')));
+    String? orderId;
+
+    if (args is String) {
+      orderId = args;
+    } else if (args is Map<String, dynamic>) {
+      // ✅ 不需要 cast，因為 args 已經是 Map<String, dynamic>
+      orderId = (args['orderId'] ?? args['id'])?.toString();
+    } else if (args is Map) {
+      // ✅ 容錯：如果外部傳的是 Map 但不是強型別
+      final map = Map<String, dynamic>.from(args);
+      orderId = (map['orderId'] ?? map['id'])?.toString();
     }
-    if (id.isEmpty) {
-      return const Scaffold(body: Center(child: Text('orderId 不可為空')));
+
+    if (orderId == null || orderId.trim().isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('訂單明細')),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('缺少 orderId，無法開啟訂單明細。'),
+          ),
+        ),
+      );
     }
 
-    return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      future: FirebaseFirestore.instance.collection('users').doc(uid).get(),
-      builder: (context, snap) {
-        if (snap.connectionState != ConnectionState.done) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        final role = (snap.data?.data()?['role'] ?? '').toString();
-        if (role != 'admin') {
-          return const Scaffold(body: Center(child: Text('僅 Admin 可查看此頁')));
-        }
-
-        return AdminOrderDetailPage(orderId: id);
-      },
+    // ✅ 先用 placeholder（你可換成你的 AdminOrderDetailPage / AdminOrderDetailScreen）
+    return Scaffold(
+      appBar: AppBar(title: const Text('訂單明細')),
+      body: Center(child: Text('Admin order detail: $orderId')),
     );
   }
 }

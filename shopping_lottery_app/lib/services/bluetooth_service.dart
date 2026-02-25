@@ -5,12 +5,10 @@
 // - Web 模式：模擬搜尋/連線/斷線
 // - Mobile 模式：預留 MethodChannel(osmile/ble)
 // - 提供 deviceName、isConnected、batteryLevel
-// - 可被 DevicePage / HealthService 使用
 // ======================================================
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class BluetoothService extends ChangeNotifier {
@@ -28,32 +26,28 @@ class BluetoothService extends ChangeNotifier {
   String? get deviceName => _deviceName;
   int get batteryLevel => _battery;
 
-  StreamSubscription? _mockTimer;
+  StreamSubscription<int>? _mockTimer;
 
-  // ======================================================
-  // 模擬連線
-  // ======================================================
   Future<void> scanAndConnect({String preferredName = 'Osmile'}) async {
     if (kIsWeb) {
-      // 模擬：1.5 秒連線成功
       await Future.delayed(const Duration(seconds: 2));
       _deviceName = '$preferredName Watch';
       _connected = true;
       _startBatteryMock();
       notifyListeners();
-    } else {
-      // Mobile 實機：呼叫原生 MethodChannel
-      try {
-        final name = await _channel.invokeMethod<String>('scanAndConnect', {
-          'preferredName': preferredName,
-        });
-        _deviceName = name ?? preferredName;
-        _connected = true;
-        notifyListeners();
-      } catch (e) {
-        debugPrint('[BLE] scanAndConnect error: $e');
-        rethrow;
-      }
+      return;
+    }
+
+    try {
+      final name = await _channel.invokeMethod<String>('scanAndConnect', {
+        'preferredName': preferredName,
+      });
+      _deviceName = name ?? preferredName;
+      _connected = true;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[BLE] scanAndConnect error: $e');
+      rethrow;
     }
   }
 
@@ -62,27 +56,27 @@ class BluetoothService extends ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 500));
       _connected = false;
       _deviceName = null;
-      _mockTimer?.cancel();
+      await _mockTimer?.cancel();
       notifyListeners();
-    } else {
-      try {
-        await _channel.invokeMethod('disconnect');
-        _connected = false;
-        _deviceName = null;
-        _mockTimer?.cancel();
-        notifyListeners();
-      } catch (e) {
-        debugPrint('[BLE] disconnect error: $e');
-      }
+      return;
+    }
+
+    try {
+      await _channel.invokeMethod('disconnect');
+      _connected = false;
+      _deviceName = null;
+      await _mockTimer?.cancel();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[BLE] disconnect error: $e');
     }
   }
 
-  // ======================================================
-  // 模擬電量變化
-  // ======================================================
   void _startBatteryMock() {
     _mockTimer?.cancel();
-    _mockTimer = Stream.periodic(const Duration(seconds: 5)).listen((_) {
+    _mockTimer = Stream.periodic(const Duration(seconds: 5), (i) => i).listen((
+      _,
+    ) {
       if (!_connected) return;
       _battery = (_battery - 1).clamp(5, 100);
       if (_battery == 5) _battery = 100;
@@ -90,6 +84,7 @@ class BluetoothService extends ChangeNotifier {
     });
   }
 
+  @override
   void dispose() {
     _mockTimer?.cancel();
     super.dispose();

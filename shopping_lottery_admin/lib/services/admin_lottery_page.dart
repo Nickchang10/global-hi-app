@@ -1,6 +1,6 @@
 // lib/pages/admin_lottery_page.dart
 //
-// ✅ AdminLotteryPage（最終完整版）
+// ✅ AdminLotteryPage（最終完整版｜已修正 withOpacity -> withValues｜加強 Map cast 安全｜修正 use_build_context_synchronously）
 // ------------------------------------------------------------
 // 功能：
 // - 顯示所有已付款訂單（可抽獎）
@@ -33,11 +33,19 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
     super.dispose();
   }
 
-  bool _matches(Map<String, dynamic> data) {
-    if (_query.trim().isEmpty) return true;
-    final q = _query.toLowerCase();
-    return (data['id'] ?? '').toString().toLowerCase().contains(q) ||
-        (data['buyerUid'] ?? '').toString().toLowerCase().contains(q);
+  bool _matches(String orderId, String buyerUid) {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return true;
+    return orderId.toLowerCase().contains(q) ||
+        buyerUid.toLowerCase().contains(q);
+  }
+
+  Map<String, dynamic> _safeMap(dynamic v) {
+    if (v is Map<String, dynamic>) return v;
+    if (v is Map) {
+      return v.map((k, val) => MapEntry(k.toString(), val));
+    }
+    return <String, dynamic>{};
   }
 
   @override
@@ -50,10 +58,7 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
     final ordersRef = db.collection('orders');
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('抽獎管理'),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text('抽獎管理'), centerTitle: true),
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -64,7 +69,7 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                 prefixIcon: const Icon(Icons.search),
                 hintText: '搜尋 訂單ID / UID',
                 border: const OutlineInputBorder(),
-                suffixIcon: _query.isEmpty
+                suffixIcon: _query.trim().isEmpty
                     ? null
                     : IconButton(
                         icon: const Icon(Icons.clear),
@@ -85,45 +90,45 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                     .snapshots(),
                 builder: (context, snap) {
                   if (snap.hasError) {
-                    return Center(
-                      child: Text('讀取訂單失敗：${snap.error}'),
-                    );
+                    return Center(child: Text('讀取訂單失敗：${snap.error}'));
                   }
                   if (!snap.hasData) {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  final docs = snap.data!.docs.where((d) {
+                  final filtered = snap.data!.docs.where((d) {
                     final data = d.data();
-                    return _matches({
-                      'id': d.id,
-                      'buyerUid': data['buyerUid'] ?? '',
-                    });
+                    final orderId = d.id;
+                    final buyerUid = (data['buyerUid'] ?? '').toString().trim();
+                    return _matches(orderId, buyerUid);
                   }).toList();
 
-                  if (docs.isEmpty) {
+                  if (filtered.isEmpty) {
                     return const Center(child: Text('目前沒有符合的訂單'));
                   }
 
                   return ListView.separated(
-                    itemCount: docs.length,
+                    itemCount: filtered.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),
                     itemBuilder: (_, i) {
-                      final doc = docs[i];
+                      final doc = filtered[i];
                       final data = doc.data();
+
                       final id = doc.id;
-                      final uid =
-                          (data['buyerUid'] ?? '').toString().trim();
-                      final lottery =
-                          (data['lottery'] ?? {}) as Map<String, dynamic>;
+                      final uid = (data['buyerUid'] ?? '').toString().trim();
+
+                      final lottery = _safeMap(data['lottery']);
                       final drawn = lottery['drawn'] == true;
-                      final prizeName =
-                          (lottery['prizeName'] ?? '').toString().trim();
-                      final status =
-                          (lottery['status'] ?? '').toString().trim();
+                      final prizeName = (lottery['prizeName'] ?? '')
+                          .toString()
+                          .trim();
+                      final status = (lottery['status'] ?? '')
+                          .toString()
+                          .trim();
 
                       final cs = Theme.of(context).colorScheme;
                       final isWon = status == 'won';
+
                       final chipColor = isWon
                           ? cs.primary
                           : (drawn ? cs.onSurfaceVariant : Colors.grey);
@@ -133,15 +138,18 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                           width: 40,
                           height: 40,
                           decoration: BoxDecoration(
-                            color: chipColor.withOpacity(0.15),
+                            // ✅ withOpacity -> withValues(alpha: ...)
+                            color: chipColor.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: chipColor.withOpacity(0.3)),
+                            border: Border.all(
+                              color: chipColor.withValues(alpha: 0.30),
+                            ),
                           ),
                           child: Icon(
                             drawn
                                 ? (isWon
-                                    ? Icons.emoji_events
-                                    : Icons.sentiment_dissatisfied)
+                                      ? Icons.emoji_events
+                                      : Icons.sentiment_dissatisfied)
                                 : Icons.help_outline,
                             color: chipColor,
                           ),
@@ -150,12 +158,13 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('UID：$uid', style: const TextStyle(fontSize: 12)),
+                            Text(
+                              'UID：$uid',
+                              style: const TextStyle(fontSize: 12),
+                            ),
                             if (drawn)
                               Text(
-                                isWon
-                                    ? '中獎：$prizeName'
-                                    : '未中獎（銘謝惠顧）',
+                                isWon ? '中獎：$prizeName' : '未中獎（銘謝惠顧）',
                                 style: TextStyle(
                                   color: isWon ? cs.primary : cs.outline,
                                   fontWeight: FontWeight.w700,
@@ -168,7 +177,6 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                           label: Text(drawn ? '重抽' : '抽獎'),
                           onPressed: () async {
                             await _handleDraw(
-                              context,
                               lotterySvc,
                               orderId: id,
                               alreadyDrawn: drawn,
@@ -188,7 +196,6 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
   }
 
   Future<void> _handleDraw(
-    BuildContext context,
     LotteryService lotterySvc, {
     required String orderId,
     required bool alreadyDrawn,
@@ -197,9 +204,9 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
       context: context,
       builder: (_) => AlertDialog(
         title: Text(alreadyDrawn ? '重抽確認' : '抽獎確認'),
-        content: Text(alreadyDrawn
-            ? '此訂單已抽過，確定要重新抽獎嗎？（將覆蓋原紀錄）'
-            : '確定要為訂單 $orderId 執行抽獎嗎？'),
+        content: Text(
+          alreadyDrawn ? '此訂單已抽過，確定要重新抽獎嗎？（將覆蓋原紀錄）' : '確定要為訂單 $orderId 執行抽獎嗎？',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -213,24 +220,29 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
       ),
     );
 
+    // ✅ 修正：跨 await 後使用 State.context 先檢查 mounted（避免 use_build_context_synchronously）
+    if (!mounted) return;
     if (confirmed != true) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('抽獎進行中...')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('抽獎進行中...')));
 
     try {
       final result = await lotterySvc.drawOnce(orderId);
+
       if (!mounted) return;
 
       final msg = result.status == 'won'
           ? '恭喜中獎：「${result.prizeName}」'
           : '未中獎，銘謝惠顧！';
+
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('抽獎失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('抽獎失敗：$e')));
     }
   }
 }

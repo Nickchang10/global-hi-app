@@ -1,51 +1,67 @@
-import 'dart:io';
-import 'package:flutter/services.dart';
+// lib/utils/font_loader.dart
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
-/// ✅ 用於自動偵測字型檔是否存在
-/// 若不存在，則自動回退使用系統字型
-class SafeFontLoader {
-  static bool _customFontAvailable = false;
+/// ✅ FontLoaderUtil（字型載入/套用｜完整版｜已修 prefer_null_aware_operators）
+/// ------------------------------------------------------------
+/// 用途：
+/// - 你的專案若會動態切換字體（例如 NotoSansTC / Roboto），可用此工具
+/// - 這裡不做網路下載，只負責「套用字型名稱到 Theme」
+///
+/// 說明：
+/// - Flutter Web/Android/iOS：只要在 pubspec.yaml 宣告 fonts，就能用 fontFamily 套用
+/// - 若未宣告或找不到字型，Flutter 會 fallback 系統字體
+class FontLoaderUtil {
+  FontLoaderUtil._();
 
-  static Future<void> initialize() async {
-    try {
-      final data =
-          await rootBundle.load('assets/fonts/NotoSansTC-Regular.otf');
-      if (data.lengthInBytes > 0) {
-        _customFontAvailable = true;
-        debugPrint("✅ 已載入字型：NotoSansTC-Regular.otf");
-      }
-    } catch (e) {
-      _customFontAvailable = false;
-      debugPrint(
-          "⚠️ 找不到字型 assets/fonts/NotoSansTC-Regular.otf，將使用系統字型。");
-    }
+  /// 你可以統一在這裡維護字型 family 名稱
+  static const String defaultFontFamily = 'NotoSansTC';
+
+  /// 依你需求決定是否強制套用到所有 TextTheme
+  static ThemeData applyFontToTheme(ThemeData base, {String? fontFamily}) {
+    final family = (fontFamily == null || fontFamily.trim().isEmpty)
+        ? defaultFontFamily
+        : fontFamily.trim();
+
+    final textTheme = _applyToTextTheme(base.textTheme, family);
+    final primaryTextTheme = _applyToTextTheme(base.primaryTextTheme, family);
+
+    return base.copyWith(
+      textTheme: textTheme,
+      primaryTextTheme: primaryTextTheme,
+    );
   }
 
-  /// 🎨 回傳可安全使用的文字樣式
-  static TextStyle textStyle({
-    double fontSize = 14,
-    FontWeight fontWeight = FontWeight.normal,
-    Color color = Colors.black,
-  }) {
-    if (_customFontAvailable) {
-      return TextStyle(
-        fontFamily: 'NotoSansTC',
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        color: color,
-      );
-    } else {
-      // 🧠 使用 GoogleFonts 提供的 NotoSansTC 雲端字型作為替代方案
-      return GoogleFonts.notoSansTc(
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        color: color,
-      );
-    }
+  /// 把字型套到 TextTheme（修正點：用 ?. 取代顯式 null 比較）
+  static TextTheme _applyToTextTheme(TextTheme theme, String family) {
+    TextStyle? apply(TextStyle? s) => s?.copyWith(fontFamily: family);
+
+    // ✅ 這種寫法最常觸發 prefer_null_aware_operators：
+    //    if (theme.bodyMedium != null) { ... }
+    // ✅ 已改成 null-aware 的 ?. 方式
+    return theme.copyWith(
+      displayLarge: apply(theme.displayLarge),
+      displayMedium: apply(theme.displayMedium),
+      displaySmall: apply(theme.displaySmall),
+      headlineLarge: apply(theme.headlineLarge),
+      headlineMedium: apply(theme.headlineMedium),
+      headlineSmall: apply(theme.headlineSmall),
+      titleLarge: apply(theme.titleLarge),
+      titleMedium: apply(theme.titleMedium),
+      titleSmall: apply(theme.titleSmall),
+      bodyLarge: apply(theme.bodyLarge),
+      bodyMedium: apply(theme.bodyMedium),
+      bodySmall: apply(theme.bodySmall),
+      labelLarge: apply(theme.labelLarge),
+      labelMedium: apply(theme.labelMedium),
+      labelSmall: apply(theme.labelSmall),
+    );
   }
 
-  /// 供外部檢查狀態
-  static bool get isCustomFontLoaded => _customFontAvailable;
+  /// （可選）debug：檢查目前 Theme 字體設定
+  static void debugPrintCurrentThemeFont(BuildContext context) {
+    if (!kDebugMode) return;
+    final t = Theme.of(context).textTheme;
+    debugPrint('[Font] bodyMedium.fontFamily = ${t.bodyMedium?.fontFamily}');
+  }
 }

@@ -156,8 +156,8 @@ class _ContactPageState extends State<ContactPage> {
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: cs.outline.withOpacity(0.18)),
-        color: cs.surfaceContainerHighest.withOpacity(0.18),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.18)),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.18),
       ),
       child: ListTile(
         leading: Icon(icon),
@@ -173,12 +173,12 @@ class _ContactPageState extends State<ContactPage> {
   }
 
   Widget _sectionTitle(String t) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(
-          t,
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-        ),
-      );
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Text(
+      t,
+      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+    ),
+  );
 
   // -------------------------
   // Build
@@ -205,7 +205,9 @@ class _ContactPageState extends State<ContactPage> {
             stream: _infoDoc.snapshots(),
             builder: (context, snap) {
               final data = snap.data?.data() ?? {};
-              final title = _s(data['title']).isEmpty ? '聯絡我們' : _s(data['title']);
+              final title = _s(data['title']).isEmpty
+                  ? '聯絡我們'
+                  : _s(data['title']);
               final content = _s(data['content']).isEmpty
                   ? '若你有任何問題或合作需求，請填寫下方表單，我們會盡快回覆。'
                   : _s(data['content']);
@@ -225,14 +227,34 @@ class _ContactPageState extends State<ContactPage> {
                   const SizedBox(height: 16),
 
                   _sectionTitle('聯絡資訊'),
-                  _infoTile(icon: Icons.email_outlined, label: 'Email', value: email),
-                  _infoTile(icon: Icons.phone_outlined, label: '電話', value: phone),
-                  _infoTile(icon: Icons.location_on_outlined, label: '地址', value: address),
-                  _infoTile(icon: Icons.chat_outlined, label: 'LINE', value: line),
-                  _infoTile(icon: Icons.public_outlined, label: '網站', value: website),
+                  _infoTile(
+                    icon: Icons.email_outlined,
+                    label: 'Email',
+                    value: email,
+                  ),
+                  _infoTile(
+                    icon: Icons.phone_outlined,
+                    label: '電話',
+                    value: phone,
+                  ),
+                  _infoTile(
+                    icon: Icons.location_on_outlined,
+                    label: '地址',
+                    value: address,
+                  ),
+                  _infoTile(
+                    icon: Icons.chat_outlined,
+                    label: 'LINE',
+                    value: line,
+                  ),
+                  _infoTile(
+                    icon: Icons.public_outlined,
+                    label: '網站',
+                    value: website,
+                  ),
 
                   const SizedBox(height: 8),
-                  Divider(color: cs.outline.withOpacity(0.25)),
+                  Divider(color: cs.outline.withValues(alpha: 0.25)),
                   const SizedBox(height: 12),
 
                   _sectionTitle('聯絡表單'),
@@ -310,7 +332,10 @@ class _ContactPageState extends State<ContactPage> {
                         if (kDebugMode)
                           Text(
                             'Debug：送出集合 contact_messages（rules 已允許 create）',
-                            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                            style: TextStyle(
+                              color: cs.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
                           ),
                       ],
                     ),
@@ -325,7 +350,9 @@ class _ContactPageState extends State<ContactPage> {
               left: 0,
               right: 0,
               bottom: 0,
-              child: _BusyBar(label: _sendingLabel.isEmpty ? '處理中...' : _sendingLabel),
+              child: _BusyBar(
+                label: _sendingLabel.isEmpty ? '處理中...' : _sendingLabel,
+              ),
             ),
         ],
       ),

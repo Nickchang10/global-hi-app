@@ -27,14 +27,13 @@ class _EventLotteryWheelState extends State<EventLotteryWheel>
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 6),
-    )..addListener(() {
-        setState(() {
-          _angle = _controller.value * _target;
-        });
-      });
+    _controller =
+        AnimationController(vsync: this, duration: const Duration(seconds: 6))
+          ..addListener(() {
+            setState(() {
+              _angle = _controller.value * _target;
+            });
+          });
   }
 
   @override
@@ -43,7 +42,6 @@ class _EventLotteryWheelState extends State<EventLotteryWheel>
     super.dispose();
   }
 
-  // 🌀 開始轉盤動畫
   void _spin() {
     if (_spinning) return;
 
@@ -59,6 +57,7 @@ class _EventLotteryWheelState extends State<EventLotteryWheel>
     _controller
       ..reset()
       ..forward().then((_) {
+        if (!mounted) return;
         setState(() => _spinning = false);
         widget.onEnd?.call(widget.prizes[prizeIndex]);
       });
@@ -74,7 +73,6 @@ class _EventLotteryWheelState extends State<EventLotteryWheel>
     return Stack(
       alignment: Alignment.center,
       children: [
-        // 🎡 彩色轉盤
         CustomPaint(
           size: const Size(300, 300),
           painter: _WheelPainter(prizeCount: prizeCount, sweep: sweep),
@@ -107,13 +105,11 @@ class _EventLotteryWheelState extends State<EventLotteryWheel>
           ),
         ),
 
-        // 🎯 指針
         Positioned(
           top: 8,
           child: Icon(Icons.arrow_drop_down, size: 40, color: Colors.red[700]),
         ),
 
-        // ▶️ 抽獎按鈕
         GestureDetector(
           onTap: _spinning ? null : _spin,
           child: Container(
@@ -124,10 +120,10 @@ class _EventLotteryWheelState extends State<EventLotteryWheel>
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
+                  color: Colors.black.withValues(alpha: 0.3),
                   blurRadius: 8,
                   spreadRadius: 2,
-                )
+                ),
               ],
             ),
             child: const Center(

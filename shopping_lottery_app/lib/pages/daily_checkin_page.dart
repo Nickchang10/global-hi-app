@@ -1,293 +1,243 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:osmile_shopping_app/services/firestore_mock_service.dart';
+// lib/pages/daily_checkin_page.dart
+//
+// ✅ DailyCheckinPage（完整版｜可編譯）
+// - ✅ 修正：uid 不再是 required，若未傳入會自動用 FirebaseAuth.currentUser.uid
+// - 每日簽到：Firestore 寫入 checkins/{uid}/days/{yyyyMMdd}
+// - 顯示今日是否已簽到
+// - 提供簽到按鈕（避免重複簽到）
+//
+// 依賴：cloud_firestore, firebase_auth, flutter/material
 
-class DailyCheckInPage extends StatefulWidget {
-  const DailyCheckInPage({super.key});
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
+class DailyCheckinPage extends StatefulWidget {
+  const DailyCheckinPage({
+    super.key,
+    this.uid, // ✅ 不再 required
+  });
+
+  /// 可選：外部指定 uid；若不給，頁面會自動抓 FirebaseAuth uid
+  final String? uid;
 
   @override
-  State<DailyCheckInPage> createState() => _DailyCheckInPageState();
+  State<DailyCheckinPage> createState() => _DailyCheckinPageState();
 }
 
-class _DailyCheckInPageState extends State<DailyCheckInPage> {
-  DateTime _now = DateTime.now();
-  Set<String> _checkedDates = {};
-  bool _todayChecked = false;
-  int _streak = 0;
+class _DailyCheckinPageState extends State<DailyCheckinPage> {
+  final _db = FirebaseFirestore.instance;
+
+  bool _loading = true;
+  bool _checkedInToday = false;
+  String? _error;
+
+  String? _uidResolved;
 
   @override
   void initState() {
     super.initState();
-    _loadCheckInData();
+    _bootstrap();
   }
 
-  Future<void> _loadCheckInData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = prefs.getStringList('checkinDays') ?? [];
-    final today = _dateKey(_now);
-    final lastCheck = prefs.getString('lastCheckinDate');
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
 
-    // 🔁 計算連續天數
-    int streak = prefs.getInt('checkinStreak') ?? 0;
-    if (lastCheck != null) {
-      final lastDate = DateTime.parse(lastCheck);
-      if (_now.difference(lastDate).inDays == 1) {
-        streak++;
-      } else if (_now.difference(lastDate).inDays > 1) {
-        streak = 0; // 中斷連續
-      }
-    }
+  String _todayKey(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y$m$day'; // yyyyMMdd
+  }
 
+  Future<void> _bootstrap() async {
     setState(() {
-      _checkedDates = list.toSet();
-      _todayChecked = _checkedDates.contains(today);
-      _streak = streak;
+      _loading = true;
+      _error = null;
     });
-  }
 
-  Future<void> _checkInToday(BuildContext context) async {
-    if (_todayChecked) return;
-
-    final firestore = context.read<FirestoreMockService>();
-    final prefs = await SharedPreferences.getInstance();
-
-    final today = _dateKey(_now);
-    _checkedDates.add(today);
-    _todayChecked = true;
-
-    // 🎁 每次簽到獎勵
-    firestore.addPoints(10);
-
-    // 🔥 連續簽到額外獎勵
-    final lastCheck = prefs.getString('lastCheckinDate');
-    if (lastCheck != null) {
-      final lastDate = DateTime.parse(lastCheck);
-      if (_now.difference(lastDate).inDays == 1) {
-        _streak = (_streak + 1).clamp(1, 10);
-      } else {
-        _streak = 1;
+    try {
+      final uid = (widget.uid ?? FirebaseAuth.instance.currentUser?.uid)
+          ?.trim();
+      if (uid == null || uid.isEmpty) {
+        setState(() {
+          _uidResolved = null;
+          _loading = false;
+          _error = '請先登入才能簽到';
+        });
+        return;
       }
-    } else {
-      _streak = 1;
+
+      _uidResolved = uid;
+      await _loadTodayState(uid);
+    } catch (e) {
+      setState(() {
+        _error = '初始化失敗：$e';
+        _loading = false;
+      });
     }
-
-    if (_streak % 10 == 0) {
-      firestore.addPoints(200);
-      _showRewardDialog(context, "🎉 連續簽到 $_streak 天！", "額外獎勵 200 積分 💎");
-    } else {
-      _showRewardDialog(context, "✅ 今日簽到成功！", "獲得 10 積分 💎");
-    }
-
-    await prefs.setStringList('checkinDays', _checkedDates.toList());
-    await prefs.setString('lastCheckinDate', today);
-    await prefs.setInt('checkinStreak', _streak);
-
-    setState(() {});
   }
 
-  void _showRewardDialog(BuildContext context, String title, String msg) {
-    showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: "checkin",
-      transitionDuration: const Duration(milliseconds: 400),
-      pageBuilder: (_, __, ___) => Center(
-        child: Container(
-          width: 280,
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: const [
-              BoxShadow(
-                  color: Colors.black26, blurRadius: 10, offset: Offset(0, 4))
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.emoji_events, color: Colors.amber, size: 70),
-              const SizedBox(height: 12),
-              Text(title,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      fontSize: 20, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 10),
-              Text(msg,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.black54)),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                child: const Text("太棒了！",
-                    style: TextStyle(color: Colors.white, fontSize: 16)),
-              )
-            ],
-          ),
-        ),
-      ),
-      transitionBuilder: (_, anim, __, child) =>
-          ScaleTransition(scale: anim, child: child),
-    );
+  DocumentReference<Map<String, dynamic>> _todayRef(String uid) {
+    final key = _todayKey(DateTime.now());
+    return _db.collection('checkins').doc(uid).collection('days').doc(key);
   }
 
-  String _dateKey(DateTime d) =>
-      "${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}";
+  Future<void> _loadTodayState(String uid) async {
+    try {
+      final snap = await _todayRef(uid).get();
+      setState(() {
+        _checkedInToday = snap.exists;
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = '讀取簽到狀態失敗：$e';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _checkin() async {
+    final uid = _uidResolved;
+    if (uid == null || uid.isEmpty) {
+      _snack('請先登入');
+      return;
+    }
+    if (_checkedInToday) {
+      _snack('你今天已簽到');
+      return;
+    }
+
+    setState(() => _loading = true);
+    try {
+      final now = DateTime.now();
+      await _todayRef(uid).set({
+        'uid': uid,
+        'dateKey': _todayKey(now),
+        'createdAt': FieldValue.serverTimestamp(),
+        'localCreatedAt': now.toIso8601String(),
+      }, SetOptions(merge: true));
+
+      setState(() {
+        _checkedInToday = true;
+        _loading = false;
+      });
+      _snack('簽到成功！');
+    } catch (e) {
+      setState(() {
+        _loading = false;
+      });
+      _snack('簽到失敗：$e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final daysInMonth =
-        DateUtils.getDaysInMonth(_now.year, _now.month); // 當月天數
-    final firstDay = DateTime(_now.year, _now.month, 1);
-    final startWeekday = firstDay.weekday; // 星期幾開始
-    final firestore = context.watch<FirestoreMockService>();
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("📅 每日簽到"),
-        centerTitle: true,
-      ),
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFFE3F2FD), Color(0xFFBBDEFB)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
+        title: const Text(
+          '每日簽到',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
+        actions: [
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: _loading ? null : _bootstrap,
+            icon: const Icon(Icons.refresh),
           ),
-        ),
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _buildHeader(firestore.userPoints),
-            const SizedBox(height: 20),
-            Center(
-              child: Text(
-                "${_now.year} 年 ${_now.month} 月",
-                style: GoogleFonts.notoSansTc(
-                    fontSize: 20, fontWeight: FontWeight.bold),
-              ),
-            ),
-            const SizedBox(height: 10),
-            _buildCalendar(startWeekday, daysInMonth),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: _todayChecked
-                  ? null
-                  : () => _checkInToday(context),
-              style: ElevatedButton.styleFrom(
-                backgroundColor:
-                    _todayChecked ? Colors.grey : Colors.blueAccent,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 40, vertical: 14),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-              icon: const Icon(Icons.check_circle, color: Colors.white),
-              label: Text(
-                _todayChecked ? "今日已簽到 ✅" : "簽到拿 10 積分 💎",
-                style: const TextStyle(color: Colors.white, fontSize: 16),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              "🔥 連續簽到：$_streak 天",
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.deepOrange),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader(int points) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          )
         ],
       ),
-      child: Column(
-        children: [
-          const Text("每日簽到日曆",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text("💎 目前積分：$points",
-              style: const TextStyle(color: Colors.blueAccent, fontSize: 16)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCalendar(int startWeekday, int daysInMonth) {
-    final todayKey = _dateKey(_now);
-    List<Widget> cells = [];
-
-    for (int i = 1; i < startWeekday; i++) {
-      cells.add(Container()); // 前面空格
-    }
-
-    for (int day = 1; day <= daysInMonth; day++) {
-      final dateKey = _dateKey(DateTime(_now.year, _now.month, day));
-      final checked = _checkedDates.contains(dateKey);
-      final isToday = dateKey == todayKey;
-
-      cells.add(AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        margin: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: checked
-              ? Colors.greenAccent
-              : isToday
-                  ? Colors.yellow.shade300
-                  : Colors.white,
-          borderRadius: BorderRadius.circular(8),
-          boxShadow: [
-            if (checked)
-              BoxShadow(
-                  color: Colors.green.withOpacity(0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, 3))
-          ],
-        ),
-        child: Center(
-          child: Text(
-            "$day",
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              color: checked
-                  ? Colors.white
-                  : isToday
-                      ? Colors.redAccent
-                      : Colors.black87,
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : (_error != null)
+          ? Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Card(
+                    elevation: 0,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.error_outline, size: 46, color: cs.error),
+                          const SizedBox(height: 10),
+                          Text(_error!, textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          FilledButton(
+                            onPressed: _bootstrap,
+                            child: const Text('重試'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          : Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Card(
+                    elevation: 0,
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _checkedInToday
+                                ? Icons.verified
+                                : Icons.calendar_month_outlined,
+                            size: 52,
+                            color: _checkedInToday
+                                ? cs.primary
+                                : cs.onSurfaceVariant,
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            _checkedInToday ? '今日已簽到' : '今日尚未簽到',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _checkedInToday ? '明天再來簽到吧！' : '點一下即可完成今日簽到。',
+                            style: TextStyle(color: cs.onSurfaceVariant),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.icon(
+                            onPressed: _checkedInToday ? null : _checkin,
+                            icon: const Icon(Icons.check_circle_outline),
+                            label: Text(_checkedInToday ? '已完成' : '立即簽到'),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            _uidResolved == null ? '' : 'uid：$_uidResolved',
+                            style: TextStyle(
+                              color: cs.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
-          ),
-        ),
-      ));
-    }
-
-    return GridView.count(
-      crossAxisCount: 7,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      children: cells,
     );
   }
 }

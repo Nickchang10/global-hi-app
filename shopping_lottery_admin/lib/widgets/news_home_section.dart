@@ -34,7 +34,12 @@ class NewsHomeSection extends StatefulWidget {
   final double viewportFraction;
 
   /// 點擊某一則消息（若不傳，預設顯示 Dialog 預覽）
-  final void Function(BuildContext context, String id, Map<String, dynamic> data)? onTapItem;
+  final void Function(
+    BuildContext context,
+    String id,
+    Map<String, dynamic> data,
+  )?
+  onTapItem;
 
   /// 右上角「查看全部」
   final VoidCallback? onTapMore;
@@ -155,11 +160,17 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
     return '';
   }
 
-  Future<void> _defaultPreview(BuildContext context, String id, Map<String, dynamic> data) async {
+  Future<void> _defaultPreview(
+    BuildContext context,
+    String id,
+    Map<String, dynamic> data,
+  ) async {
     final title = _s(data['title']).isEmpty ? '（未命名）' : _s(data['title']);
     final cat = _s(data['category']).isEmpty ? '最新消息' : _s(data['category']);
     final date = _formatDate(data['date']);
-    final content = _s(data['content']).isEmpty ? _s(data['body']) : _s(data['content']);
+    final content = _s(data['content']).isEmpty
+        ? _s(data['body'])
+        : _s(data['content']);
 
     await showDialog<void>(
       context: context,
@@ -171,7 +182,12 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('$cat｜$date', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                Text(
+                  '$cat｜$date',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
                 const SizedBox(height: 12),
                 Text(content.isEmpty ? '（此公告沒有內容）' : content),
               ],
@@ -179,7 +195,10 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('關閉')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('關閉'),
+          ),
         ],
       ),
     );
@@ -218,7 +237,13 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
             // Header
             Row(
               children: [
-                Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                Text(
+                  widget.title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
                 const Spacer(),
                 TextButton(
                   onPressed: widget.onTapMore,
@@ -244,8 +269,12 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
                   itemBuilder: (_, i) {
                     final data = Map<String, dynamic>.from(items[i]);
                     final id = _s(data['id']);
-                    final title = _s(data['title']).isEmpty ? '（未命名）' : _s(data['title']);
-                    final cat = _s(data['category']).isEmpty ? '最新消息' : _s(data['category']);
+                    final title = _s(data['title']).isEmpty
+                        ? '（未命名）'
+                        : _s(data['title']);
+                    final cat = _s(data['category']).isEmpty
+                        ? '最新消息'
+                        : _s(data['category']);
                     final date = _formatDate(data['date']);
                     final isHot = (data['isHot'] ?? false) == true;
                     final img = _pickImageUrl(data);
@@ -304,7 +333,10 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
       children: [
         Row(
           children: [
-            Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Text(
+              widget.title,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
             const Spacer(),
             Text(widget.moreText, style: TextStyle(color: cs.onSurfaceVariant)),
           ],
@@ -313,7 +345,7 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
         Container(
           height: widget.height,
           decoration: BoxDecoration(
-            color: cs.surfaceVariant.withOpacity(0.35),
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
             borderRadius: BorderRadius.circular(14),
           ),
         ),
@@ -327,9 +359,15 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
       children: [
         Row(
           children: [
-            Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Text(
+              widget.title,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
             const Spacer(),
-            TextButton(onPressed: widget.onTapMore, child: Text(widget.moreText)),
+            TextButton(
+              onPressed: widget.onTapMore,
+              child: Text(widget.moreText),
+            ),
           ],
         ),
         const SizedBox(height: 10),
@@ -337,7 +375,7 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
           height: widget.height,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: cs.surfaceVariant.withOpacity(0.25),
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.25),
             borderRadius: BorderRadius.circular(14),
           ),
           child: Text('目前沒有最新消息', style: TextStyle(color: cs.onSurfaceVariant)),
@@ -352,9 +390,15 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
       children: [
         Row(
           children: [
-            Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Text(
+              widget.title,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
             const Spacer(),
-            TextButton(onPressed: widget.onTapMore, child: Text(widget.moreText)),
+            TextButton(
+              onPressed: widget.onTapMore,
+              child: Text(widget.moreText),
+            ),
           ],
         ),
         const SizedBox(height: 10),
@@ -363,10 +407,13 @@ class _NewsHomeSectionState extends State<NewsHomeSection> {
           padding: const EdgeInsets.all(12),
           alignment: Alignment.centerLeft,
           decoration: BoxDecoration(
-            color: cs.errorContainer.withOpacity(0.35),
+            color: cs.errorContainer.withValues(alpha: 0.35),
             borderRadius: BorderRadius.circular(14),
           ),
-          child: Text('讀取公告失敗：$msg', style: TextStyle(color: cs.onErrorContainer)),
+          child: Text(
+            '讀取公告失敗：$msg',
+            style: TextStyle(color: cs.onErrorContainer),
+          ),
         ),
       ],
     );
@@ -398,7 +445,7 @@ class _BannerCard extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(14),
       child: Material(
-        color: cs.surfaceVariant.withOpacity(0.18),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.18),
         child: InkWell(
           onTap: onTap,
           child: Stack(
@@ -409,10 +456,14 @@ class _BannerCard extends StatelessWidget {
                 Image.network(
                   imageUrl,
                   fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(color: cs.surfaceVariant.withOpacity(0.3)),
+                  errorBuilder: (_, __, ___) => Container(
+                    color: cs.surfaceContainerHighest.withValues(alpha: 0.30),
+                  ),
                 )
               else
-                Container(color: cs.surfaceVariant.withOpacity(0.3)),
+                Container(
+                  color: cs.surfaceContainerHighest.withValues(alpha: 0.30),
+                ),
 
               // Gradient overlay
               DecoratedBox(
@@ -421,8 +472,8 @@ class _BannerCard extends StatelessWidget {
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
                     colors: [
-                      Colors.black.withOpacity(0.05),
-                      Colors.black.withOpacity(0.55),
+                      Colors.black.withValues(alpha: 0.05),
+                      Colors.black.withValues(alpha: 0.55),
                     ],
                   ),
                 ),
@@ -438,25 +489,47 @@ class _BannerCard extends StatelessWidget {
                     Row(
                       children: [
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
                           decoration: BoxDecoration(
-                            color: cs.surface.withOpacity(0.85),
+                            color: cs.surface.withValues(alpha: 0.85),
                             borderRadius: BorderRadius.circular(99),
                           ),
-                          child: Text(category, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                          child: Text(
+                            category,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
                         const SizedBox(width: 8),
                         if (isHot)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
-                              color: cs.errorContainer.withOpacity(0.9),
+                              color: cs.errorContainer.withValues(alpha: 0.90),
                               borderRadius: BorderRadius.circular(99),
                             ),
-                            child: Text('熱門', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: cs.onErrorContainer)),
+                            child: Text(
+                              '熱門',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: cs.onErrorContainer,
+                              ),
+                            ),
                           ),
                         const Spacer(),
-                        Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.9)),
+                        Icon(
+                          Icons.chevron_right,
+                          color: Colors.white.withValues(alpha: 0.90),
+                        ),
                       ],
                     ),
 
@@ -476,7 +549,10 @@ class _BannerCard extends StatelessWidget {
                     const SizedBox(height: 8),
                     Text(
                       date.isEmpty ? '' : date,
-                      style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 12),
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.85),
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),

@@ -1,445 +1,457 @@
 // lib/pages/checkout_success_page.dart
-import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../services/api_client.dart';
-import 'payment_status_page.dart';
-import 'product_detail_page.dart';
 
-/// ✅ 訂單完成/狀態頁（專業版）
-/// - 支援查詢訂單狀態、取消訂單、重新付款
-/// - 展示訂單商品明細
-/// - 含動態步驟條與狀態更新
-/// - 「繼續加購」支援跳轉商品詳情頁
+/// ✅ CheckoutSuccessPage（結帳成功頁｜最終完整版｜可編譯）
+/// ------------------------------------------------------------
+/// 修正：
+/// - ✅ control_flow_in_finally：finally 只做收尾（不寫 return）
+/// - ✅ 避免 use_build_context_synchronously：await 後先檢查 mounted
+/// - ✅ withOpacity -> withValues(alpha: ...)
+///
+/// 使用方式：
+/// - pushNamed('/checkout_success', arguments: {'orderId': '<id>'});
+/// - 或直接傳入：CheckoutSuccessPage(orderId: '<id>');
+///
+/// Firestore path：
+/// - orders/{orderId}
 class CheckoutSuccessPage extends StatefulWidget {
-  final dynamic order; // 可為 Order 物件或 Map
   final String? orderId;
-  final Map<String, dynamic>? orderSummary;
-  final String apiBase;
 
-  const CheckoutSuccessPage({
-    super.key,
-    this.order,
-    this.orderId,
-    this.orderSummary,
-    this.apiBase = '',
-  });
+  const CheckoutSuccessPage({super.key, this.orderId});
 
   @override
   State<CheckoutSuccessPage> createState() => _CheckoutSuccessPageState();
 }
 
 class _CheckoutSuccessPageState extends State<CheckoutSuccessPage> {
-  String? _orderId;
-  dynamic _order;
-  Map<String, dynamic>? _summary;
+  final _fs = FirebaseFirestore.instance;
 
-  bool _isPaid = false;
-  bool _loading = false;
-  bool _cancelling = false;
-  String _status = 'CHECKING';
-  Timer? _pollTimer;
+  bool _loading = true;
+  String? _error;
+  Map<String, dynamic>? _order;
+
+  String? _resolvedOrderId;
+  bool _didInit = false;
 
   @override
-  void initState() {
-    super.initState();
-    _order = widget.order;
-    _summary = widget.orderSummary;
-    _orderId = _extractOrderId(_order) ?? widget.orderId ?? _summary?['id']?.toString();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didInit) return;
+    _didInit = true;
 
-    final s = (_extractOrderStatus(_order) ?? _summary?['status'])?.toString().toUpperCase();
-    if (s == 'COMPLETED' || s == 'PAID') {
-      _isPaid = true;
-      _status = s;
-    } else if (s == 'CANCELLED') {
-      _isPaid = false;
-      _status = 'CANCELLED';
-    } else {
-      _status = s?.isNotEmpty == true ? s! : 'CHECKING';
-      if (_orderId != null) {
-        _checkStatus();
-        _startPolling();
+    final fromWidget = widget.orderId?.trim();
+    String? fromArgs;
+
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map) {
+      final v = args['orderId'];
+      if (v != null) fromArgs = v.toString().trim();
+    }
+
+    _resolvedOrderId = (fromWidget != null && fromWidget.isNotEmpty)
+        ? fromWidget
+        : (fromArgs != null && fromArgs.isNotEmpty)
+        ? fromArgs
+        : null;
+
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+      _order = null;
+    });
+
+    String? err;
+    Map<String, dynamic>? data;
+
+    try {
+      final id = _resolvedOrderId;
+      if (id == null || id.isEmpty) {
+        err = '缺少 orderId（請用 arguments 傳入 {"orderId": "..."}）';
       } else {
-        _status = 'NO_ORDER_ID';
+        final doc = await _fs.collection('orders').doc(id).get();
+        if (!doc.exists) {
+          err = '找不到訂單：$id';
+        } else {
+          final d = doc.data();
+          data = <String, dynamic>{'id': doc.id, ...?d};
+        }
+      }
+    } catch (e) {
+      err = '讀取訂單失敗：$e';
+    } finally {
+      // ✅ finally 不要 return，只做收尾
+      if (mounted) {
+        setState(() => _loading = false);
       }
     }
-  }
 
-  @override
-  void dispose() {
-    _pollTimer?.cancel();
-    super.dispose();
-  }
+    if (!mounted) return;
 
-  // ---------- Helpers ----------
-  String? _extractOrderId(dynamic order) {
-    if (order == null) return null;
-    try {
-      if (order is Map && order['id'] != null) return order['id'].toString();
-      final id = (order as dynamic).id;
-      return id?.toString();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  dynamic _extractOrderStatus(dynamic order) {
-    if (order == null) return null;
-    try {
-      if (order is Map && order['status'] != null) return order['status'];
-      final s = (order as dynamic).status;
-      return s;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  String _fmtMoney(num v) => 'NT\$${v.toStringAsFixed(0)}';
-
-  String _statusLabel(String s) {
-    switch (s.toUpperCase()) {
-      case 'PAID':
-      case 'COMPLETED':
-        return '已完成';
-      case 'PENDING_PAYMENT':
-      case 'PENDING':
-        return '待付款';
-      case 'PROCESSING':
-        return '處理中';
-      case 'CANCELLED':
-        return '已取消';
-      case 'CHECKING':
-        return '檢查中…';
-      default:
-        return s;
-    }
-  }
-
-  void _startPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (!mounted) return;
-      if (_isPaid || _status == 'CANCELLED') {
-        _pollTimer?.cancel();
-        return;
-      }
-      _checkStatus();
+    setState(() {
+      _error = err;
+      _order = data;
     });
   }
 
-  Future<void> _checkStatus({bool toast = false}) async {
-    if (_orderId == null) {
-      if (toast) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('找不到訂單編號')));
-      }
-      return;
+  String _money(dynamic v) {
+    num n = 0;
+    if (v is num) n = v;
+    if (v is String) n = num.tryParse(v) ?? 0;
+
+    final r = n.round();
+    final s = r.toString();
+    final buf = StringBuffer();
+    for (int i = 0; i < s.length; i++) {
+      final remaining = s.length - i;
+      buf.write(s[i]);
+      if (remaining > 1 && remaining % 3 == 1) buf.write(',');
     }
-    setState(() => _loading = true);
+    return 'NT\$ $buf';
+  }
+
+  String _statusText(dynamic status) {
+    final s = (status ?? '').toString().toLowerCase().trim();
+    switch (s) {
+      case 'paid':
+        return '已付款';
+      case 'created':
+        return '已建立';
+      case 'shipping':
+        return '出貨中';
+      case 'delivered':
+        return '已送達';
+      case 'cancelled':
+      case 'canceled':
+        return '已取消';
+      default:
+        return s.isEmpty ? '—' : s;
+    }
+  }
+
+  String _safeStr(dynamic v, [String fallback = '']) {
+    final s = (v ?? '').toString();
+    return s.isEmpty ? fallback : s;
+  }
+
+  Map<String, dynamic> _safeMap(dynamic v) {
+    if (v is Map<String, dynamic>) return v;
+    if (v is Map) {
+      return v.map((k, val) => MapEntry(k.toString(), val));
+    }
+    return <String, dynamic>{};
+  }
+
+  Future<void> _goHome() async {
     try {
-      final res = await ApiClient.getOrderStatus(_orderId!, widget.apiBase);
-      final s = (res['status'] ?? '').toString().toUpperCase();
-
-      setState(() {
-        _status = s.isEmpty ? 'UNKNOWN' : s;
-        _isPaid = (s == 'COMPLETED' || s == 'PAID');
-      });
-      if (_isPaid || _status == 'CANCELLED') _pollTimer?.cancel();
-
-      if (toast) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('目前狀態：${_statusLabel(_status)}')),
-        );
-      }
+      Navigator.of(context).pushNamedAndRemoveUntil('/', (r) => false);
     } catch (_) {
-      setState(() => _status = 'CHECK_FAILED');
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('無法取得訂單狀態')));
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  void _goToPaymentPage() {
-    if (_orderId == null) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => PaymentStatusPage(orderId: _orderId!, apiBase: widget.apiBase)),
-    );
-  }
-
-  Future<void> _cancelOrder() async {
-    if (_orderId == null) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('取消訂單'),
-        content: const Text('確定要取消此訂單嗎？此動作無法還原。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('否')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('是')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    setState(() => _cancelling = true);
-    try {
-      final res = await ApiClient.cancelOrder(_orderId!, widget.apiBase);
-      final status = (res['status'] ?? '').toString().toUpperCase();
-      if (status == 'CANCELLED') {
-        setState(() {
-          _status = 'CANCELLED';
-          _isPaid = false;
-        });
-        _pollTimer?.cancel();
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('訂單已取消')));
-      } else if (res['error'] == 'ALREADY_PAID') {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已付款的訂單無法取消')));
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('取消失敗：${res['status']}')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('取消發生錯誤：$e')));
-    } finally {
-      if (mounted) setState(() => _cancelling = false);
-    }
-  }
-
-  Future<void> _copyOrderId() async {
-    if (_orderId == null || _orderId!.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: _orderId!));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製訂單編號')));
-  }
-
-  Widget _summaryCard() {
-    final items = (_summary?['items'] as List?) ?? [];
-    final total = (_summary?['total'] as num?)?.toDouble() ?? 0.0;
-
-    if (items.isEmpty) {
-      return Card(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        child: const Padding(
-          padding: EdgeInsets.all(16),
-          child: Text('暫無訂單商品資訊'),
-        ),
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('找不到 "/" 路由，請在 routes 設定首頁')),
       );
     }
+  }
 
+  Future<void> _goOrders() async {
+    // 你可改成你實際的訂單頁 route
+    try {
+      Navigator.of(context).pushNamed('/orders');
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('找不到 "/orders" 路由，請在 routes 設定')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('結帳成功'),
+        actions: [
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : (_error != null)
+          ? _errorView(cs, _error!)
+          : _successView(cs, _order ?? const <String, dynamic>{}),
+      bottomNavigationBar: _loading
+          ? null
+          : SafeArea(
+              top: false,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                decoration: BoxDecoration(
+                  color: cs.surface,
+                  border: Border(
+                    top: BorderSide(
+                      color: cs.outlineVariant.withValues(alpha: 0.5),
+                    ),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: _goHome,
+                        child: const Text('回首頁'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.tonal(
+                        onPressed: _goOrders,
+                        child: const Text('查看訂單'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+    );
+  }
+
+  Widget _errorView(ColorScheme cs, String text) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline, size: 56, color: Colors.red),
+                  const SizedBox(height: 10),
+                  Text(
+                    text,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.tonal(
+                          onPressed: _load,
+                          child: const Text('重試'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: _goHome,
+                          child: const Text('回首頁'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _successView(ColorScheme cs, Map<String, dynamic> o) {
+    final orderId = _safeStr(o['id'], _resolvedOrderId ?? '');
+    final total = _money(o['total']);
+    final status = _statusText(o['status']);
+    final payMethod = _safeStr(o['paymentMethod'], '—');
+    final shipMethod = _safeStr(o['shippingMethod'], '—');
+    final couponCode = _safeStr(o['couponCode'], '');
+
+    final address = _safeMap(o['address']);
+    final receiverName = _safeStr(address['receiverName'], '—');
+    final receiverPhone = _safeStr(address['receiverPhone'], '—');
+    final fullAddress = _safeStr(address['fullAddress'], '—');
+
+    final items = (o['items'] is List) ? (o['items'] as List) : const [];
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Card(
+          elevation: 1,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 54,
+                  height: 54,
+                  decoration: BoxDecoration(
+                    color: Colors.green.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: const Icon(
+                    Icons.check_circle,
+                    color: Colors.green,
+                    size: 34,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '訂單建立完成',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '總計：$total',
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '狀態：$status',
+                        style: TextStyle(color: cs.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        _sectionTitle('訂單資訊'),
+        const SizedBox(height: 8),
+        _kvCard(
+          cs,
+          rows: [
+            ('訂單編號', orderId.isEmpty ? '—' : orderId),
+            ('付款方式', payMethod),
+            ('配送方式', shipMethod),
+            ('優惠碼', couponCode.isEmpty ? '—' : couponCode),
+          ],
+        ),
+
+        const SizedBox(height: 12),
+
+        _sectionTitle('收件資訊'),
+        const SizedBox(height: 8),
+        _kvCard(
+          cs,
+          rows: [
+            ('收件人', receiverName),
+            ('電話', receiverPhone),
+            ('地址', fullAddress),
+          ],
+        ),
+
+        const SizedBox(height: 12),
+
+        _sectionTitle('商品明細'),
+        const SizedBox(height: 8),
+        if (items.isEmpty)
+          Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Text(
+                '（無商品明細）',
+                style: TextStyle(color: cs.onSurfaceVariant),
+              ),
+            ),
+          )
+        else
+          ...items.map((it) {
+            final m = _safeMap(it);
+            final name = _safeStr(m['name'], '(未命名商品)');
+            final qty = (m['qty'] is num)
+                ? (m['qty'] as num).toInt()
+                : int.tryParse('${m['qty']}') ?? 1;
+            final price = _money(m['price']);
+            return Card(
+              elevation: 1,
+              child: ListTile(
+                title: Text(
+                  name,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                subtitle: Text('數量 $qty'),
+                trailing: Text(
+                  price,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+              ),
+            );
+          }),
+
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+    );
+  }
+
+  Widget _kvCard(ColorScheme cs, {required List<(String, String)> rows}) {
     return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      elevation: 1,
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            ...items.map((it) {
-              final name = (it['name'] ?? '商品').toString();
-              final price = (it['price'] as num?) ?? 0;
-              final qty = (it['qty'] as int?) ?? 1;
-              return ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle: Text('NT\$${price.toStringAsFixed(0)} × $qty'),
-                trailing: Text(
-                  _fmtMoney(price * qty),
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent),
+            for (int i = 0; i < rows.length; i++) ...[
+              _kvRow(cs, rows[i].$1, rows[i].$2),
+              if (i != rows.length - 1)
+                Divider(
+                  height: 14,
+                  color: cs.outlineVariant.withValues(alpha: 0.45),
                 ),
-              );
-            }),
-            const Divider(),
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              title: const Text('總計', style: TextStyle(fontWeight: FontWeight.bold)),
-              trailing: Text(
-                _fmtMoney(total),
-                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.redAccent),
-              ),
-            ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _step(String label, int step, int current) {
-    final done = step <= current;
-    final color = done ? Colors.orangeAccent : Colors.grey.shade300;
-    return Column(
+  Widget _kvRow(ColorScheme cs, String k, String v) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        CircleAvatar(
-          radius: 16,
-          backgroundColor: color,
-          child: done
-              ? const Icon(Icons.check, color: Colors.white, size: 16)
-              : Text('${step + 1}', style: const TextStyle(color: Colors.black87)),
-        ),
-        const SizedBox(height: 6),
         SizedBox(
-          width: 70,
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: done ? Colors.black : Colors.grey,
-              fontSize: 12,
-              fontWeight: done ? FontWeight.w600 : FontWeight.w400,
-            ),
-          ),
+          width: 86,
+          child: Text(k, style: TextStyle(color: cs.onSurfaceVariant)),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(v, style: const TextStyle(fontWeight: FontWeight.w800)),
         ),
       ],
-    );
-  }
-
-  int _currentStepIndex() {
-    final s = _status.toUpperCase();
-    if (_isPaid || s == 'PAID' || s == 'COMPLETED') return 2;
-    if (s == 'PENDING_PAYMENT' || s == 'PENDING') return 1;
-    if (s == 'CANCELLED') return 0;
-    return 1;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final stepIndex = _currentStepIndex();
-    final displayStatus = _statusLabel(_status);
-    final isCancelled = _status == 'CANCELLED';
-    final canPay = !_isPaid && !isCancelled && _orderId != null;
-
-    IconData icon;
-    Color iconColor;
-    String headline;
-    if (_isPaid) {
-      icon = Icons.check_circle_outline;
-      iconColor = Colors.green;
-      headline = '付款成功';
-    } else if (isCancelled) {
-      icon = Icons.cancel_outlined;
-      iconColor = Colors.grey;
-      headline = '訂單已取消';
-    } else {
-      icon = Icons.hourglass_empty;
-      iconColor = Colors.orange;
-      headline = '尚未完成付款';
-    }
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFF5F6F8),
-      appBar: AppBar(
-        title: const Text('訂單狀態', style: TextStyle(fontWeight: FontWeight.bold)),
-        centerTitle: true,
-        backgroundColor: Colors.white,
-        elevation: 0.5,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loading ? null : () => _checkStatus(toast: true),
-            tooltip: '更新狀態',
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Column(
-            children: [
-              // Stepper
-              Row(
-                children: [
-                  Expanded(child: _step('下單', 0, stepIndex)),
-                  Expanded(child: Divider(color: Colors.grey.shade300)),
-                  Expanded(child: _step('付款中', 1, stepIndex)),
-                  Expanded(child: Divider(color: Colors.grey.shade300)),
-                  Expanded(child: _step('完成', 2, stepIndex)),
-                ],
-              ),
-              const SizedBox(height: 14),
-              // Status card
-              Card(
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    children: [
-                      Text('目前狀態：$displayStatus', style: const TextStyle(fontSize: 14)),
-                      const SizedBox(height: 10),
-                      Icon(icon, size: 88, color: iconColor),
-                      const SizedBox(height: 10),
-                      Text(headline, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text('訂單編號：${_orderId ?? ''}', style: const TextStyle(color: Colors.grey)),
-                          if (_orderId != null && _orderId!.isNotEmpty) ...[
-                            const SizedBox(width: 6),
-                            InkWell(
-                              onTap: _copyOrderId,
-                              child: const Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                                child: Text('複製', style: TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.w600)),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      _summaryCard(),
-                      const SizedBox(height: 12),
-                      // Buttons
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton(
-                              onPressed: () => _goToPaymentPage(),
-                              style: OutlinedButton.styleFrom(
-                                minimumSize: const Size.fromHeight(48),
-                                side: BorderSide(color: Colors.grey.shade300),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                              ),
-                              child: const Text('重新付款'),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: canPay ? _goToPaymentPage : null,
-                              style: ElevatedButton.styleFrom(
-                                minimumSize: const Size.fromHeight(48),
-                                backgroundColor: Colors.orangeAccent,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                              ),
-                              child: const Text('前往付款'),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      if (!_isPaid && !isCancelled)
-                        TextButton(
-                          onPressed: _cancelling ? null : _cancelOrder,
-                          child: _cancelling
-                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                              : const Text('取消訂單', style: TextStyle(color: Colors.red)),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

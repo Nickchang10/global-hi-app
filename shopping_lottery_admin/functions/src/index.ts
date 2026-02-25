@@ -1,269 +1,144 @@
-import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
-import * as crypto from "crypto";
-import { sendFCMToUser } from "./fcm";
+import * as functions from "firebase-functions";
 
 admin.initializeApp();
 const db = admin.firestore();
 
-/* ============================================================
- * Webhook 驗證
- * ============================================================ */
+type OrderItemInput = { productId: string; qty: number };
 
-function verifyLinePay(req: functions.https.Request): boolean {
-  const secret = functions.config().linepay?.secret;
-  const signature = req.headers["x-line-authorization"] as string | undefined;
-  const nonce = req.headers["x-line-authorization-nonce"] as string | undefined;
-  if (!secret || !signature || !nonce) return false;
-
-  const body = JSON.stringify(req.body);
-  const raw = secret + nonce + body;
-
-  const hash = crypto
-    .createHmac("sha256", secret)
-    .update(raw)
-    .digest("base64");
-
-  return hash === signature;
+function assert(condition: any, message: string) {
+  if (!condition) throw new functions.https.HttpsError("invalid-argument", message);
 }
 
-function verifyECPay(payload: any): boolean {
-  const key = functions.config().ecpay?.hash_key;
-  const iv = functions.config().ecpay?.hash_iv;
-  if (!key || !iv || !payload?.CheckMacValue) return false;
+export const createOrder = functions.https.onCall(async (data, context) => {
+  const uid = context.auth?.uid;
+  if (!uid) throw new functions.https.HttpsError("unauthenticated", "請先登入");
 
-  const sorted = Object.keys(payload)
-    .filter((k) => k !== "CheckMacValue")
-    .sort()
-    .map((k) => `${k}=${payload[k]}`)
-    .join("&");
+  const items = (data?.items ?? []) as OrderItemInput[];
+  const receiver = data?.receiver ?? {};
+  const shipping = data?.shipping ?? {};
 
-  const raw = `HashKey=${key}&${sorted}&HashIV=${iv}`;
-  const encoded = encodeURIComponent(raw).toLowerCase();
-  const hash = crypto
-    .createHash("sha256")
-    .update(encoded)
-    .digest("hex")
-    .toUpperCase();
+  assert(Array.isArray(items) && items.length > 0, "購物車是空的");
+  for (const it of items) {
+    assert(typeof it.productId === "string" && it.productId.length > 0, "商品ID錯誤");
+    assert(Number.isInteger(it.qty) && it.qty > 0 && it.qty <= 99, "數量錯誤");
+  }
 
-  return hash === payload.CheckMacValue;
-}
+  // receiver minimal validation (你要更嚴格也可再加)
+  assert(typeof receiver.name === "string" && receiver.name.length >= 1, "收件人姓名必填");
+  assert(typeof receiver.phone === "string" && receiver.phone.length >= 6, "收件人電話必填");
+  assert(typeof receiver.address === "string" && receiver.address.length >= 3, "收件地址必填");
 
-function verifyTapPay(req: functions.https.Request): boolean {
-  const key = functions.config().tappay?.partner_key;
-  const signature = req.headers["x-tappay-signature"] as string | undefined;
-  if (!key || !signature) return false;
+  // Prepare refs
+  const orderRef = db.collection("orders").doc();
+  const lotteryRef = db.collection("lotteries").doc("current");
+  const entryRef = lotteryRef.collection("entries").doc();
 
-  const body = JSON.stringify(req.body);
-  const hash = crypto
-    .createHmac("sha256", key)
-    .update(body)
-    .digest("hex");
-
-  return hash === signature;
-}
-
-/* ============================================================
- * paymentSuccess（付款成功）
- * ============================================================ */
-
-export const paymentSuccess = functions.https.onRequest(async (req, res) => {
-  try {
-    const provider = String(req.headers["x-payment-provider"] || "");
-
-    if (
-      (provider === "linepay" && !verifyLinePay(req)) ||
-      (provider === "ecpay" && !verifyECPay(req.body)) ||
-      (provider === "tappay" && !verifyTapPay(req))
-    ) {
-      res.status(403).send("invalid webhook signature");
-      return;
-    }
-
-    const {
-      status,
-      transactionId,
-      userId,
-      userEmail,
-      items,
-      finalAmount,
-      paymentMethod,
-    } = req.body;
-
-    if (
-      status !== "SUCCESS" ||
-      !transactionId ||
-      !userId ||
-      !Array.isArray(items)
-    ) {
-      res.status(400).send("invalid payload");
-      return;
-    }
-
-    const lockRef = db.collection("payment_locks").doc(transactionId);
-
-    const result = await db.runTransaction(async (tx) => {
-      if ((await tx.get(lockRef)).exists) {
-        return { duplicated: true };
-      }
-
-      const vendorIds = Array.from(
-        new Set(items.map((i: any) => i.vendorId).filter(Boolean))
-      );
-
-      const orderNo = await generateOrderNo(tx);
-      const orderRef = db.collection("orders").doc();
-
-      tx.set(orderRef, {
-        orderNo,
-        userId,
-        userEmail,
-        vendorIds,
-        status: "paid",
-        items,
-        finalAmount,
-        currency: "TWD",
-        payment: {
-          method: paymentMethod,
-          transactionId,
-          paidAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        logs: [
-          {
-            action: "payment_success",
-            by: "system",
-            note: paymentMethod,
-            at: admin.firestore.Timestamp.now(),
-          },
-        ],
+  const result = await db.runTransaction(async (tx) => {
+    // ensure current lottery exists
+    const lotterySnap = await tx.get(lotteryRef);
+    if (!lotterySnap.exists) {
+      tx.set(lotteryRef, {
+        title: "當期抽獎",
+        active: true,
+        drawn: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    let subtotal = 0;
+    const orderItems: any[] = [];
+
+    // read + validate + decrement stock
+    for (const it of items) {
+      const pRef = db.collection("products").doc(it.productId);
+      const pSnap = await tx.get(pRef);
+      assert(pSnap.exists, `商品不存在：${it.productId}`);
+      const p = pSnap.data() as any;
+
+      assert(p.active === true, `商品未上架：${p.name ?? it.productId}`);
+      const stock = Number(p.stock ?? 0);
+      const price = Number(p.price ?? 0);
+      assert(Number.isFinite(price) && price >= 0, "商品價格錯誤");
+      assert(stock >= it.qty, `庫存不足：${p.name ?? it.productId}`);
+
+      // decrement
+      tx.update(pRef, {
+        stock: stock - it.qty,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      for (const item of items) {
-        tx.update(db.collection("products").doc(item.productId), {
-          stock: admin.firestore.FieldValue.increment(-item.qty),
-          sold: admin.firestore.FieldValue.increment(item.qty),
-        });
-      }
-
-      tx.set(lockRef, {
-        orderId: orderRef.id,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      subtotal += price * it.qty;
+      orderItems.push({
+        productId: it.productId,
+        nameSnapshot: p.name ?? "",
+        priceSnapshot: price,
+        qty: it.qty,
       });
+    }
 
-      return { orderId: orderRef.id };
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    tx.set(orderRef, {
+      uid,
+      items: orderItems,
+      subtotal,
+      status: "created",
+      receiver: {
+        name: receiver.name,
+        phone: receiver.phone,
+        address: receiver.address,
+        note: receiver.note ?? "",
+      },
+      shipping: {
+        method: shipping.method ?? "",
+        carrier: shipping.carrier ?? "",
+        trackingNumber: shipping.trackingNumber ?? "",
+        trackingUrl: shipping.trackingUrl ?? "",
+        shippingStatus: "pending",
+      },
+      createdAt: now,
     });
 
-    // 🔔 推播給買家
-    await sendFCMToUser({
-      userId,
-      title: "付款成功",
-      body: "您的訂單已付款成功",
-      data: { type: "payment_success" },
+    // 1 order = 1 entry
+    tx.set(entryRef, {
+      uid,
+      orderId: orderRef.id,
+      createdAt: now,
     });
 
-    res.json({ ok: true, ...result });
-  } catch (e: any) {
-    console.error(e);
-    res.status(500).send(e.message);
-  }
-});
-
-/* ============================================================
- * 出貨（Vendor / Admin）
- * ============================================================ */
-
-export const shipOrder = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "login required");
-  }
-
-  const userSnap = await db.doc(`users/${context.auth.uid}`).get();
-  const role = userSnap.data()?.role;
-
-  if (!["admin", "vendor"].includes(role)) {
-    throw new functions.https.HttpsError("permission-denied", "no permission");
-  }
-
-  const { orderId, carrier, trackingNo } = data;
-  if (!orderId || !carrier || !trackingNo) {
-    throw new functions.https.HttpsError("invalid-argument", "missing data");
-  }
-
-  await db.doc(`orders/${orderId}`).update({
-    status: "shipping",
-    shipping: {
-      carrier,
-      trackingNo,
-      shippedAt: admin.firestore.FieldValue.serverTimestamp(),
-    },
-    logs: admin.firestore.FieldValue.arrayUnion({
-      action: "shipping",
-      by: context.auth.uid,
-      note: `${carrier}｜${trackingNo}`,
-      at: admin.firestore.Timestamp.now(),
-    }),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    return { orderId: orderRef.id, entryId: entryRef.id, subtotal };
   });
 
-  return { ok: true };
+  return result;
 });
 
-/* ============================================================
- * 出貨後通知 + FCM
- * ============================================================ */
+// Admin-only draw winner (pick 1)
+export const drawWinner = functions.https.onCall(async (data, context) => {
+  const uid = context.auth?.uid;
+  if (!uid) throw new functions.https.HttpsError("unauthenticated", "請先登入");
 
-export const orderShippingNotify = functions.firestore
-  .document("orders/{orderId}")
-  .onUpdate(async (change, context) => {
-    const before = change.before.data();
-    const after = change.after.data();
+  // admin check: admins/{uid} exists
+  const adminSnap = await db.doc(`admins/${uid}`).get();
+  if (!adminSnap.exists) throw new functions.https.HttpsError("permission-denied", "需要管理員權限");
 
-    if (before?.shipping || !after?.shipping) return null;
+  const lotteryId = (data?.lotteryId ?? "current") as string;
+  const lotteryRef = db.doc(`lotteries/${lotteryId}`);
+  const entriesRef = lotteryRef.collection("entries");
 
-    const { orderNo, userId } = after;
-    const orderId = context.params.orderId;
+  const entriesSnap = await entriesRef.get();
+  if (entriesSnap.empty) throw new functions.https.HttpsError("failed-precondition", "沒有抽獎券");
 
-    // Firestore 通知
-    await db.collection("notifications").add({
-      userId,
-      title: "訂單已出貨",
-      body: `訂單 ${orderNo} 已出貨`,
-      orderId,
-      read: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+  const pool = entriesSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
+  const pick = pool[Math.floor(Math.random() * pool.length)];
 
-    // 🔔 FCM 推播
-    await sendFCMToUser({
-      userId,
-      title: "訂單已出貨",
-      body: `訂單 ${orderNo} 已寄出`,
-      data: { type: "order_shipping", orderId },
-    });
+  await lotteryRef.set({ drawn: true, drawnAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+  await lotteryRef.collection("winners").doc(pick.uid).set({
+    uid: pick.uid,
+    entryId: pick.id,
+    orderId: pick.orderId,
+    pickedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
 
-    await sendFCMToUser({
-      role: "admin",
-      title: "訂單出貨完成",
-      body: `訂單 ${orderNo} 已出貨`,
-      data: { type: "order_shipping_admin", orderId },
-    });
-
-    return null;
-  });
-
-/* ============================================================
- * 訂單編號
- * ============================================================ */
-
-async function generateOrderNo(
-  tx: FirebaseFirestore.Transaction
-): Promise<string> {
-  const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const ref = db.doc(`counters/orders_${ymd}`);
-  const snap = await tx.get(ref);
-  const next = snap.exists ? (snap.data()!.seq ?? 0) + 1 : 1;
-  tx.set(ref, { seq: next }, { merge: true });
-  return `OS${ymd}${String(next).padStart(4, "0")}`;
-}
+  return { winnerUid: pick.uid, entryId: pick.id, orderId: pick.orderId };
+});

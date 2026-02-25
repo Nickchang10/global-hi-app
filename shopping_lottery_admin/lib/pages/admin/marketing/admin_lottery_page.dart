@@ -4,7 +4,7 @@
 // ------------------------------------------------------------
 // - Firestore 集合：lotteries
 // - 功能：搜尋、列表、啟用切換、刪除、進入編輯、建立新抽獎
-// - 快捷操作：手動抽獎（可選）、匯出得獎者（可選）
+// - 快捷操作：手動抽獎（可選）
 // - 路由依你的 main.dart：
 //   - 新增：Navigator.pushNamed(context, '/admin/lottery/edit');
 //   - 編輯：Navigator.pushNamed(context, '/admin/lottery/edit', arguments: id);
@@ -12,7 +12,8 @@
 // ⚠️ 注意：
 // 1) 本頁不強制依賴 file_saver，避免 Web 編譯踩雷。
 // 2) 若你已在 AdminLotteryEditPage 裡做匯出/抽獎，就用「進入編輯」去做即可。
-// 3) 若你的 lotteries 欄位不同，可在 _readInt / _readListLen 做兼容。
+// 3) ✅ 相容 enabled / isActive：讀取與更新都會同步寫入，避免欄位不一致。
+// 4) 若你的 lotteries 欄位不同，可在 _readInt / _readListLen 做兼容。
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -40,21 +41,41 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
   // Firestore ops
   // =====================================================
 
+  bool _readEnabled(Map<String, dynamic> data) {
+    // ✅ 優先用 enabled（與 AdminLotteryEditPage 一致），再相容舊 isActive
+    final v = data['enabled'];
+    if (v is bool) return v;
+    final v2 = data['isActive'];
+    if (v2 is bool) return v2;
+    return false;
+  }
+
+  bool _readAutoDraw(Map<String, dynamic> data) {
+    final v = data['autoDraw'];
+    if (v is bool) return v;
+    final v2 = data['auto_draw'];
+    if (v2 is bool) return v2;
+    return false;
+  }
+
   Future<void> _toggleActive(String id, bool value) async {
     try {
+      // ✅ 同步寫入 enabled / isActive，避免後台/前台欄位不一致
       await FirebaseFirestore.instance.collection('lotteries').doc(id).update({
+        'enabled': value,
         'isActive': value,
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(value ? '已啟用抽獎活動' : '已停用抽獎活動')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(value ? '已啟用抽獎活動' : '已停用抽獎活動')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('更新失敗：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
@@ -82,14 +103,14 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
     try {
       await FirebaseFirestore.instance.collection('lotteries').doc(id).delete();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已刪除成功')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已刪除成功')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('刪除失敗：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
     }
   }
 
@@ -98,39 +119,51 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
   // - 預設抽 3 人，可自行調整
   Future<void> _quickDraw(String id, List<String> participants) async {
     if (participants.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('無參與者可抽獎')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('無參與者可抽獎')));
       return;
     }
 
     final countCtrl = TextEditingController(text: '3');
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('手動抽獎'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('參與者共 ${participants.length} 人'),
-            const SizedBox(height: 10),
-            TextField(
-              controller: countCtrl,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '抽出人數',
-                border: OutlineInputBorder(),
-                isDense: true,
+    bool? ok;
+    try {
+      ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('手動抽獎'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('參與者共 ${participants.length} 人'),
+              const SizedBox(height: 10),
+              TextField(
+                controller: countCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: '抽出人數',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
               ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('開始抽獎'),
             ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('開始抽獎')),
-        ],
-      ),
-    );
+      );
+    } finally {
+      countCtrl.dispose();
+    }
+
     if (ok != true) return;
 
     final want = int.tryParse(countCtrl.text.trim()) ?? 3;
@@ -145,18 +178,19 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
 
       await FirebaseFirestore.instance.collection('lotteries').doc(id).update({
         'winners': winners,
+        'winnersCount': winners.length,
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已抽出 $count 名得獎者')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已抽出 $count 名得獎者')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('抽獎失敗：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('抽獎失敗：$e')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -213,7 +247,10 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('抽獎管理', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '抽獎管理',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
             tooltip: '重新整理',
@@ -222,7 +259,8 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
           ),
           IconButton(
             tooltip: '新增抽獎',
-            onPressed: () => Navigator.pushNamed(context, '/admin/lottery/edit'),
+            onPressed: () =>
+                Navigator.pushNamed(context, '/admin/lottery/edit'),
             icon: const Icon(Icons.add),
           ),
         ],
@@ -265,30 +303,41 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                         final data = doc.data();
 
                         final title = (data['title'] ?? '未命名').toString();
-                        final isActive = data['isActive'] == true;
-                        final autoDraw = data['autoDraw'] == true;
+                        final enabled = _readEnabled(data);
+                        final autoDraw = _readAutoDraw(data);
 
                         final startAt = _toDate(data['startAt']);
                         final endAt = _toDate(data['endAt']);
 
-                        final participantsCount = _readListLen(data, 'participants');
+                        final participantsCount = _readListLen(
+                          data,
+                          'participants',
+                        );
                         final winnersCount = _readListLen(data, 'winners');
 
                         // ✅ 兼容：若你有用 participantsCount / winnersCount 數值欄位，也能顯示
-                        final participantsCount2 =
-                            _readInt(data, 'participantsCount', fallback: participantsCount);
-                        final winnersCount2 =
-                            _readInt(data, 'winnersCount', fallback: winnersCount);
+                        final participantsCount2 = _readInt(
+                          data,
+                          'participantsCount',
+                          fallback: participantsCount,
+                        );
+                        final winnersCount2 = _readInt(
+                          data,
+                          'winnersCount',
+                          fallback: winnersCount,
+                        );
 
                         final dateText = () {
-                          final s = startAt == null ? '未設定' : df.format(startAt);
+                          final s = startAt == null
+                              ? '未設定'
+                              : df.format(startAt);
                           final e = endAt == null ? '未設定' : df.format(endAt);
                           return '$s ~ $e';
                         }();
 
                         return ListTile(
                           leading: Switch(
-                            value: isActive,
+                            value: enabled,
                             onChanged: (v) => _toggleActive(id, v),
                           ),
                           title: Row(
@@ -296,22 +345,32 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                               Expanded(
                                 child: Text(
                                   title,
-                                  style: const TextStyle(fontWeight: FontWeight.w800),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                               const SizedBox(width: 8),
                               if (autoDraw)
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: Colors.purple.shade50,
                                     borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(color: Colors.purple.shade200),
+                                    border: Border.all(
+                                      color: Colors.purple.shade200,
+                                    ),
                                   ),
                                   child: const Text(
                                     '自動抽獎',
-                                    style: TextStyle(fontSize: 12, color: Colors.purple),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.purple,
+                                    ),
                                   ),
                                 ),
                             ],
@@ -356,13 +415,22 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                                     );
                                   }
                                   if (v == 'draw') {
-                                    final participants = _readStringList(data, 'participants');
+                                    final participants = _readStringList(
+                                      data,
+                                      'participants',
+                                    );
                                     _quickDraw(id, participants);
                                   }
                                 },
                                 itemBuilder: (_) => const [
-                                  PopupMenuItem(value: 'edit', child: Text('進入編輯頁')),
-                                  PopupMenuItem(value: 'draw', child: Text('手動抽獎（列表快捷）')),
+                                  PopupMenuItem(
+                                    value: 'edit',
+                                    child: Text('進入編輯頁'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'draw',
+                                    child: Text('手動抽獎（列表快捷）'),
+                                  ),
                                 ],
                               ),
                             ],
@@ -383,7 +451,8 @@ class _AdminLotteryPageState extends State<AdminLotteryPage> {
                     child: IgnorePointer(
                       ignoring: true,
                       child: Container(
-                        color: Colors.black.withOpacity(0.05),
+                        // ✅ FIX: withOpacity deprecated → withValues(alpha: ...)
+                        color: Colors.black.withValues(alpha: 0.05),
                         alignment: Alignment.center,
                         child: const SizedBox(
                           width: 34,

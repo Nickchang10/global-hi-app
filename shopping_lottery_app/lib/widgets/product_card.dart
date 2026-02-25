@@ -1,230 +1,312 @@
-// lib/widgets/product_card.dart
 import 'package:flutter/material.dart';
 
+/// ✅ ProductCard（商品卡片｜完整版｜可編譯）
+/// ------------------------------------------------------------
+/// 修正重點：
+/// - ✅ 新增 named parameter: `margin`
+/// - ✅ 移除 withOpacity（lint: deprecated_member_use）
+/// ------------------------------------------------------------
 class ProductCard extends StatelessWidget {
-  final String name;
-  final int price;
-  final String image;
-
-  /// 點整張卡片（進商品詳情）
-  final VoidCallback onTap;
-
-  /// 右側加入購物車（可選）
-  final VoidCallback? onAdd;
-
-  /// 顯示用：商品描述（可選）
-  final String? description;
-
-  /// 顯示用：角標（可選，例：免運 / 熱賣）
-  final String? tag;
-
-  /// 圖片來源：true=asset / false=network
-  final bool isAssetImage;
-
-  /// 右下角顯示「加入購物車」按鈕（避免功能重複時可關閉）
-  final bool showAddButton;
-
-  /// 圓角
-  final double radius;
-
   const ProductCard({
     super.key,
-    required this.name,
-    required this.price,
-    required this.image,
-    required this.onTap,
-    this.onAdd,
-    this.description,
-    this.tag,
-    this.isAssetImage = true,
-    this.showAddButton = true,
-    this.radius = 14,
+    required this.product,
+    this.margin,
+    this.onTap,
+    this.onAddToCart,
+    this.onFavorite,
+    this.showFavorite = true,
+    this.isFavorite = false,
+    this.showAddToCart = true,
+    this.elevation = 1.5,
+    this.borderRadius = 14,
+    this.imageHeight = 120,
+    this.badgeText,
   });
+
+  /// 商品資料（Map 或 model 都可）
+  final dynamic product;
+
+  /// ✅ 修正：外部常用 ProductCard(margin: ...)；這裡要定義
+  final EdgeInsetsGeometry? margin;
+
+  final VoidCallback? onTap;
+  final VoidCallback? onAddToCart;
+  final VoidCallback? onFavorite;
+
+  final bool showFavorite;
+  final bool isFavorite;
+  final bool showAddToCart;
+
+  final double elevation;
+  final double borderRadius;
+  final double imageHeight;
+
+  /// 可選：左上角 badge（例如：熱賣/新品）
+  final String? badgeText;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final priceText = 'NT\$${price.toString()}';
-    final hasDesc = (description ?? '').trim().isNotEmpty;
-    final hasTag = (tag ?? '').trim().isNotEmpty;
+    final title =
+        _pickString(product, const ['title', 'name', 'productName']) ?? '未命名商品';
+    final subtitle =
+        _pickString(product, const ['subtitle', 'brief', 'desc']) ?? '';
+    final imageUrl = _pickString(product, const [
+      'imageUrl',
+      'image',
+      'coverUrl',
+      'thumbUrl',
+    ]);
+    final price =
+        _pickNum(product, const ['salePrice', 'price', 'amount']) ?? 0;
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(radius),
-        child: Ink(
-          margin: const EdgeInsets.only(bottom: 14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(radius),
-            border: Border.all(color: Colors.grey.shade200),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 10,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              // image
-              ClipRRect(
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(radius),
-                  bottomLeft: Radius.circular(radius),
-                ),
-                child: Stack(
-                  children: [
-                    _buildImage(),
-                    if (hasTag)
-                      Positioned(
-                        left: 8,
-                        top: 8,
-                        child: _TagBadge(text: tag!.trim()),
-                      ),
-                  ],
-                ),
-              ),
-
-              // content
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 10, 12),
+    return Container(
+      margin: margin,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(borderRadius),
+          onTap: onTap,
+          child: Card(
+            elevation: elevation,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(borderRadius),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _imageBlock(context, imageUrl),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 15.5,
-                          height: 1.2,
-                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          if (showFavorite)
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              icon: Icon(
+                                isFavorite
+                                    ? Icons.favorite
+                                    : Icons.favorite_border,
+                                color: isFavorite
+                                    ? Colors.redAccent
+                                    : Colors.grey,
+                                size: 20,
+                              ),
+                              onPressed: onFavorite,
+                              tooltip: '收藏',
+                            ),
+                        ],
                       ),
-                      const SizedBox(height: 6),
-                      if (hasDesc) ...[
+                      if (subtitle.trim().isNotEmpty) ...[
+                        const SizedBox(height: 4),
                         Text(
-                          description!.trim(),
-                          maxLines: 1,
+                          subtitle,
+                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: Colors.grey.shade600,
+                          style: const TextStyle(
                             fontSize: 12,
+                            color: Colors.black54,
                           ),
                         ),
-                        const SizedBox(height: 8),
                       ],
+                      const SizedBox(height: 10),
                       Row(
                         children: [
                           Text(
-                            priceText,
+                            _formatPrice(price),
                             style: const TextStyle(
-                              color: Colors.redAccent,
-                              fontSize: 15,
+                              fontSize: 16,
                               fontWeight: FontWeight.w900,
                             ),
                           ),
                           const Spacer(),
-                          if (showAddButton)
-                            IconButton(
-                              tooltip: '加入購物車',
-                              onPressed: onAdd,
-                              icon: Icon(
-                                Icons.add_shopping_cart_outlined,
-                                color: (onAdd == null) ? Colors.grey.shade400 : theme.iconTheme.color,
+                          if (showAddToCart)
+                            FilledButton.tonalIcon(
+                              onPressed: onAddToCart,
+                              icon: const Icon(
+                                Icons.add_shopping_cart,
+                                size: 18,
                               ),
-                              visualDensity: VisualDensity.compact,
+                              label: const Text('加入'),
+                              style: FilledButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
+                                ),
+                                textStyle: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                             ),
-                          const Icon(Icons.chevron_right, color: Colors.grey),
                         ],
                       ),
                     ],
                   ),
                 ),
-              ),
-              const SizedBox(width: 6),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildImage() {
-    const w = 104.0;
-    const h = 104.0;
+  Widget _imageBlock(BuildContext context, String? imageUrl) {
+    return SizedBox(
+      height: imageHeight,
+      width: double.infinity,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (imageUrl != null && imageUrl.trim().isNotEmpty)
+            Image.network(
+              imageUrl,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => _imageFallback(),
+              loadingBuilder: (context, child, progress) {
+                if (progress == null) return child;
+                return const Center(child: CircularProgressIndicator());
+              },
+            )
+          else
+            _imageFallback(),
+          if (badgeText != null && badgeText!.trim().isNotEmpty)
+            Positioned(
+              left: 10,
+              top: 10,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  // ✅ 0.55 -> alpha=140
+                  color: const Color.fromARGB(140, 0, 0, 0),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  badgeText!,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
-    if (isAssetImage) {
-      return Image.asset(
-        image,
-        width: w,
-        height: h,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _imageFallback(w, h),
-      );
+  Widget _imageFallback() {
+    return Container(
+      // ✅ grey 500 + alpha 31（0.12）
+      color: const Color.fromARGB(31, 158, 158, 158),
+      child: const Center(
+        child: Icon(Icons.image_outlined, size: 42, color: Colors.grey),
+      ),
+    );
+  }
+
+  // -----------------------
+  // Helpers（容錯取值）
+  // -----------------------
+
+  String _formatPrice(num price) {
+    final v = price.toDouble();
+    if (v % 1 == 0) return 'NT\$${v.toInt()}';
+    return 'NT\$${v.toStringAsFixed(2)}';
+  }
+
+  String? _pickString(dynamic obj, List<String> keys) {
+    final v = _pick(obj, keys);
+    if (v == null) return null;
+    final s = v.toString().trim();
+    return s.isEmpty ? null : s;
+  }
+
+  num? _pickNum(dynamic obj, List<String> keys) {
+    final v = _pick(obj, keys);
+    if (v == null) return null;
+    if (v is num) return v;
+    final s = v.toString().trim();
+    return num.tryParse(s);
+  }
+
+  dynamic _pick(dynamic obj, List<String> keys) {
+    if (obj == null) return null;
+
+    // Map
+    if (obj is Map) {
+      for (final k in keys) {
+        if (obj.containsKey(k)) return obj[k];
+      }
     }
 
-    return Image.network(
-      image,
-      width: w,
-      height: h,
-      fit: BoxFit.cover,
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) return child;
-        return _imageSkeleton(w, h);
-      },
-      errorBuilder: (_, __, ___) => _imageFallback(w, h),
-    );
+    // 嘗試 toJson()
+    try {
+      // ignore: avoid_dynamic_calls
+      final v = (obj as dynamic).toJson();
+      if (v is Map) {
+        for (final k in keys) {
+          if (v.containsKey(k)) return v[k];
+        }
+      }
+    } catch (_) {}
+
+    // 最後 fallback：常見 getter（dynamic）
+    for (final k in keys) {
+      try {
+        // ignore: avoid_dynamic_calls
+        final v = _dynamicGetter(obj, k);
+        if (v != null) return v;
+      } catch (_) {}
+    }
+
+    return null;
   }
 
-  Widget _imageSkeleton(double w, double h) {
-    return Container(
-      width: w,
-      height: h,
-      color: Colors.grey.shade200,
-      alignment: Alignment.center,
-      child: Icon(Icons.image_outlined, color: Colors.grey.shade400),
-    );
-  }
-
-  Widget _imageFallback(double w, double h) {
-    return Container(
-      width: w,
-      height: h,
-      color: Colors.grey.shade200,
-      alignment: Alignment.center,
-      child: const Icon(Icons.broken_image_outlined, color: Colors.grey),
-    );
-  }
-}
-
-class _TagBadge extends StatelessWidget {
-  final String text;
-  const _TagBadge({required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    final isFreeShip = text.contains('免運');
-    final bg = isFreeShip ? Colors.green : Colors.redAccent;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 11,
-          fontWeight: FontWeight.w900,
-        ),
-      ),
-    );
+  dynamic _dynamicGetter(dynamic obj, String key) {
+    switch (key) {
+      case 'title':
+        // ignore: avoid_dynamic_calls
+        return obj.title;
+      case 'name':
+      case 'productName':
+        // ignore: avoid_dynamic_calls
+        return obj.name;
+      case 'subtitle':
+      case 'brief':
+      case 'desc':
+        // ignore: avoid_dynamic_calls
+        return obj.subtitle;
+      case 'imageUrl':
+      case 'image':
+      case 'coverUrl':
+      case 'thumbUrl':
+        // ignore: avoid_dynamic_calls
+        return obj.imageUrl;
+      case 'salePrice':
+        // ignore: avoid_dynamic_calls
+        return obj.salePrice;
+      case 'price':
+      case 'amount':
+        // ignore: avoid_dynamic_calls
+        return obj.price;
+      default:
+        return null;
+    }
   }
 }

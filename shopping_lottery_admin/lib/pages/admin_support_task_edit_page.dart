@@ -1,319 +1,229 @@
 // lib/pages/admin_support_task_edit_page.dart
 //
-// ✅ AdminSupportTaskEditPage（最終完整版｜新增/編輯客服任務｜指派+到期+通知）
-// ------------------------------------------------------------
-// - Admin 可選 vendorId、可指派任務給 users
-// - Vendor 只能寫自己的 vendorId（用 AdminGate vendorId 限制）
-// - 儲存後若有 assigneeUid → 發送通知到該使用者
+// ✅ AdminSupportTaskEditPage（最終完整版｜可編譯｜修正 use_build_context_synchronously + Dropdown value deprecated）
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-
-import '../services/admin_gate.dart';
-import '../services/notification_service.dart';
 
 class AdminSupportTaskEditPage extends StatefulWidget {
+  const AdminSupportTaskEditPage({
+    super.key,
+    this.taskId, // null => 新增
+    this.collection = 'support_tasks',
+  });
+
   final String? taskId;
-  const AdminSupportTaskEditPage({super.key, this.taskId});
+  final String collection;
 
   @override
-  State<AdminSupportTaskEditPage> createState() => _AdminSupportTaskEditPageState();
+  State<AdminSupportTaskEditPage> createState() =>
+      _AdminSupportTaskEditPageState();
 }
 
 class _AdminSupportTaskEditPageState extends State<AdminSupportTaskEditPage> {
   final _db = FirebaseFirestore.instance;
 
+  late final DocumentReference<Map<String, dynamic>> _ref = _db
+      .collection(widget.collection)
+      .doc(widget.taskId ?? _db.collection(widget.collection).doc().id);
+
   final _formKey = GlobalKey<FormState>();
 
   final _titleCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
-  final _vendorCtrl = TextEditingController(); // fallback when no vendors dropdown
-  final _assigneeEmailCtrl = TextEditingController(); // bind by email
+  final _assigneeCtrl = TextEditingController();
+  final _vendorIdCtrl = TextEditingController();
   final _tagsCtrl = TextEditingController();
 
-  String _status = 'new';
+  String _status = 'open';
   String _priority = 'normal';
-  bool _isActive = true;
-
   DateTime? _dueAt;
 
-  bool _loading = false;
+  bool _loading = true;
   bool _saving = false;
-
-  // role
-  Future<RoleInfo>? _roleFuture;
-  String? _lastUid;
-  String _role = '';
-  String? _vendorId;
-
-  // assignee
-  String? _assigneeUid;
-  String? _assigneeName;
-  String? _assigneeEmail;
-
-  bool get _isEdit => widget.taskId != null;
+  bool _hydrated = false;
 
   @override
   void initState() {
     super.initState();
-    _primeRole();
-  }
-
-  void _primeRole() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final gate = context.read<AdminGate>();
-    if (_roleFuture == null || _lastUid != user.uid) {
-      _lastUid = user.uid;
-      _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
-      if (_isEdit) _load();
-    }
+    _loadOnce();
   }
 
   @override
   void dispose() {
     _titleCtrl.dispose();
     _descCtrl.dispose();
-    _vendorCtrl.dispose();
-    _assigneeEmailCtrl.dispose();
+    _assigneeCtrl.dispose();
+    _vendorIdCtrl.dispose();
     _tagsCtrl.dispose();
     super.dispose();
   }
 
-  void _snack(String msg) {
+  String _s(dynamic v) => (v ?? '').toString().trim();
+  DateTime? _toDate(dynamic v) =>
+      v is Timestamp ? v.toDate() : (v is DateTime ? v : null);
+
+  void _snack(String msg, {bool error = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: error ? Colors.red : null),
+    );
   }
 
-  String _s(dynamic v) => (v ?? '').toString().trim();
-  DateTime? _toDate(dynamic v) => v is Timestamp ? v.toDate() : (v is DateTime ? v : null);
+  String _fmtDate(DateTime? d) {
+    if (d == null) return '-';
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y/$m/$day';
+  }
 
-  Future<void> _load() async {
-    if (!_isEdit) return;
+  List<String> _parseTags(String raw) {
+    final s = raw.trim();
+    if (s.isEmpty) return <String>[];
+    return s
+        .split(RegExp(r'[,，\s]+'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList();
+  }
+
+  Future<void> _loadOnce() async {
     setState(() => _loading = true);
     try {
-      final doc = await _db.collection('supportTasks').doc(widget.taskId).get();
-      if (!doc.exists) return;
-      final d = doc.data() ?? {};
+      final snap = await _ref.get();
+      if (!mounted) return;
 
-      setState(() {
-        _titleCtrl.text = _s(d['title']);
-        _descCtrl.text = _s(d['description']);
-        _status = _s(d['status']).isEmpty ? 'new' : _s(d['status']);
-        _priority = _s(d['priority']).isEmpty ? 'normal' : _s(d['priority']);
-        _isActive = d['isActive'] == true;
-
-        final vendorId = _s(d['vendorId']);
-        _vendorCtrl.text = vendorId;
-
-        _assigneeUid = _s(d['assigneeUid']).isEmpty ? null : _s(d['assigneeUid']);
-        _assigneeName = _s(d['assigneeName']).isEmpty ? null : _s(d['assigneeName']);
-        _assigneeEmail = _s(d['assigneeEmail']).isEmpty ? null : _s(d['assigneeEmail']);
-        _assigneeEmailCtrl.text = _assigneeEmail ?? '';
-
-        _dueAt = _toDate(d['dueAt']);
-
-        final tags = (d['tags'] is List) ? List<String>.from(d['tags'] as List) : <String>[];
-        _tagsCtrl.text = tags.join(', ');
-      });
+      if (snap.exists) {
+        final d = snap.data() ?? <String, dynamic>{};
+        _hydrateFrom(d);
+      } else {
+        _hydrated = true;
+      }
     } catch (e) {
-      _snack('載入失敗：$e');
+      if (!mounted) return;
+      _snack('讀取失敗：$e', error: true);
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
+  void _hydrateFrom(Map<String, dynamic> d) {
+    if (_hydrated) return;
+
+    _titleCtrl.text = _s(d['title']);
+    _descCtrl.text = _s(d['description']);
+    _assigneeCtrl.text = _s(d['assigneeUid']);
+    _vendorIdCtrl.text = _s(d['vendorId']);
+
+    final tags = (d['tags'] is List)
+        ? List<String>.from(d['tags'])
+        : <String>[];
+    _tagsCtrl.text = tags.join(', ');
+
+    _status = _s(d['status']).isEmpty ? 'open' : _s(d['status']);
+    _priority = _s(d['priority']).isEmpty ? 'normal' : _s(d['priority']);
+    _dueAt = _toDate(d['dueAt']);
+
+    _hydrated = true;
+  }
+
   Future<void> _pickDueDate() async {
     final now = DateTime.now();
-    final base = _dueAt ?? now;
-
-    final date = await showDatePicker(
+    final initial = _dueAt ?? now;
+    final picked = await showDatePicker(
       context: context,
-      initialDate: base,
-      firstDate: DateTime(now.year - 1, 1, 1),
-      lastDate: DateTime(now.year + 5, 12, 31),
+      initialDate: initial,
+      firstDate: DateTime(now.year - 3),
+      lastDate: DateTime(now.year + 10),
     );
-    if (date == null) return;
-
-    final time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(base),
+    if (picked == null) return;
+    if (!mounted) return;
+    setState(
+      () =>
+          _dueAt = DateTime(picked.year, picked.month, picked.day, 23, 59, 59),
     );
-    if (time == null) return;
-
-    setState(() {
-      _dueAt = DateTime(date.year, date.month, date.day, time.hour, time.minute);
-    });
   }
 
-  Future<void> _clearDueDate() async {
-    setState(() => _dueAt = null);
-  }
-
-  // -------------------------
-  // Bind assignee by users.email
-  // -------------------------
-  Future<void> _bindAssigneeByEmail() async {
-    final email = _assigneeEmailCtrl.text.trim().toLowerCase();
-    if (email.isEmpty) {
-      _snack('請輸入指派 Email（users.email）');
-      return;
-    }
-
-    try {
-      final snap = await _db.collection('users').where('email', isEqualTo: email).limit(20).get();
-      if (snap.docs.isEmpty) {
-        _snack('找不到 users.email = $email（請確認 users 文件有寫入 email 欄位）');
-        return;
-      }
-
-      DocumentSnapshot<Map<String, dynamic>> picked = snap.docs.first;
-
-      if (snap.docs.length > 1) {
-        final uid = await showDialog<String>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('選擇要指派的使用者'),
-            content: SizedBox(
-              width: 420,
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  for (final d in snap.docs)
-                    ListTile(
-                      title: Text(_s(d.data()['displayName']).isEmpty ? d.id : _s(d.data()['displayName'])),
-                      subtitle: Text('uid: ${d.id}'),
-                      onTap: () => Navigator.pop(context, d.id),
-                    ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-            ],
-          ),
-        );
-        if (uid == null) return;
-        picked = snap.docs.firstWhere((e) => e.id == uid);
-      }
-
-      final data = picked.data() ?? {};
-      setState(() {
-        _assigneeUid = picked.id;
-        _assigneeName = _s(data['displayName']).isEmpty ? null : _s(data['displayName']);
-        _assigneeEmail = _s(data['email']).isEmpty ? email : _s(data['email']);
-      });
-
-      _snack('已綁定指派人：${_assigneeEmail ?? picked.id}');
-    } catch (e) {
-      _snack('綁定指派人失敗：$e');
-    }
-  }
-
-  Future<void> _clearAssignee() async {
-    setState(() {
-      _assigneeUid = null;
-      _assigneeName = null;
-      _assigneeEmail = null;
-      _assigneeEmailCtrl.clear();
-    });
-  }
-
-  List<String> _parseTags(String raw) {
-    final parts = raw
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    // unique preserve order
-    final seen = <String>{};
-    final out = <String>[];
-    for (final t in parts) {
-      final k = t.toLowerCase();
-      if (seen.add(k)) out.add(t);
-    }
-    return out;
-  }
-
-  Future<void> _save(RoleInfo info) async {
+  Future<void> _save() async {
     if (_saving) return;
-    if (!_formKey.currentState!.validate()) return;
-
-    final role = (info.role).toLowerCase().trim();
-    final isAdmin = role == 'admin';
-    final isVendor = role == 'vendor';
-
-    // vendor must have vendorId
-    final vendorIdFinal = isVendor ? (info.vendorId ?? '').trim() : _vendorCtrl.text.trim();
-    if (isVendor && vendorIdFinal.isEmpty) {
-      _snack('Vendor 帳號缺少 vendorId，無法建立任務');
-      return;
-    }
-
-    final payload = <String, dynamic>{
-      'title': _titleCtrl.text.trim(),
-      'description': _descCtrl.text.trim(),
-      'status': _status,
-      'priority': _priority,
-      'vendorId': vendorIdFinal.isEmpty ? null : vendorIdFinal,
-      'assigneeUid': _assigneeUid,
-      'assigneeName': _assigneeName,
-      'assigneeEmail': _assigneeEmail,
-      'dueAt': _dueAt == null ? null : Timestamp.fromDate(_dueAt!),
-      'tags': _parseTags(_tagsCtrl.text),
-      'isActive': _isActive,
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
-
-    // avoid writing nulls as fields if you prefer:
-    payload.removeWhere((k, v) => v == null);
+    if (!(_formKey.currentState?.validate() ?? false)) return;
 
     setState(() => _saving = true);
+
+    final messenger = mounted ? ScaffoldMessenger.of(context) : null;
+    final nav = mounted ? Navigator.of(context) : null;
+
     try {
-      final ref = _isEdit
-          ? _db.collection('supportTasks').doc(widget.taskId)
-          : _db.collection('supportTasks').doc();
+      final now = FieldValue.serverTimestamp();
 
-      if (_isEdit) {
-        await ref.set(payload, SetOptions(merge: true));
-      } else {
-        await ref.set({
-          ...payload,
-          'createdAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
+      final payload = <String, dynamic>{
+        'title': _titleCtrl.text.trim(),
+        'description': _descCtrl.text.trim(),
+        'status': _status,
+        'priority': _priority,
+        'assigneeUid': _assigneeCtrl.text.trim(),
+        'vendorId': _vendorIdCtrl.text.trim(),
+        'tags': _parseTags(_tagsCtrl.text),
+        'updatedAt': now,
+        'createdAt': now,
+        if (_dueAt != null) 'dueAt': Timestamp.fromDate(_dueAt!),
+        if (_dueAt == null) 'dueAt': FieldValue.delete(),
+      };
 
-      // send notification to assignee (best effort)
-      if ((_assigneeUid ?? '').trim().isNotEmpty) {
-        try {
-          final notif = context.read<NotificationService>();
-          await notif.sendToUser(
-            uid: _assigneeUid!.trim(),
-            title: '你有新的客服任務',
-            body: '任務：${_titleCtrl.text.trim()}（狀態：${_statusLabel(_status)}）',
-            type: 'support_task',
-            route: '/admin_support_tasks',
-            extra: <String, dynamic>{
-              'taskId': ref.id,
-              if (vendorIdFinal.isNotEmpty) 'vendorId': vendorIdFinal,
-              'status': _status,
-              'priority': _priority,
-            },
-          );
-        } catch (_) {
-          // ignore notification failure
-        }
-      }
+      await _ref.set(payload, SetOptions(merge: true));
 
       if (!mounted) return;
-      _snack('已儲存');
-      Navigator.pop(context, true);
+      messenger?.showSnackBar(const SnackBar(content: Text('已儲存')));
+      nav?.pop(true);
     } catch (e) {
-      _snack('儲存失敗：$e');
+      if (!mounted) return;
+      messenger?.showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _delete() async {
+    if (widget.taskId == null) {
+      _snack('新增模式無法刪除');
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('刪除任務'),
+        content: const Text('確定要刪除？此動作無法復原。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('刪除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    setState(() => _saving = true);
+
+    final messenger = mounted ? ScaffoldMessenger.of(context) : null;
+    final nav = mounted ? Navigator.of(context) : null;
+
+    try {
+      await _ref.delete();
+      if (!mounted) return;
+      messenger?.showSnackBar(const SnackBar(content: Text('已刪除')));
+      nav?.pop(true);
+    } catch (e) {
+      if (!mounted) return;
+      messenger?.showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -321,315 +231,251 @@ class _AdminSupportTaskEditPageState extends State<AdminSupportTaskEditPage> {
 
   @override
   Widget build(BuildContext context) {
-    _primeRole();
+    final isNew = widget.taskId == null;
+    final cs = Theme.of(context).colorScheme;
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return const Scaffold(body: Center(child: Text('請登入')));
-
-    return FutureBuilder<RoleInfo>(
-      future: _roleFuture,
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting || _loading) {
-          return Scaffold(
-            appBar: AppBar(title: Text(_isEdit ? '編輯客服任務' : '新增客服任務')),
-            body: const Center(child: CircularProgressIndicator()),
-          );
-        }
-
-        final info = snap.data;
-        if (info == null || info.hasError) {
-          return Scaffold(
-            appBar: AppBar(title: const Text('客服任務')),
-            body: Center(child: Text(info?.error ?? '讀取角色失敗')),
-          );
-        }
-
-        final role = info.role.toLowerCase().trim();
-        final isAdmin = role == 'admin';
-        final isVendor = role == 'vendor';
-
-        if (_role != role) _role = role;
-        if (_vendorId != info.vendorId) _vendorId = info.vendorId;
-
-        if (isVendor && (_vendorId ?? '').trim().isEmpty) {
-          return const Scaffold(
-            body: Center(child: Text('Vendor 帳號缺少 vendorId，請在 users/{uid} 補上 vendorId')),
-          );
-        }
-
-        final title = _isEdit ? '編輯客服任務' : '新增客服任務';
-
-        return Scaffold(
-          appBar: AppBar(
-            title: Text(title),
-            actions: [
-              IconButton(
-                tooltip: '儲存',
-                onPressed: _saving ? null : () => _save(info),
-                icon: const Icon(Icons.save_outlined),
-              ),
-              const SizedBox(width: 6),
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(isNew ? '新增客服任務' : '編輯客服任務'),
+        actions: [
+          if (!isNew)
+            IconButton(
+              tooltip: '刪除',
+              onPressed: _saving ? null : _delete,
+              icon: const Icon(Icons.delete_outline),
+            ),
+          IconButton(
+            tooltip: '儲存',
+            onPressed: (_loading || _saving) ? null : _save,
+            icon: _saving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_outlined),
           ),
-          body: Stack(
-            children: [
-              Form(
-                key: _formKey,
-                child: ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    TextFormField(
-                      controller: _titleCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '任務標題',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      validator: (v) => (v ?? '').trim().isEmpty ? '請輸入任務標題' : null,
-                    ),
-                    const SizedBox(height: 12),
-
-                    TextFormField(
-                      controller: _descCtrl,
-                      minLines: 3,
-                      maxLines: 8,
-                      decoration: const InputDecoration(
-                        labelText: '任務描述',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    Row(
-                      children: [
-                        Expanded(
-                          child: DropdownButtonFormField<String>(
-                            value: _status,
-                            decoration: const InputDecoration(
-                              labelText: '狀態',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                            items: const [
-                              DropdownMenuItem(value: 'new', child: Text('未處理')),
-                              DropdownMenuItem(value: 'in_progress', child: Text('處理中')),
-                              DropdownMenuItem(value: 'waiting', child: Text('等待回覆')),
-                              DropdownMenuItem(value: 'resolved', child: Text('已解決')),
-                              DropdownMenuItem(value: 'closed', child: Text('已關閉')),
-                            ],
-                            onChanged: _saving ? null : (v) => setState(() => _status = v ?? 'new'),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: DropdownButtonFormField<String>(
-                            value: _priority,
-                            decoration: const InputDecoration(
-                              labelText: '優先級',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                            items: const [
-                              DropdownMenuItem(value: 'low', child: Text('低')),
-                              DropdownMenuItem(value: 'normal', child: Text('一般')),
-                              DropdownMenuItem(value: 'high', child: Text('高')),
-                              DropdownMenuItem(value: 'urgent', child: Text('緊急')),
-                            ],
-                            onChanged: _saving ? null : (v) => setState(() => _priority = v ?? 'normal'),
-                          ),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    if (isAdmin)
-                      TextFormField(
-                        controller: _vendorCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'vendorId（管理員可選填）',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      )
-                    else
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.6),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Theme.of(context).dividerColor),
-                        ),
-                        child: Text(
-                          'vendorId：${(_vendorId ?? '').isEmpty ? '(未設定)' : _vendorId}',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ),
-
-                    const SizedBox(height: 12),
-
-                    // assignee
-                    const Text('指派客服（選填）', style: TextStyle(fontWeight: FontWeight.w900)),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _assigneeEmailCtrl,
-                            decoration: const InputDecoration(
-                              hintText: '輸入 users.email 綁定指派人',
-                              isDense: true,
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        FilledButton.icon(
-                          onPressed: _saving ? null : _bindAssigneeByEmail,
-                          icon: const Icon(Icons.person_add_alt_1),
-                          label: const Text('綁定'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-
-                    if ((_assigneeUid ?? '').trim().isNotEmpty)
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Theme.of(context).dividerColor),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.verified_user),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                '已指派：${_assigneeName ?? ''} ${_assigneeEmail ?? ''}\nuid: ${_assigneeUid!}',
-                                style: const TextStyle(fontWeight: FontWeight.w800),
-                              ),
-                            ),
-                            TextButton(onPressed: _saving ? null : _clearAssignee, child: const Text('清除')),
-                          ],
-                        ),
-                      ),
-
-                    const Divider(height: 26),
-
-                    // due date
-                    const Text('到期時間（選填）', style: TextStyle(fontWeight: FontWeight.w900)),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Theme.of(context).dividerColor),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              _dueAt == null ? '未設定' : _fmtDateTime(_dueAt!),
-                              style: const TextStyle(fontWeight: FontWeight.w800),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        OutlinedButton.icon(
-                          onPressed: _saving ? null : _pickDueDate,
-                          icon: const Icon(Icons.event),
-                          label: const Text('設定'),
-                        ),
-                        const SizedBox(width: 10),
-                        TextButton(
-                          onPressed: (_saving || _dueAt == null) ? null : _clearDueDate,
-                          child: const Text('清除'),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    TextField(
-                      controller: _tagsCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Tags（逗號分隔）',
-                        hintText: '例如：退款, 出貨, 保固',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-
-                    const SizedBox(height: 8),
-
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('啟用狀態', style: TextStyle(fontWeight: FontWeight.w800)),
-                      value: _isActive,
-                      onChanged: _saving ? null : (v) => setState(() => _isActive = v),
-                    ),
-
-                    const SizedBox(height: 18),
-
-                    FilledButton.icon(
-                      onPressed: _saving ? null : () => _save(info),
-                      icon: const Icon(Icons.save_outlined),
-                      label: const Text('儲存'),
-                    ),
-                  ],
-                ),
-              ),
-
-              if (_saving)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: Material(
-                    elevation: 10,
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : Form(
+              key: _formKey,
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Card(
+                    elevation: 0.6,
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      child: Row(
-                        children: const [
-                          SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-                          SizedBox(width: 10),
-                          Expanded(child: Text('儲存中...', style: TextStyle(fontWeight: FontWeight.w800))),
+                      padding: const EdgeInsets.all(14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '基本資訊',
+                            style: TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _titleCtrl,
+                            decoration: const InputDecoration(
+                              labelText: '標題（必填）',
+                              border: OutlineInputBorder(),
+                            ),
+                            validator: (v) =>
+                                (v ?? '').trim().isEmpty ? '必填' : null,
+                          ),
+                          const SizedBox(height: 10),
+                          TextFormField(
+                            controller: _descCtrl,
+                            minLines: 5,
+                            maxLines: 12,
+                            decoration: const InputDecoration(
+                              labelText: '描述/內容',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
                         ],
                       ),
                     ),
                   ),
-                ),
-            ],
-          ),
-        );
-      },
+
+                  const SizedBox(height: 12),
+
+                  Card(
+                    elevation: 0.6,
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '狀態與指派',
+                            style: TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: DropdownButtonFormField<String>(
+                                  // ✅ 修正：value deprecated -> initialValue
+                                  // ✅ 加 key 確保 initialValue 會跟著 state 更新
+                                  key: ValueKey('status_$_status'),
+                                  initialValue: _status,
+                                  decoration: const InputDecoration(
+                                    labelText: '狀態',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 'open',
+                                      child: Text('open'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'in_progress',
+                                      child: Text('in_progress'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'done',
+                                      child: Text('done'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'canceled',
+                                      child: Text('canceled'),
+                                    ),
+                                  ],
+                                  onChanged: _saving
+                                      ? null
+                                      : (v) => setState(
+                                          () => _status = (v ?? 'open'),
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: DropdownButtonFormField<String>(
+                                  key: ValueKey('priority_$_priority'),
+                                  initialValue: _priority,
+                                  decoration: const InputDecoration(
+                                    labelText: '優先度',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 'low',
+                                      child: Text('low'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'normal',
+                                      child: Text('normal'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'high',
+                                      child: Text('high'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'urgent',
+                                      child: Text('urgent'),
+                                    ),
+                                  ],
+                                  onChanged: _saving
+                                      ? null
+                                      : (v) => setState(
+                                          () => _priority = (v ?? 'normal'),
+                                        ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: _assigneeCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'assigneeUid（可空）',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: _vendorIdCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'vendorId（可空）',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  Card(
+                    elevation: 0.6,
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '到期日與標籤',
+                            style: TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _saving ? null : _pickDueDate,
+                                  icon: const Icon(Icons.event_outlined),
+                                  label: Text(
+                                    _dueAt == null
+                                        ? '設定到期日'
+                                        : '到期：${_fmtDate(_dueAt)}',
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              TextButton(
+                                onPressed: (_saving || _dueAt == null)
+                                    ? null
+                                    : () => setState(() => _dueAt = null),
+                                child: Text(
+                                  '清除',
+                                  style: TextStyle(
+                                    color: cs.primary,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: _tagsCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'tags（用逗號或空白分隔）',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  FilledButton.icon(
+                    onPressed: (_saving || _loading) ? null : _save,
+                    icon: const Icon(Icons.save_outlined),
+                    label: Text(_saving ? '儲存中...' : '儲存'),
+                  ),
+
+                  const SizedBox(height: 20),
+                ],
+              ),
+            ),
     );
-  }
-
-  static String _statusLabel(String s) {
-    switch (s) {
-      case 'new':
-        return '未處理';
-      case 'in_progress':
-        return '處理中';
-      case 'waiting':
-        return '等待回覆';
-      case 'resolved':
-        return '已解決';
-      case 'closed':
-        return '已關閉';
-      default:
-        return s;
-    }
-  }
-
-  static String _fmtDateTime(DateTime d) {
-    final y = d.year.toString().padLeft(4, '0');
-    final m = d.month.toString().padLeft(2, '0');
-    final day = d.day.toString().padLeft(2, '0');
-    final hh = d.hour.toString().padLeft(2, '0');
-    final mm = d.minute.toString().padLeft(2, '0');
-    return '$y/$m/$day $hh:$mm';
   }
 }

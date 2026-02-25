@@ -1,158 +1,58 @@
-// lib/pages/order_success_page.dart
 import 'dart:async';
-import 'dart:math';
 import 'package:flutter/material.dart';
-import '../services/api_client.dart';
-import 'payment_status_page.dart';
 
-String _generateIdShort() {
-  final ms = DateTime.now().millisecondsSinceEpoch;
-  final rnd = Random().nextInt(1000);
-  return 'id_${ms}_$rnd';
-}
-
-/// 一頁兩用：
-/// - 有 product -> 當作 Checkout 流程
-/// - 沒 product 但有 orderId -> 當作 Order Success 驗證頁面，會輪詢後端確認 status 為 COMPLETED 才顯示成功
+/// ✅ OrderSuccessPage（下單成功頁｜最終完整版｜已修正 curly_braces_in_flow_control_structures）
+/// ------------------------------------------------------------
+/// - 支援帶入：orderId / amount / autoBackSeconds
+/// - 按鈕：查看訂單 / 回首頁
+/// - 可選：倒數自動回首頁（autoBackSeconds > 0）
+///
+/// 你可以在下單完成後：
+/// Navigator.pushReplacement(
+///   context,
+///   MaterialPageRoute(builder: (_) => const OrderSuccessPage(orderId: 'xxx')),
+/// );
 class OrderSuccessPage extends StatefulWidget {
-  final Map<String, dynamic>? product; // checkout 用
-  final int qty;
-  final String? orderId; // success verify 用
-  final String apiBase;
+  final String? orderId;
+  final num? amount;
+  final int autoBackSeconds;
 
-  const OrderSuccessPage({Key? key, this.product, this.qty = 1, this.orderId, this.apiBase = ''})
-      : super(key: key);
+  const OrderSuccessPage({
+    super.key,
+    this.orderId,
+    this.amount,
+    this.autoBackSeconds = 0, // 0 = 不自動返回
+  });
 
   @override
   State<OrderSuccessPage> createState() => _OrderSuccessPageState();
 }
 
 class _OrderSuccessPageState extends State<OrderSuccessPage> {
-  bool _loading = false;
-  String? _createdOrderId;
-  String _status = '檢查中...';
-  bool _verified = false;
-  bool _verifying = false;
   Timer? _timer;
-  int _attempt = 0;
-
-  /// --- NEW: flag for invalid params (both product and orderId null)
-  bool _invalidParams = false;
+  late int _secondsLeft;
 
   @override
   void initState() {
     super.initState();
 
-    // --- NEW: debug prints to trace why page is opened and parameters
-    debugPrint("=== OrderSuccessPage INIT ===");
-    debugPrint("product: ${widget.product}");
-    debugPrint("qty: ${widget.qty}");
-    debugPrint("orderId: ${widget.orderId}");
-    debugPrint("apiBase: ${widget.apiBase}");
-
-    // --- NEW: guard: if neither product nor orderId is provided, mark invalid and do NOT auto-show success
-    if (widget.product == null && widget.orderId == null) {
-      debugPrint("OrderSuccessPage called without product or orderId! Marking invalid to avoid accidental success.");
-      setState(() {
-        _invalidParams = true;
-        _status = '無效的頁面參數';
-      });
-      return;
-    }
-
-    // original behavior: if product is null but orderId present => verify loop
-    if (widget.product == null && widget.orderId != null) {
-      _startVerifyLoop();
-    }
-  }
-
-  void _startVerifyLoop() {
-    _checkStatus();
-    _timer = Timer.periodic(const Duration(seconds: 2), (_) {
-      _attempt++;
-      if (_attempt > 30) {
-        _timer?.cancel();
-      } else {
-        _checkStatus();
-      }
-    });
-  }
-
-  Future<void> _checkStatus() async {
-    final oid = widget.orderId ?? _createdOrderId;
-    if (oid == null) return;
-    if (_verifying) return;
-    setState(() => _verifying = true);
-
-    try {
-      final res = await ApiClient.getOrderStatus(oid, widget.apiBase ?? '');
-      if (res == null) {
-        // 沒找到訂單
-        setState(() => _status = 'NOT_FOUND');
-        return;
-      }
-
-      // 容錯：有些後端會回 status 或 state
-      final s = (res['status'] ?? res['state'] ?? '').toString().toUpperCase();
-      setState(() => _status = s.isEmpty ? 'UNKNOWN' : s);
-
-      if (s == 'COMPLETED' || s == 'PAID') {
-        _timer?.cancel();
-        setState(() => _verified = true);
-      }
-    } catch (e) {
-      debugPrint('checkStatus error: $e');
-      setState(() => _status = '檢查錯誤');
-    } finally {
-      _verifying = false;
-    }
-  }
-
-  Future<void> _createOrderAndProceed() async {
-    if (widget.product == null) return;
-    setState(() => _loading = true);
-    final idempotencyKey = _generateIdShort();
-    final body = {
-      "items": [
-        {
-          "product_id": widget.product!['id'] ?? widget.product!['name'],
-          "qty": widget.qty,
-          "price": widget.product!['price'] ?? 0,
+    _secondsLeft = widget.autoBackSeconds;
+    if (_secondsLeft > 0) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+        if (!mounted) {
+          t.cancel();
+          return;
         }
-      ],
-      "payment_method": "redirect",
-    };
 
-    try {
-      final res = await ApiClient.createOrder(body, idempotencyKey, widget.apiBase ?? '');
-      final orderId = res['order_id']?.toString();
-      final status = (res['status'] ?? '').toString().toUpperCase();
-      final paymentUrl = res['payment_url'] as String?;
-      if (orderId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('建立訂單失敗')));
-        return;
-      }
+        setState(() {
+          _secondsLeft -= 1;
+        });
 
-      if (status == 'COMPLETED' || status == 'PAID') {
-        await showDialog(
-            context: context,
-            builder: (_) => AlertDialog(
-                  title: const Text('異常'),
-                  content: Text('後端回傳已完成（$status），請檢查後端'),
-                  actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('確定'))],
-                ));
-        return;
-      }
-
-      _createdOrderId = orderId;
-
-      // 若有 payment_url：可開啟 webview/外部頁（此範例為輪詢）
-      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => PaymentStatusPage(orderId: orderId, apiBase: widget.apiBase ?? '')));
-    } catch (e) {
-      debugPrint('createOrder error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('建立訂單失敗：$e')));
-    } finally {
-      if (mounted) setState(() => _loading = false);
+        if (_secondsLeft <= 0) {
+          t.cancel();
+          _goHome();
+        }
+      });
     }
   }
 
@@ -162,111 +62,159 @@ class _OrderSuccessPageState extends State<OrderSuccessPage> {
     super.dispose();
   }
 
-  Widget _buildCheckoutView() {
-    final p = widget.product!;
-    final price = p['price'] ?? 0;
-    final total = price * widget.qty;
-    return Scaffold(
-      appBar: AppBar(title: const Text('結帳確認')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            ListTile(
-                leading: p['image'] != null
-                    ? Image.network(p['image'], width: 56, height: 56, fit: BoxFit.cover)
-                    : const SizedBox(width: 56, height: 56),
-                title: Text(p['name']),
-                subtitle: Text('數量：${widget.qty}'),
-                trailing: Text('NT\$ $total', style: const TextStyle(color: Colors.redAccent))),
-            const SizedBox(height: 12),
-            ElevatedButton(
-                onPressed: _loading ? null : _createOrderAndProceed,
-                child: _loading ? const CircularProgressIndicator() : const Text('確認並前往付款'),
-                style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(48))),
-          ],
-        ),
-      ),
+  String _fmtMoney(num v) {
+    // 不依賴 intl，簡易顯示
+    final s = v.round().toString();
+    final withComma = s.replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (m) => ',',
     );
+    return 'NT\$ $withComma';
   }
 
-  Widget _buildVerificationView() {
-    final oid = widget.orderId ?? _createdOrderId ?? '—';
-
-    // --- NEW: if invalid params, show clear message and buttons to go back
-    if (_invalidParams) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('頁面參數錯誤')),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              const Icon(Icons.error_outline, size: 86, color: Colors.orangeAccent),
-              const SizedBox(height: 16),
-              const Text('此頁面必須帶入 product 或 orderId 參數', style: TextStyle(fontSize: 16), textAlign: TextAlign.center),
-              const SizedBox(height: 12),
-              ElevatedButton(
-                  onPressed: () {
-                    // 回首頁，避免使用者誤以為已成功
-                    Navigator.of(context).popUntil((route) => route.isFirst);
-                  },
-                  child: const Text('回首頁')),
-              const SizedBox(height: 8),
-              ElevatedButton(
-                  onPressed: () {
-                    // 回上一頁
-                    Navigator.of(context).pop();
-                  },
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
-                  child: const Text('返回上一頁')),
-            ]),
-          ),
-        ),
-      );
+  void _goHome() {
+    if (!mounted) {
+      return;
     }
+    Navigator.of(context).pushNamedAndRemoveUntil('/home', (r) => false);
+  }
 
-    if (_verified) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('結帳成功')),
-        body: Center(
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            const Icon(Icons.check_circle, size: 120, color: Colors.green),
-            const SizedBox(height: 24),
-            const Text('訂單建立成功', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Text('訂單編號：$oid'),
-            const SizedBox(height: 24),
-            ElevatedButton(onPressed: () => Navigator.of(context).popUntil((route) => route.isFirst), child: const Text('回到首頁')),
-          ]),
-        ),
-      );
+  void _goOrders() {
+    if (!mounted) {
+      return;
     }
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('訂單狀態確認'), automaticallyImplyLeading: false),
-      body: Center(
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(Icons.error_outline, size: 86, color: Colors.orangeAccent),
-          const SizedBox(height: 16),
-          Text('訂單編號：$oid'),
-          const SizedBox(height: 8),
-          Text('目前狀態：$_status'),
-          const SizedBox(height: 12),
-          if (_verifying) const CircularProgressIndicator(),
-          const SizedBox(height: 12),
-          ElevatedButton(onPressed: _verifying ? null : _checkStatus, child: const Text('重新檢查一次')),
-          const SizedBox(height: 8),
-          ElevatedButton(onPressed: () => Navigator.of(context).pop(), style: ElevatedButton.styleFrom(backgroundColor: Colors.grey), child: const Text('返回')),
-        ]),
-      ),
-    );
+    // 你若有訂單詳情頁，也可改成帶 orderId 進去
+    Navigator.of(context).pushNamed('/orders');
   }
 
   @override
   Widget build(BuildContext context) {
-    // If this was launched as checkout flow (product != null) => show checkout view
-    if (widget.product != null) return _buildCheckoutView();
-    // Otherwise show verification view (and if invalid params will show the error)
-    return _buildVerificationView();
+    final orderId = (widget.orderId ?? '').trim();
+    final amount = widget.amount;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF6F7F8),
+      appBar: AppBar(
+        title: const Text('下單成功'),
+        automaticallyImplyLeading: false,
+      ),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Card(
+              elevation: 1.5,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.check_circle_outline,
+                      size: 64,
+                      color: Colors.green,
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      '付款 / 下單完成 🎉',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      '感謝您的購買，我們已收到您的訂單。',
+                      style: TextStyle(color: Colors.grey.shade700),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 14),
+
+                    if (orderId.isNotEmpty) ...[
+                      _kv('訂單編號', orderId),
+                      const SizedBox(height: 6),
+                    ] else ...[
+                      _kv('訂單編號', '（未提供）'),
+                      const SizedBox(height: 6),
+                    ],
+
+                    if (amount != null && amount > 0) ...[
+                      _kv('付款金額', _fmtMoney(amount)),
+                      const SizedBox(height: 6),
+                    ] else ...[
+                      _kv('付款金額', '-'),
+                      const SizedBox(height: 6),
+                    ],
+
+                    if (widget.autoBackSeconds > 0) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        '$_secondsLeft 秒後自動返回首頁',
+                        style: const TextStyle(color: Colors.black54),
+                      ),
+                    ],
+
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _goHome,
+                            icon: const Icon(Icons.home_outlined),
+                            label: const Text('回首頁'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _goOrders,
+                            icon: const Icon(Icons.receipt_long),
+                            label: const Text('查看訂單'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    TextButton(
+                      onPressed: () {
+                        if (!mounted) {
+                          return;
+                        }
+                        Navigator.of(context).maybePop();
+                      },
+                      child: const Text('返回上一頁'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 90,
+          child: Text(
+            k,
+            style: const TextStyle(
+              color: Colors.black54,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(v, style: const TextStyle(fontWeight: FontWeight.w800)),
+        ),
+      ],
+    );
   }
 }

@@ -69,10 +69,7 @@ class _LotteryHistoryPageState extends State<LotteryHistoryPage> {
         .limit(100);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('抽獎紀錄'),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text('抽獎紀錄'), centerTitle: true),
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -127,17 +124,31 @@ class _LotteryHistoryPageState extends State<LotteryHistoryPage> {
                       final doc = docs[i];
                       final data = doc.data();
                       final id = doc.id;
-                      final lottery = (data['lottery'] ?? {}) as Map<String, dynamic>;
-                      final prizeName = (lottery['prizeName'] ?? '').toString().trim();
-                      final status = (lottery['status'] ?? '').toString().trim().toLowerCase();
-                      final code = (lottery['couponCode'] ?? '').toString().trim();
-                      final type = (lottery['couponType'] ?? '').toString().trim().toLowerCase();
+
+                      final lottery =
+                          (data['lottery'] ?? {}) as Map<String, dynamic>;
+                      final prizeName = (lottery['prizeName'] ?? '')
+                          .toString()
+                          .trim();
+                      final status = (lottery['status'] ?? '')
+                          .toString()
+                          .trim()
+                          .toLowerCase();
+                      final code = (lottery['couponCode'] ?? '')
+                          .toString()
+                          .trim();
+                      final type = (lottery['couponType'] ?? '')
+                          .toString()
+                          .trim()
+                          .toLowerCase();
                       final amountOff = lottery['amountOff'];
                       final percentOff = lottery['percentOff'];
                       final minSpend = lottery['minSpend'];
                       final expiresAt = lottery['expiresAt'];
 
-                      if (!_matches(id) && !_matches(code)) return const SizedBox.shrink();
+                      if (!_matches(id) && !_matches(code)) {
+                        return const SizedBox.shrink();
+                      }
 
                       final isWon = status == 'won';
                       final cs = Theme.of(context).colorScheme;
@@ -145,9 +156,11 @@ class _LotteryHistoryPageState extends State<LotteryHistoryPage> {
                       String desc = '銘謝惠顧';
                       if (isWon) {
                         if (type == 'amount') {
-                          desc = '折抵 NT\$${amountOff ?? 0}（滿 NT\$${minSpend ?? 0} 可用）';
+                          desc =
+                              '折抵 NT\$${amountOff ?? 0}（滿 NT\$${minSpend ?? 0} 可用）';
                         } else if (type == 'percent') {
-                          desc = '${percentOff ?? 0}% 折扣（滿 NT\$${minSpend ?? 0} 可用）';
+                          desc =
+                              '${percentOff ?? 0}% 折扣（滿 NT\$${minSpend ?? 0} 可用）';
                         } else if (type == 'shipping') {
                           desc = '免運一次';
                         }
@@ -156,13 +169,16 @@ class _LotteryHistoryPageState extends State<LotteryHistoryPage> {
                       String? exp;
                       if (expiresAt is Timestamp) {
                         final dt = expiresAt.toDate();
-                        exp = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+                        exp =
+                            '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
                       }
 
                       return Card(
                         child: ListTile(
                           leading: Icon(
-                            isWon ? Icons.emoji_events : Icons.sentiment_neutral,
+                            isWon
+                                ? Icons.emoji_events
+                                : Icons.sentiment_neutral,
                             color: isWon ? cs.primary : cs.outline,
                           ),
                           title: Text(
@@ -173,10 +189,15 @@ class _LotteryHistoryPageState extends State<LotteryHistoryPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(isWon ? '中獎：$prizeName' : '未中獎（銘謝惠顧）'),
-                              Text(desc, style: const TextStyle(color: Colors.black54)),
+                              Text(
+                                desc,
+                                style: const TextStyle(color: Colors.black54),
+                              ),
                               if (exp != null)
-                                Text('有效期限：$exp',
-                                    style: const TextStyle(color: Colors.black45)),
+                                Text(
+                                  '有效期限：$exp',
+                                  style: const TextStyle(color: Colors.black45),
+                                ),
                               if (code.isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 6),
@@ -184,11 +205,18 @@ class _LotteryHistoryPageState extends State<LotteryHistoryPage> {
                                     onTap: () => _copy(code, done: '已複製優惠碼'),
                                     child: Container(
                                       padding: const EdgeInsets.symmetric(
-                                          horizontal: 10, vertical: 6),
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
                                       decoration: BoxDecoration(
-                                        border: Border.all(color: Colors.black12),
+                                        border: Border.all(
+                                          color: Colors.black12,
+                                        ),
                                         borderRadius: BorderRadius.circular(8),
-                                        color: Colors.black.withOpacity(0.03),
+                                        // ✅ 修正：withOpacity -> withValues(alpha)
+                                        color: Colors.black.withValues(
+                                          alpha: 8, // 0.03 * 255 ≈ 7.65
+                                        ),
                                       ),
                                       child: Row(
                                         mainAxisAlignment:

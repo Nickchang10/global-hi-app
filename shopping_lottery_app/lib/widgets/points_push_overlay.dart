@@ -1,163 +1,273 @@
 // lib/widgets/points_push_overlay.dart
-
+import 'dart:async';
 import 'package:flutter/material.dart';
-import '../utils/haptic_audio_feedback.dart';
 
-/// 💬 積分推播模擬小元件（動畫提示）
+/// ======================================================
+/// ✅ PointsPushOverlay（點數彈出提示 Overlay）
+/// ------------------------------------------------------
+/// 使用方式：
+/// MaterialApp(
+///   builder: (context, child) => PointsPushOverlay(
+///     child: child ?? const SizedBox.shrink(),
+///   ),
+/// )
 ///
-/// 在任何頁面呼叫：
-///
+/// 任何地方呼叫：
 /// PointsPushOverlay.show(
 ///   context,
-///   title: "任務完成 🎯",
-///   message: "您獲得了 50 積分！",
-///   icon: Icons.star,
-///   color: Colors.blueAccent,
+///   points: 50,
+///   title: '任務完成',
+///   message: '每日簽到 +50',
 /// );
-///
-class PointsPushOverlay {
+/// ======================================================
+class PointsPushOverlay extends StatefulWidget {
+  final Widget child;
+
+  const PointsPushOverlay({super.key, required this.child});
+
+  /// ✅ 全域呼叫入口
   static void show(
     BuildContext context, {
-    required String title,
-    required String message,
-    IconData icon = Icons.notifications_active,
-    Color color = Colors.blueAccent,
-    Duration duration = const Duration(seconds: 3),
+    required int points,
+    String? title,
+    String? message,
+    Duration duration = const Duration(seconds: 2),
+    VoidCallback? onTap,
   }) {
-    final overlay = Overlay.of(context);
-    if (overlay == null) return;
-
-    late OverlayEntry entry;
-
-    entry = OverlayEntry(
-      builder: (_) => _PushBubble(
-        title: title,
-        message: message,
-        icon: icon,
-        color: color,
-        duration: duration,
-        onClose: () => entry.remove(),
-      ),
+    final state = context.findAncestorStateOfType<_PointsPushOverlayState>();
+    state?._show(
+      points: points,
+      title: title,
+      message: message,
+      duration: duration,
+      onTap: onTap,
     );
-
-    overlay.insert(entry);
   }
-}
-
-class _PushBubble extends StatefulWidget {
-  final String title;
-  final String message;
-  final IconData icon;
-  final Color color;
-  final Duration duration;
-  final VoidCallback onClose;
-
-  const _PushBubble({
-    required this.title,
-    required this.message,
-    required this.icon,
-    required this.color,
-    required this.duration,
-    required this.onClose,
-  });
 
   @override
-  State<_PushBubble> createState() => _PushBubbleState();
+  State<PointsPushOverlay> createState() => _PointsPushOverlayState();
 }
 
-class _PushBubbleState extends State<_PushBubble>
+class _PointsPushOverlayState extends State<PointsPushOverlay>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<Offset> _offset;
-  late Animation<double> _opacity;
+  late final AnimationController _ctrl;
+  late final Animation<double> _fade;
+  late final Animation<Offset> _slide;
+
+  OverlayEntry? _entry;
+  Timer? _timer;
+  bool _showing = false;
 
   @override
   void initState() {
     super.initState();
-
-    _controller = AnimationController(
+    _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 400),
+      duration: const Duration(milliseconds: 220),
+      reverseDuration: const Duration(milliseconds: 180),
     );
-
-    _offset =
-        Tween(begin: const Offset(0, -1.2), end: const Offset(0, 0)).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOutBack),
-    );
-
-    _opacity = Tween(begin: 0.0, end: 1.0).animate(_controller);
-
-    // 一出現就給觸覺 + 音效回饋
-    HapticAudioFeedback.feedback();
-
-    _controller.forward();
-
-    Future.delayed(widget.duration, () async {
-      if (!mounted) return;
-      await _controller.reverse();
-      widget.onClose();
-    });
+    _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+    _slide = Tween<Offset>(
+      begin: const Offset(0, -0.10),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _timer?.cancel();
+    _removeEntry();
+    _ctrl.dispose();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Positioned(
-      top: MediaQuery.of(context).padding.top + 10,
-      left: 12,
-      right: 12,
-      child: SlideTransition(
-        position: _offset,
-        child: FadeTransition(
-          opacity: _opacity,
+  void _show({
+    required int points,
+    String? title,
+    String? message,
+    required Duration duration,
+    VoidCallback? onTap,
+  }) {
+    // 若已顯示就先關掉（避免重疊）
+    if (_showing) _hide(immediate: true);
+
+    _showing = true;
+    _timer?.cancel();
+
+    _entry = OverlayEntry(
+      builder: (context) {
+        final topPadding = MediaQuery.of(context).padding.top;
+        return Positioned(
+          top: topPadding + 12,
+          left: 12,
+          right: 12,
           child: Material(
-            elevation: 8,
-            borderRadius: BorderRadius.circular(16),
-            color: Colors.white,
-            child: Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: widget.color.withOpacity(0.3)),
-              ),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    backgroundColor: widget.color,
-                    child: Icon(widget.icon, color: Colors.white),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(widget.title,
-                            style: const TextStyle(
-                                fontSize: 15, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 4),
-                        Text(
-                          widget.message,
-                          style: const TextStyle(
-                            color: Colors.black54,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.grey),
-                    onPressed: widget.onClose,
-                  ),
-                ],
+            color: Colors.transparent,
+            child: SlideTransition(
+              position: _slide,
+              child: FadeTransition(
+                opacity: _fade,
+                child: _PointsToastCard(
+                  points: points,
+                  title: title,
+                  message: message,
+                  onTap: () {
+                    onTap?.call();
+                    _hide();
+                  },
+                  onClose: _hide,
+                ),
               ),
             ),
           ),
+        );
+      },
+    );
+
+    // ✅ 用 maybeOf（nullable），避免 overlay 取不到時噴錯
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) {
+      _showing = false;
+      _entry = null;
+      return;
+    }
+
+    overlay.insert(_entry!);
+    _ctrl.forward(from: 0);
+
+    _timer = Timer(duration, _hide);
+  }
+
+  void _hide({bool immediate = false}) {
+    if (!_showing) return;
+
+    _timer?.cancel();
+    _timer = null;
+
+    if (immediate) {
+      _ctrl.stop();
+      _removeEntry();
+      _showing = false;
+      return;
+    }
+
+    _ctrl.reverse().whenComplete(() {
+      _removeEntry();
+      _showing = false;
+    });
+  }
+
+  void _removeEntry() {
+    _entry?.remove();
+    _entry = null;
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+class _PointsToastCard extends StatelessWidget {
+  final int points;
+  final String? title;
+  final String? message;
+  final VoidCallback onTap;
+  final VoidCallback onClose;
+
+  const _PointsToastCard({
+    required this.points,
+    required this.title,
+    required this.message,
+    required this.onTap,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final t = (title ?? '').trim();
+    final m = (message ?? '').trim();
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 720),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: cs.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: cs.outlineVariant),
+          boxShadow: const [
+            BoxShadow(
+              // ✅ 0.18 -> alpha=46
+              color: Color.fromARGB(46, 0, 0, 0),
+              blurRadius: 12,
+              offset: Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 左側點數徽章
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                // ✅ 0.12 -> alpha=31
+                color: cs.primary.withAlpha(31),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Center(
+                child: Text(
+                  '+$points',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: cs.primary,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (t.isNotEmpty)
+                    Text(
+                      t,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 14,
+                      ),
+                    )
+                  else
+                    const Text(
+                      '點數入帳',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 14,
+                      ),
+                    ),
+                  if (m.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      m,
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              onPressed: onClose,
+              icon: const Icon(Icons.close),
+              visualDensity: VisualDensity.compact,
+              tooltip: '關閉',
+            ),
+          ],
         ),
       ),
     );

@@ -34,7 +34,9 @@ class _AppConfigPageState extends State<AppConfigPage> {
   @override
   void initState() {
     super.initState();
+
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
       try {
         await context.read<AppConfigService>().ensureDefaultConfig();
       } catch (_) {}
@@ -52,8 +54,9 @@ class _AppConfigPageState extends State<AppConfigPage> {
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
   void _go(String route) {
@@ -82,7 +85,16 @@ class _AppConfigPageState extends State<AppConfigPage> {
     _supportUrlCtrl.text = (cfg['supportUrl'] ?? '').toString();
     _bannerTextCtrl.text = (cfg['bannerText'] ?? '').toString();
 
-    _maintenanceMode = (cfg['maintenanceMode'] ?? false) == true;
+    // ✅ 避免在 build 當下直接改 state：改成 frame 後 setState
+    final mm = (cfg['maintenanceMode'] ?? false) == true;
+    if (mm != _maintenanceMode) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() => _maintenanceMode = mm);
+      });
+    } else {
+      _maintenanceMode = mm;
+    }
   }
 
   String _fmtLastUpdate(dynamic v) {
@@ -122,17 +134,40 @@ class _AppConfigPageState extends State<AppConfigPage> {
     final isVendor = role == 'vendor';
 
     return <_NavItem>[
-      const _NavItem(label: 'Dashboard', icon: Icons.dashboard_outlined, route: '/dashboard'),
+      const _NavItem(
+        label: 'Dashboard',
+        icon: Icons.dashboard_outlined,
+        route: '/dashboard',
+      ),
       if (isAdmin)
-        const _NavItem(label: '商品', icon: Icons.inventory_2_outlined, route: '/products'),
+        const _NavItem(
+          label: '商品',
+          icon: Icons.inventory_2_outlined,
+          route: '/products',
+        ),
       if (isAdmin)
-        const _NavItem(label: '分類', icon: Icons.category_outlined, route: '/categories'),
+        const _NavItem(
+          label: '分類',
+          icon: Icons.category_outlined,
+          route: '/categories',
+        ),
       if (isAdmin)
-        const _NavItem(label: '廠商', icon: Icons.apartment_outlined, route: '/vendors'),
+        const _NavItem(
+          label: '廠商',
+          icon: Icons.apartment_outlined,
+          route: '/vendors',
+        ),
       if (isVendor)
-        const _NavItem(label: '我的商品', icon: Icons.inventory_2_outlined, route: '/vendor_products'),
-      // ✅ 本頁
-      const _NavItem(label: 'App Config', icon: Icons.tune_outlined, route: '/app_config'),
+        const _NavItem(
+          label: '我的商品',
+          icon: Icons.inventory_2_outlined,
+          route: '/vendor_products',
+        ),
+      const _NavItem(
+        label: 'App Config',
+        icon: Icons.tune_outlined,
+        route: '/app_config',
+      ),
     ];
   }
 
@@ -146,13 +181,15 @@ class _AppConfigPageState extends State<AppConfigPage> {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, authSnap) {
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
 
         final user = authSnap.data;
         if (user == null) {
           gate.clearCache();
-          return LoginPage();
+          return const LoginPage();
         }
 
         if (_roleFuture == null || _lastUid != user.uid) {
@@ -164,18 +201,25 @@ class _AppConfigPageState extends State<AppConfigPage> {
           future: _roleFuture,
           builder: (context, roleSnap) {
             if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
 
             if (roleSnap.hasError) {
               return _FatalPage(
                 title: '讀取角色失敗',
                 message: '${roleSnap.error}',
-                onRetry: () => setState(() {
-                  gate.clearCache();
-                  _roleFuture = gate.ensureAndGetRole(user, forceRefresh: true);
-                }),
-                onLogout: () async => _logout(),
+                onRetry: () {
+                  setState(() {
+                    gate.clearCache();
+                    _roleFuture = gate.ensureAndGetRole(
+                      user,
+                      forceRefresh: true,
+                    );
+                  });
+                },
+                onLogout: _logout,
               );
             }
 
@@ -187,16 +231,27 @@ class _AppConfigPageState extends State<AppConfigPage> {
               return _FatalPage(
                 title: '無後台權限',
                 message: '目前 role="$role"。\n此頁面僅提供 admin/vendor。',
-                onRetry: () => setState(() {
-                  gate.clearCache();
-                  _roleFuture = gate.ensureAndGetRole(user, forceRefresh: true);
-                }),
-                onLogout: () async => _logout(),
+                onRetry: () {
+                  setState(() {
+                    gate.clearCache();
+                    _roleFuture = gate.ensureAndGetRole(
+                      user,
+                      forceRefresh: true,
+                    );
+                  });
+                },
+                onLogout: _logout,
               );
             }
 
             final isAdmin = role == 'admin';
             final items = _buildNavItems(role);
+
+            final badgeTitle = (user.displayName ?? '').trim().isNotEmpty
+                ? user.displayName!.trim()
+                : ((user.email ?? '').trim().isNotEmpty
+                      ? user.email!.trim()
+                      : user.uid);
 
             return LayoutBuilder(
               builder: (context, constraints) {
@@ -213,13 +268,16 @@ class _AppConfigPageState extends State<AppConfigPage> {
                   onLogout: _logout,
                 );
 
-                final selectedRoute = '/app_config';
+                const selectedRoute = '/app_config';
 
                 return Scaffold(
                   backgroundColor: const Color(0xFFF6F7FB),
                   drawer: isWide ? null : drawer,
                   appBar: AppBar(
-                    title: const Text('App Config', style: TextStyle(fontWeight: FontWeight.bold)),
+                    title: const Text(
+                      'App Config',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
                     backgroundColor: Colors.white,
                     elevation: 0.5,
                     leading: isWide
@@ -228,7 +286,8 @@ class _AppConfigPageState extends State<AppConfigPage> {
                             builder: (context) => IconButton(
                               tooltip: '開啟選單',
                               icon: const Icon(Icons.menu),
-                              onPressed: () => Scaffold.of(context).openDrawer(),
+                              onPressed: () =>
+                                  Scaffold.of(context).openDrawer(),
                             ),
                           ),
                     actions: [
@@ -237,7 +296,12 @@ class _AppConfigPageState extends State<AppConfigPage> {
                         onPressed: () => _go('/dashboard'),
                         icon: const Icon(Icons.dashboard_outlined),
                       ),
-                      const UserInfoBadge(),
+                      UserInfoBadge(
+                        title: badgeTitle,
+                        subtitle: (user.email ?? '').trim(),
+                        role: role,
+                        uid: user.uid,
+                      ),
                       IconButton(
                         tooltip: '登出',
                         onPressed: () async {
@@ -261,17 +325,24 @@ class _AppConfigPageState extends State<AppConfigPage> {
                               onLogout: _logout,
                             ),
                             const VerticalDivider(width: 1),
-                            Expanded(child: _ConfigBody(cfgSvc: cfgSvc, isAdmin: isAdmin, onFill: _fillControllersFromConfig,
+                            Expanded(
+                              child: _ConfigBody(
+                                cfgSvc: cfgSvc,
+                                isAdmin: isAdmin,
+                                onFill: _fillControllersFromConfig,
                                 versionCtrl: _versionCtrl,
                                 updateNoteCtrl: _updateNoteCtrl,
                                 supportUrlCtrl: _supportUrlCtrl,
                                 bannerTextCtrl: _bannerTextCtrl,
                                 maintenanceMode: _maintenanceMode,
-                                onMaintenanceChanged: (v) => setState(() => _maintenanceMode = v),
+                                onMaintenanceChanged: (v) {
+                                  setState(() => _maintenanceMode = v);
+                                },
                                 saving: _saving,
                                 onSave: isAdmin ? _save : null,
                                 fmtLastUpdate: _fmtLastUpdate,
-                              )),
+                              ),
+                            ),
                           ],
                         )
                       : _ConfigBody(
@@ -283,7 +354,9 @@ class _AppConfigPageState extends State<AppConfigPage> {
                           supportUrlCtrl: _supportUrlCtrl,
                           bannerTextCtrl: _bannerTextCtrl,
                           maintenanceMode: _maintenanceMode,
-                          onMaintenanceChanged: (v) => setState(() => _maintenanceMode = v),
+                          onMaintenanceChanged: (v) {
+                            setState(() => _maintenanceMode = v);
+                          },
                           saving: _saving,
                           onSave: isAdmin ? _save : null,
                           fmtLastUpdate: _fmtLastUpdate,
@@ -347,7 +420,12 @@ class _ConfigBody extends StatelessWidget {
                 return const Center(child: CircularProgressIndicator());
               }
               if (snap.hasError) {
-                return Center(child: Text('讀取失敗：${snap.error}', textAlign: TextAlign.center));
+                return Center(
+                  child: Text(
+                    '讀取失敗：${snap.error}',
+                    textAlign: TextAlign.center,
+                  ),
+                );
               }
 
               final cfg = snap.data;
@@ -356,9 +434,15 @@ class _ConfigBody extends StatelessWidget {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: const [
-                      Text('目前沒有 app_config/global 資料', style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text(
+                        '目前沒有 app_config/global 資料',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
                       SizedBox(height: 8),
-                      Text('請確認 Firestore 是否建立 app_config/global', style: TextStyle(color: Colors.black54)),
+                      Text(
+                        '請確認 Firestore 是否建立 app_config/global',
+                        style: TextStyle(color: Colors.black54),
+                      ),
                     ],
                   ),
                 );
@@ -375,16 +459,23 @@ class _ConfigBody extends StatelessWidget {
                       const Icon(Icons.tune_outlined),
                       const SizedBox(width: 8),
                       const Expanded(
-                        child: Text('全域設定（app_config/global）',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        child: Text(
+                          '全域設定（app_config/global）',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
-                      Text('lastUpdate：$lastUpdate', style: const TextStyle(color: Colors.black54)),
+                      Text(
+                        'lastUpdate：$lastUpdate',
+                        style: const TextStyle(color: Colors.black54),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 12),
                   const Divider(height: 1),
                   const SizedBox(height: 12),
-
                   TextField(
                     controller: versionCtrl,
                     decoration: const InputDecoration(
@@ -396,7 +487,6 @@ class _ConfigBody extends StatelessWidget {
                     enabled: isAdmin && !saving,
                   ),
                   const SizedBox(height: 12),
-
                   TextField(
                     controller: updateNoteCtrl,
                     decoration: const InputDecoration(
@@ -410,7 +500,6 @@ class _ConfigBody extends StatelessWidget {
                     enabled: isAdmin && !saving,
                   ),
                   const SizedBox(height: 12),
-
                   TextField(
                     controller: supportUrlCtrl,
                     decoration: const InputDecoration(
@@ -422,7 +511,6 @@ class _ConfigBody extends StatelessWidget {
                     enabled: isAdmin && !saving,
                   ),
                   const SizedBox(height: 12),
-
                   TextField(
                     controller: bannerTextCtrl,
                     decoration: const InputDecoration(
@@ -434,27 +522,31 @@ class _ConfigBody extends StatelessWidget {
                     enabled: isAdmin && !saving,
                   ),
                   const SizedBox(height: 12),
-
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('maintenanceMode'),
                     subtitle: const Text('維護模式（你可以在 App 前台讀取此欄位，顯示維護頁）'),
                     value: maintenanceMode,
-                    onChanged: (!isAdmin || saving) ? null : onMaintenanceChanged,
+                    onChanged: (!isAdmin || saving)
+                        ? null
+                        : onMaintenanceChanged,
                   ),
                   const SizedBox(height: 12),
-
                   Wrap(
                     spacing: 10,
                     runSpacing: 10,
                     children: [
                       FilledButton.icon(
-                        onPressed: (onSave == null || saving) ? null : () async => onSave!.call(),
+                        onPressed: (onSave == null || saving)
+                            ? null
+                            : () async => onSave!.call(),
                         icon: saving
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.save_outlined),
                         label: Text(isAdmin ? '儲存' : '僅可檢視'),
@@ -463,13 +555,15 @@ class _ConfigBody extends StatelessWidget {
                         onPressed: () async {
                           try {
                             await cfgSvc.ensureDefaultConfig();
+                            if (!context.mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('已確認預設設定存在')),
                             );
                           } catch (e) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('操作失敗：$e')),
-                            );
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(
+                              context,
+                            ).showSnackBar(SnackBar(content: Text('操作失敗：$e')));
                           }
                         },
                         icon: const Icon(Icons.check_circle_outline),
@@ -477,7 +571,6 @@ class _ConfigBody extends StatelessWidget {
                       ),
                     ],
                   ),
-
                   const SizedBox(height: 16),
                   Card(
                     elevation: 0,
@@ -505,7 +598,11 @@ class _NavItem {
   final String label;
   final IconData icon;
   final String route;
-  const _NavItem({required this.label, required this.icon, required this.route});
+  const _NavItem({
+    required this.label,
+    required this.icon,
+    required this.route,
+  });
 }
 
 class _AppDrawer extends StatelessWidget {
@@ -537,10 +634,20 @@ class _AppDrawer extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Osmile 後台', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Text(
+                    'Osmile 後台',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
                   const SizedBox(height: 6),
-                  Text('role：$role', style: const TextStyle(color: Colors.black54)),
-                  if (isVendor) Text('vendorId：$vendorId', style: const TextStyle(color: Colors.black54)),
+                  Text(
+                    'role：$role',
+                    style: const TextStyle(color: Colors.black54),
+                  ),
+                  if (isVendor)
+                    Text(
+                      'vendorId：$vendorId',
+                      style: const TextStyle(color: Colors.black54),
+                    ),
                   const SizedBox(height: 10),
                   FilledButton.icon(
                     onPressed: () async => onLogout(),
@@ -578,8 +685,9 @@ class _LeftRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selectedIndex =
-        items.indexWhere((e) => e.route == selectedRoute).clamp(0, items.length - 1);
+    final selectedIndex = items
+        .indexWhere((e) => e.route == selectedRoute)
+        .clamp(0, items.length - 1);
 
     return NavigationRail(
       selectedIndex: selectedIndex,
@@ -600,10 +708,7 @@ class _LeftRail extends StatelessWidget {
       ),
       destinations: [
         for (final it in items)
-          NavigationRailDestination(
-            icon: Icon(it.icon),
-            label: Text(it.label),
-          ),
+          NavigationRailDestination(icon: Icon(it.icon), label: Text(it.label)),
       ],
     );
   }
@@ -635,9 +740,19 @@ class _FatalPage extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                   const SizedBox(height: 10),
-                  Text(message, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.red),
+                  ),
                   const SizedBox(height: 14),
                   Wrap(
                     spacing: 10,

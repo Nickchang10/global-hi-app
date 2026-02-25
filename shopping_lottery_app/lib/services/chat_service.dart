@@ -8,9 +8,27 @@ class ChatMessage {
   final String text;
   final bool fromUser;
   final int ts;
-  ChatMessage({required this.id, required this.text, required this.fromUser, required this.ts});
-  Map<String, dynamic> toMap() => {'id': id, 'text': text, 'fromUser': fromUser, 'ts': ts};
-  factory ChatMessage.fromMap(Map<String, dynamic> m) => ChatMessage(id: m['id'] ?? '', text: m['text'] ?? '', fromUser: m['fromUser'] ?? false, ts: (m['ts'] is int) ? m['ts'] : int.tryParse('${m['ts']}') ?? 0);
+
+  ChatMessage({
+    required this.id,
+    required this.text,
+    required this.fromUser,
+    required this.ts,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'text': text,
+    'fromUser': fromUser,
+    'ts': ts,
+  };
+
+  factory ChatMessage.fromMap(Map<String, dynamic> m) => ChatMessage(
+    id: (m['id'] ?? '').toString(),
+    text: (m['text'] ?? '').toString(),
+    fromUser: m['fromUser'] == true,
+    ts: (m['ts'] is int) ? (m['ts'] as int) : int.tryParse('${m['ts']}') ?? 0,
+  );
 }
 
 class ChatService extends ChangeNotifier {
@@ -23,20 +41,36 @@ class ChatService extends ChangeNotifier {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_kKey) ?? '';
+
     if (raw.isNotEmpty) {
       try {
         final list = jsonDecode(raw) as List;
         _messages.clear();
-        for (final e in list) if (e is Map) _messages.add(ChatMessage.fromMap(Map<String, dynamic>.from(e)));
-      } catch (_) {}
+
+        // ✅ 修正：for 迴圈區塊化（避免 curly_braces_in_flow_control_structures）
+        for (final e in list) {
+          if (e is Map) {
+            _messages.add(ChatMessage.fromMap(Map<String, dynamic>.from(e)));
+          }
+        }
+      } catch (_) {
+        // ignore broken cache
+      }
     }
+
     notifyListeners();
   }
 
   List<ChatMessage> get messages => List.unmodifiable(_messages);
 
   Future<void> send(String text, {bool fromUser = true}) async {
-    final m = ChatMessage(id: DateTime.now().millisecondsSinceEpoch.toString(), text: text, fromUser: fromUser, ts: DateTime.now().millisecondsSinceEpoch);
+    final m = ChatMessage(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      text: text,
+      fromUser: fromUser,
+      ts: DateTime.now().millisecondsSinceEpoch,
+    );
+
     _messages.insert(0, m);
     await _save();
     notifyListeners();
@@ -44,12 +78,15 @@ class ChatService extends ChangeNotifier {
 
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kKey, jsonEncode(_messages.map((m) => m.toMap()).toList()));
+    await prefs.setString(
+      _kKey,
+      jsonEncode(_messages.map((m) => m.toMap()).toList()),
+    );
   }
 
-  void clear() {
+  Future<void> clear() async {
     _messages.clear();
-    _save();
+    await _save();
     notifyListeners();
   }
 }

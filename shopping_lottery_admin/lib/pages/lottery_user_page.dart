@@ -30,6 +30,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../services/auth_service.dart';
 import '../services/notification_service.dart';
 
@@ -44,13 +45,22 @@ class _LotteryUserPageState extends State<LotteryUserPage> {
   bool _loading = false;
   String? _result;
 
-  Future<void> _drawLottery(BuildContext context) async {
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  Future<void> _drawLottery() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('請先登入')));
+      _snack('請先登入');
       return;
     }
+
+    // ✅ 先取出 service，避免 await 後才用 context.read（消除 use_build_context_synchronously）
+    final notifSvc = context.read<NotificationService>();
 
     setState(() {
       _loading = true;
@@ -73,8 +83,9 @@ class _LotteryUserPageState extends State<LotteryUserPage> {
         'notified': false,
       });
 
+      if (!mounted) return;
+
       if (win) {
-        final notifSvc = context.read<NotificationService>();
         await notifSvc.sendToUser(
           uid: user.uid,
           title: '恭喜中獎！',
@@ -83,20 +94,21 @@ class _LotteryUserPageState extends State<LotteryUserPage> {
           route: '/lottery',
           extra: {'lotteryId': ref.id},
         );
+
         await ref.update({'notified': true});
+
+        if (!mounted) return;
       }
 
-      setState(() {
-        _result = win ? '恭喜中獎：$prize' : '未中獎，再接再厲！';
-      });
-
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(_result!)));
+      final msg = win ? '恭喜中獎：$prize' : '未中獎，再接再厲！';
+      if (mounted) {
+        setState(() => _result = msg);
+      }
+      _snack(msg);
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('抽獎失敗：$e')));
+      _snack('抽獎失敗：$e');
     } finally {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -135,14 +147,16 @@ class _LotteryUserPageState extends State<LotteryUserPage> {
                           const Text(
                             '每位會員每天可抽一次！',
                             style: TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.w900),
+                              fontSize: 16,
+                              fontWeight: FontWeight.w900,
+                            ),
                           ),
                           const SizedBox(height: 16),
                           if (_loading)
                             const CircularProgressIndicator()
                           else
                             FilledButton.icon(
-                              onPressed: () => _drawLottery(context),
+                              onPressed: _drawLottery,
                               icon: const Icon(Icons.emoji_events_outlined),
                               label: const Text('抽一次'),
                             ),

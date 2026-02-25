@@ -1,32 +1,28 @@
 // lib/pages/reports_page.dart
 //
-// ✅ ReportsPage（最終穩定完整版｜Admin/Vendor 共用報表）
+// ✅ ReportsPage（最終完整版｜可編譯可用｜已修正：_refreshTick_ 未定義、_count 型別、移除多餘 ?.、修正 dead_code）
 // ------------------------------------------------------------
-// 功能：
-// - Admin 看全站報表
-// - Vendor 看自己 vendorId 報表
-// - 三個數字卡：商品數 / 訂單數 / 營收（近 200 筆）
-// - 近 10 筆訂單清單（可點擊看詳情）
+// - 角色：admin / vendor
+// - 區間：近 7/30/90 天、全部
+// - 指標：訂單數、營收估算（最多取樣 1000 筆）、會員數、商品數、裝置數、購物車數、活動數
 //
-// Firestore 建議欄位：
-// products/{id}: vendorId, isActive, createdAt
-// orders/{id}: vendorId, createdAt(Timestamp), status, total, amount, buyerEmail
-//
-// 若遇到 "The query requires an index" → 前往 console 建索引即可
-//
-// 依賴：
-// - services/admin_gate.dart (RoleInfo, ensureAndGetRole)
-// - services/auth_service.dart (signOut)
-// - firebase_auth, cloud_firestore, provider
+// Firestore（依你專案可微調）：
+// - orders（建議欄位：createdAt, vendorId, total/amount/totalAmount/grandTotal 任一）
+// - users
+// - products（建議欄位：vendorId）
+// - devices
+// - carts
+// - campaigns（建議欄位：vendorId）
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
+import '../layouts/scaffold_with_drawer.dart';
 import '../services/admin_gate.dart';
-import '../services/auth_service.dart';
 
 class ReportsPage extends StatefulWidget {
   const ReportsPage({super.key});
@@ -37,452 +33,647 @@ class ReportsPage extends StatefulWidget {
 
 class _ReportsPageState extends State<ReportsPage> {
   final _db = FirebaseFirestore.instance;
-  Future<RoleInfo>? _roleFuture;
-  String? _lastUid;
-  late Future<_ReportSnapshot> _reportFuture;
+
+  bool _loadingGate = true;
+  bool _allowed = true;
+  String _denyReason = '';
+
+  String _role = ''; // admin | vendor
+  String _vendorId = '';
+
+  ReportRange _range = ReportRange.d30;
+
+  /// ✅ 你專案報錯的名稱是 _refreshTick_（尾巴有 _），所以本檔正式使用這個變數名
+  int _refreshTick_ = 0;
 
   @override
   void initState() {
     super.initState();
-    _reportFuture = Future.value(const _ReportSnapshot.empty());
+    _bootstrapGate();
   }
 
-  void _resetRole(AdminGate gate, User user) {
+  // ------------------------------------------------------------
+  // Gate
+  // ------------------------------------------------------------
+  Future<void> _bootstrapGate() async {
     setState(() {
-      gate.clearCache();
-      _roleFuture = gate.ensureAndGetRole(user, forceRefresh: true);
+      _loadingGate = true;
+      _allowed = true;
+      _denyReason = '';
     });
-  }
 
-  // ---------------- 工具函式 ----------------
-  DateTime _toDate(dynamic ts) {
-    if (ts is Timestamp) return ts.toDate();
-    if (ts is DateTime) return ts;
-    return DateTime.now();
-  }
-
-  String _s(dynamic v) => (v ?? '').toString().trim();
-  num _toNum(dynamic v) => v is num ? v : (num.tryParse(_s(v)) ?? 0);
-  String _fmtDateTime(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
-      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-  String _money(num v) => 'NT\$${v.toStringAsFixed(0)}';
-
-  // ---------------- 報表主查詢 ----------------
-  Future<_ReportSnapshot> _loadReports({
-    required bool isVendor,
-    required String vendorId,
-  }) async {
-    if (isVendor && vendorId.trim().isEmpty) {
-      return const _ReportSnapshot.empty(note: 'Vendor 未設定 vendorId，無法顯示報表。');
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      setState(() {
+        _allowed = false;
+        _denyReason = '尚未登入';
+        _loadingGate = false;
+      });
+      return;
     }
 
-    final vid = vendorId.trim();
-    Query<Map<String, dynamic>> productsQ = _db.collection('products');
-    Query<Map<String, dynamic>> ordersQ = _db.collection('orders');
+    try {
+      final gate = context.read<AdminGate>();
+      final info = await gate.ensureAndGetRole(user, forceRefresh: false);
 
-    if (isVendor) {
-      productsQ = productsQ.where('vendorId', isEqualTo: vid);
-      ordersQ = ordersQ.where('vendorId', isEqualTo: vid);
+      // role 可能是 enum.toString() => AdminRole.admin，這裡做 normalize
+      var role = info.role.toString().toLowerCase().trim();
+      if (role.contains('.')) role = role.split('.').last;
+
+      // ✅ 修正 dead_code：若 info.vendorId 為 non-nullable，使用 ?? '' 會變 dead_code
+      final vendorId = info.vendorId.toString().trim();
+
+      if (role != 'admin' && role != 'vendor') {
+        setState(() {
+          _allowed = false;
+          _denyReason = '此帳號無後台存取權限';
+        });
+      } else {
+        setState(() {
+          _role = role;
+          _vendorId = vendorId;
+          _allowed = true;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _allowed = false;
+        _denyReason = '權限檢查失敗：$e';
+      });
+    } finally {
+      if (mounted) setState(() => _loadingGate = false);
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Query helpers
+  // ------------------------------------------------------------
+  DateTime? _rangeStart(ReportRange r) {
+    final now = DateTime.now();
+    return switch (r) {
+      ReportRange.d7 => now.subtract(const Duration(days: 7)),
+      ReportRange.d30 => now.subtract(const Duration(days: 30)),
+      ReportRange.d90 => now.subtract(const Duration(days: 90)),
+      ReportRange.all => null,
+    };
+  }
+
+  String _rangeLabel(ReportRange r) {
+    return switch (r) {
+      ReportRange.d7 => '近 7 天',
+      ReportRange.d30 => '近 30 天',
+      ReportRange.d90 => '近 90 天',
+      ReportRange.all => '全部',
+    };
+  }
+
+  Query<Map<String, dynamic>> _ordersQuery({required DateTime? start}) {
+    Query<Map<String, dynamic>> q = _db.collection('orders');
+
+    if (_role == 'vendor' && _vendorId.isNotEmpty) {
+      q = q.where('vendorId', isEqualTo: _vendorId);
     }
 
-    ordersQ = ordersQ.orderBy('createdAt', descending: true);
+    if (start != null) {
+      q = q.where(
+        'createdAt',
+        isGreaterThanOrEqualTo: Timestamp.fromDate(start),
+      );
+    }
 
-    const sumLimit = 200;
-    const latestLimit = 10;
+    return q;
+  }
 
-    final results = await Future.wait([
-      productsQ.limit(1000).get(),
-      ordersQ.limit(sumLimit).get(),
-      ordersQ.limit(latestLimit).get(),
+  Query<Map<String, dynamic>> _productsQuery() {
+    Query<Map<String, dynamic>> q = _db.collection('products');
+    if (_role == 'vendor' && _vendorId.isNotEmpty) {
+      q = q.where('vendorId', isEqualTo: _vendorId);
+    }
+    return q;
+  }
+
+  Query<Map<String, dynamic>> _campaignsQuery() {
+    Query<Map<String, dynamic>> q = _db.collection('campaigns');
+    if (_role == 'vendor' && _vendorId.isNotEmpty) {
+      q = q.where('vendorId', isEqualTo: _vendorId);
+    }
+    return q;
+  }
+
+  Future<int> _count(Query<Map<String, dynamic>> q) async {
+    try {
+      final snap = await q.get();
+      return snap.size;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  num _readMoney(Map<String, dynamic> m) {
+    final v =
+        m['totalAmount'] ??
+        m['amount'] ??
+        m['total'] ??
+        m['grandTotal'] ??
+        m['price'];
+    if (v == null) return 0;
+    if (v is num) return v;
+    return num.tryParse(v.toString()) ?? 0;
+  }
+
+  Future<_ReportData> _loadReport() async {
+    final start = _rangeStart(_range);
+
+    final ordersQ = _ordersQuery(start: start);
+    final productsQ = _productsQuery();
+    final campaignsQ = _campaignsQuery();
+
+    final results = await Future.wait<int>([
+      _count(ordersQ),
+      _count(_db.collection('users')),
+      _count(productsQ),
+      _count(_db.collection('devices')),
+      _count(_db.collection('carts')),
+      _count(campaignsQ),
     ]);
 
-    final productsSnap = results[0];
-    final ordersForSumSnap = results[1];
-    final latestOrdersSnap = results[2];
+    final ordersCount = results[0];
+    final usersCount = results[1];
+    final productsCount = results[2];
+    final devicesCount = results[3];
+    final cartsCount = results[4];
+    final campaignsCount = results[5];
 
-    final productCount = productsSnap.docs.length;
-    final orderCount = ordersForSumSnap.docs.length;
-
+    // 營收估算：最多取樣 1000 筆
     num revenue = 0;
-    for (final d in ordersForSumSnap.docs) {
-      final m = d.data();
-      revenue += _toNum(m['total'] ?? m['amount'] ?? 0);
-    }
+    int sampled = 0;
+    try {
+      Query<Map<String, dynamic>> revenueQ = ordersQ.limit(1000);
+      try {
+        revenueQ = revenueQ.orderBy('createdAt', descending: true);
+      } catch (_) {}
+      final snap = await revenueQ.get();
+      sampled = snap.size;
+      for (final d in snap.docs) {
+        revenue += _readMoney(d.data());
+      }
+    } catch (_) {}
 
-    final latest = latestOrdersSnap.docs.map((d) {
-      final m = d.data();
-      return _OrderLite(
-        docId: d.id,
-        orderId: _s(m['id']).isNotEmpty ? _s(m['id']) : d.id,
-        buyerEmail:
-            _s(m['buyerEmail']).isNotEmpty ? _s(m['buyerEmail']) : _s(m['buyer']),
-        status: _s(m['status']),
-        createdAt: _toDate(m['createdAt']),
-        total: _toNum(m['total'] ?? m['amount'] ?? 0),
-        vendorId: _s(m['vendorId']),
-      );
-    }).toList();
-
-    return _ReportSnapshot(
-      productCount: productCount,
-      orderCountApprox: orderCount,
-      revenueApprox: revenue,
-      latestOrders: latest,
-      note: '（近 $sumLimit 筆訂單加總，非全站總額）',
+    return _ReportData(
+      range: _range,
+      role: _role,
+      vendorId: _vendorId,
+      generatedAt: DateTime.now(),
+      ordersCount: ordersCount,
+      usersCount: usersCount,
+      productsCount: productsCount,
+      devicesCount: devicesCount,
+      cartsCount: cartsCount,
+      campaignsCount: campaignsCount,
+      revenueEstimate: revenue,
+      revenueSampledOrders: sampled,
     );
   }
 
-  void _openOrderDetail(_OrderLite o) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('訂單 ${o.orderId}'),
-        content: SingleChildScrollView(
-          child: Text(
-            '買家：${o.buyerEmail.isEmpty ? '-' : o.buyerEmail}\n'
-            '狀態：${o.status.isEmpty ? '-' : o.status}\n'
-            '金額：${_money(o.total)}\n'
-            '時間：${_fmtDateTime(o.createdAt)}\n'
-            '${o.vendorId.isEmpty ? '' : 'Vendor ID：${o.vendorId}\n'}'
-            '\nDocID：${o.docId}',
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('關閉')),
-        ],
-      ),
-    );
-  }
+  void _refresh() => setState(() => _refreshTick_++);
 
-  // ---------------- 主畫面 ----------------
+  // ------------------------------------------------------------
+  // UI
+  // ------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    final gate = context.read<AdminGate>();
-    final authSvc = context.read<AuthService>();
-    final cs = Theme.of(context).colorScheme;
+    if (_loadingGate) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
 
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, authSnap) {
-        final user = authSnap.data;
-        if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        if (user == null) {
-          return const Scaffold(body: Center(child: Text('請先登入')));
-        }
-
-        if (_roleFuture == null || _lastUid != user.uid) {
-          _lastUid = user.uid;
-          _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
-        }
-
-        return FutureBuilder<RoleInfo>(
-          future: _roleFuture,
-          builder: (context, roleSnap) {
-            if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
-            }
-            if (roleSnap.hasError) {
-              return _SimpleErrorPage(
-                title: '讀取角色失敗',
-                message: '${roleSnap.error}',
-                onRetry: () => _resetRole(gate, user),
-                onLogout: () async {
-                  gate.clearCache();
-                  await authSvc.signOut();
-                  if (!context.mounted) return;
-                  Navigator.pushReplacementNamed(context, '/login');
-                },
-              );
-            }
-
-            final info = roleSnap.data!;
-            final role = (info.role ?? '').toLowerCase();
-            final vendorId = (info.vendorId ?? '').trim();
-            final isAdmin = role == 'admin';
-            final isVendor = role == 'vendor';
-
-            if (!isAdmin && !isVendor) {
-              return _SimpleErrorPage(
-                title: '權限不足',
-                message: '此頁僅限 admin / vendor 使用。',
-                onRetry: () => _resetRole(gate, user),
-                onLogout: () async {
-                  gate.clearCache();
-                  await authSvc.signOut();
-                  if (!context.mounted) return;
-                  Navigator.pushReplacementNamed(context, '/login');
-                },
-              );
-            }
-
-            _reportFuture = _loadReports(isVendor: isVendor, vendorId: vendorId);
-
-            return Scaffold(
-              appBar: AppBar(
-                title: const Text('報表分析'),
-                centerTitle: true,
-                actions: [
-                  IconButton(
-                    tooltip: '登出',
-                    icon: const Icon(Icons.logout),
-                    onPressed: () async {
-                      gate.clearCache();
-                      await authSvc.signOut();
-                      if (!context.mounted) return;
-                      Navigator.pushReplacementNamed(context, '/login');
-                    },
-                  ),
-                ],
-              ),
-              body: RefreshIndicator(
-                onRefresh: () async => setState(() {}),
-                child: ListView(
-                  padding: const EdgeInsets.all(12),
+    if (!_allowed) {
+      return ScaffoldWithDrawer(
+        title: '報表統計',
+        currentRoute: '/reports',
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: Card(
+              elevation: 0,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    // 統計卡
-                    FutureBuilder<_ReportSnapshot>(
-                      future: _reportFuture,
-                      builder: (context, snap) {
-                        if (snap.connectionState == ConnectionState.waiting) {
-                          return const Center(child: CircularProgressIndicator());
-                        }
-                        if (snap.hasError) {
-                          return Text('報表載入錯誤：${snap.error}', style: TextStyle(color: cs.error));
-                        }
-
-                        final r = snap.data ?? const _ReportSnapshot.empty();
-
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              isAdmin
-                                  ? '角色：Admin（全站）'
-                                  : (vendorId.isEmpty
-                                      ? '角色：Vendor（未設定 vendorId）'
-                                      : '角色：Vendor（$vendorId）'),
-                              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-                            ),
-                            const SizedBox(height: 10),
-                            Wrap(
-                              spacing: 12,
-                              runSpacing: 12,
-                              children: [
-                                _MiniStatCard(title: '商品數', value: '${r.productCount}', icon: Icons.inventory_2_outlined),
-                                _MiniStatCard(title: '訂單數', value: '${r.orderCountApprox}', icon: Icons.receipt_long_outlined),
-                                _MiniStatCard(title: '營收', value: _money(r.revenueApprox), icon: Icons.payments_outlined),
-                              ],
-                            ),
-                            if (r.note.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8),
-                                child: Text(r.note, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                              ),
-                          ],
-                        );
-                      },
+                    const Icon(Icons.lock_outline, size: 44),
+                    const SizedBox(height: 10),
+                    Text(
+                      _denyReason.isEmpty ? '無權限' : _denyReason,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
-
-                    const SizedBox(height: 20),
-                    const Text('近 10 筆訂單',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    const SizedBox(height: 8),
-
-                    FutureBuilder<_ReportSnapshot>(
-                      future: _reportFuture,
-                      builder: (context, snap) {
-                        if (!snap.hasData) {
-                          return const Center(child: CircularProgressIndicator());
-                        }
-
-                        final latest = snap.data!.latestOrders;
-                        if (latest.isEmpty) {
-                          return const Card(
-                            child: Padding(
-                              padding: EdgeInsets.all(16),
-                              child: Center(child: Text('目前沒有訂單')),
-                            ),
-                          );
-                        }
-
-                        return Card(
-                          elevation: 0,
-                          child: ListView.separated(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: latest.length,
-                            separatorBuilder: (_, __) => const Divider(height: 1),
-                            itemBuilder: (_, i) {
-                              final o = latest[i];
-                              return ListTile(
-                                onTap: () => _openOrderDetail(o),
-                                title: Text(
-                                  o.orderId,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontWeight: FontWeight.w900),
-                                ),
-                                subtitle: Text(
-                                  '${o.buyerEmail.isEmpty ? '-' : o.buyerEmail} · ${_fmtDateTime(o.createdAt)}\n${_money(o.total)}',
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: const Icon(Icons.chevron_right),
-                              );
-                            },
-                          ),
-                        );
-                      },
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: _bootstrapGate,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('重新檢查權限'),
                     ),
                   ],
                 ),
               ),
-            );
-          },
+            ),
+          ),
+        ),
+      );
+    }
+
+    return ScaffoldWithDrawer(
+      title: '報表統計',
+      currentRoute: '/reports',
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          _TopBar(
+            role: _role,
+            vendorId: _vendorId,
+            range: _range,
+            labelOf: _rangeLabel,
+            onRangeChanged: (r) => setState(() => _range = r),
+            onRefresh: _refresh,
+          ),
+          const SizedBox(height: 12),
+
+          FutureBuilder<_ReportData>(
+            key: ValueKey(
+              'report_${_refreshTick_}_${_range.name}_${_role}_$_vendorId',
+            ),
+            future: _loadReport(),
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 40),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+              if (snap.hasError) {
+                return _ErrorCard(
+                  title: '載入報表失敗',
+                  message: snap.error.toString(),
+                  onRetry: _refresh,
+                );
+              }
+              final data = snap.data;
+              if (data == null) {
+                return _ErrorCard(
+                  title: '載入報表失敗',
+                  message: '沒有取得資料',
+                  onRetry: _refresh,
+                );
+              }
+
+              return Column(
+                children: [
+                  _SummaryHeader(data: data),
+                  const SizedBox(height: 12),
+                  _MetricGrid(data: data),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ------------------------------------------------------------
+// Data
+// ------------------------------------------------------------
+enum ReportRange { d7, d30, d90, all }
+
+class _ReportData {
+  final ReportRange range;
+  final String role;
+  final String vendorId;
+  final DateTime generatedAt;
+
+  final int ordersCount;
+  final int usersCount;
+  final int productsCount;
+  final int devicesCount;
+  final int cartsCount;
+  final int campaignsCount;
+
+  final num revenueEstimate;
+  final int revenueSampledOrders;
+
+  _ReportData({
+    required this.range,
+    required this.role,
+    required this.vendorId,
+    required this.generatedAt,
+    required this.ordersCount,
+    required this.usersCount,
+    required this.productsCount,
+    required this.devicesCount,
+    required this.cartsCount,
+    required this.campaignsCount,
+    required this.revenueEstimate,
+    required this.revenueSampledOrders,
+  });
+}
+
+// ------------------------------------------------------------
+// Widgets
+// ------------------------------------------------------------
+class _TopBar extends StatelessWidget {
+  final String role;
+  final String vendorId;
+  final ReportRange range;
+  final String Function(ReportRange) labelOf;
+  final ValueChanged<ReportRange> onRangeChanged;
+  final VoidCallback onRefresh;
+
+  const _TopBar({
+    required this.role,
+    required this.vendorId,
+    required this.range,
+    required this.labelOf,
+    required this.onRangeChanged,
+    required this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Card(
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 22,
+              backgroundColor: cs.primaryContainer,
+              child: Icon(
+                Icons.bar_chart_outlined,
+                color: cs.onPrimaryContainer,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '報表總覽',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    role == 'vendor'
+                        ? '角色：VENDOR  •  vendorId：${vendorId.isEmpty ? "—" : vendorId}'
+                        : '角色：ADMIN',
+                    style: TextStyle(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            DropdownButton<ReportRange>(
+              value: range,
+              onChanged: (v) {
+                if (v != null) onRangeChanged(v);
+              },
+              items: ReportRange.values
+                  .map(
+                    (r) => DropdownMenuItem(value: r, child: Text(labelOf(r))),
+                  )
+                  .toList(),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: '重新整理',
+              onPressed: onRefresh,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SummaryHeader extends StatelessWidget {
+  final _ReportData data;
+  const _SummaryHeader({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final dt = DateFormat('yyyy/MM/dd HH:mm:ss').format(data.generatedAt);
+
+    final money = NumberFormat.decimalPattern().format(
+      data.revenueEstimate.round(),
+    );
+    final sampled = data.revenueSampledOrders;
+
+    return Card(
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '更新時間：$dt',
+              style: TextStyle(
+                color: cs.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '營收估算：NT\$ $money',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 18,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: cs.secondaryContainer,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    '取樣 $sampled 筆訂單',
+                    style: TextStyle(
+                      color: cs.onSecondaryContainer,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '※ 營收為估算值（依 orders 內的 total/amount/totalAmount/grandTotal 欄位加總）',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MetricGrid extends StatelessWidget {
+  final _ReportData data;
+  const _MetricGrid({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, c) {
+        final w = c.maxWidth;
+        final crossAxisCount = w >= 980 ? 3 : (w >= 640 ? 2 : 1);
+
+        final tiles = <_MetricTileData>[
+          _MetricTileData('訂單數', data.ordersCount, Icons.receipt_long_outlined),
+          _MetricTileData('會員數', data.usersCount, Icons.people_alt_outlined),
+          _MetricTileData(
+            '商品數',
+            data.productsCount,
+            Icons.inventory_2_outlined,
+          ),
+          _MetricTileData('裝置數', data.devicesCount, Icons.watch_outlined),
+          _MetricTileData(
+            '購物車數',
+            data.cartsCount,
+            Icons.shopping_cart_outlined,
+          ),
+          _MetricTileData('活動數', data.campaignsCount, Icons.campaign_outlined),
+        ];
+
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            childAspectRatio: crossAxisCount == 1 ? 3.2 : 2.8,
+          ),
+          itemCount: tiles.length,
+          itemBuilder: (_, i) => _MetricCard(data: tiles[i]),
         );
       },
     );
   }
 }
 
-// -------------------- Models --------------------
-class _OrderLite {
-  final String docId;
-  final String orderId;
-  final String buyerEmail;
-  final String status;
-  final DateTime createdAt;
-  final num total;
-  final String vendorId;
-  const _OrderLite({
-    required this.docId,
-    required this.orderId,
-    required this.buyerEmail,
-    required this.status,
-    required this.createdAt,
-    required this.total,
-    required this.vendorId,
-  });
-}
-
-class _ReportSnapshot {
-  final int productCount;
-  final int orderCountApprox;
-  final num revenueApprox;
-  final List<_OrderLite> latestOrders;
-  final String note;
-  const _ReportSnapshot({
-    required this.productCount,
-    required this.orderCountApprox,
-    required this.revenueApprox,
-    required this.latestOrders,
-    required this.note,
-  });
-  const _ReportSnapshot.empty({
-    this.productCount = 0,
-    this.orderCountApprox = 0,
-    this.revenueApprox = 0,
-    this.latestOrders = const <_OrderLite>[],
-    this.note = '',
-  });
-}
-
-// -------------------- 小卡元件 --------------------
-class _MiniStatCard extends StatelessWidget {
-  const _MiniStatCard({required this.title, required this.value, required this.icon});
+class _MetricTileData {
   final String title;
-  final String value;
+  final int value;
   final IconData icon;
+  _MetricTileData(this.title, this.value, this.icon);
+}
+
+class _MetricCard extends StatelessWidget {
+  final _MetricTileData data;
+  const _MetricCard({required this.data});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return SizedBox(
-      width: 220,
-      child: Card(
-        elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-          side: BorderSide(color: cs.outlineVariant.withOpacity(0.5)),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: cs.primaryContainer.withOpacity(0.55),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, color: cs.primary),
+    final v = NumberFormat.decimalPattern().format(data.value);
+
+    return Card(
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 22,
+              backgroundColor: cs.primaryContainer,
+              child: Icon(data.icon, color: cs.onPrimaryContainer),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    data.title,
+                    style: TextStyle(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    v,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                    const SizedBox(height: 6),
-                    Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  ],
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-// -------------------- 錯誤頁 --------------------
-class _SimpleErrorPage extends StatelessWidget {
-  const _SimpleErrorPage({
-    required this.title,
-    required this.message,
-    required this.onRetry,
-    required this.onLogout,
-  });
+class _ErrorCard extends StatelessWidget {
   final String title;
   final String message;
   final VoidCallback onRetry;
-  final Future<void> Function() onLogout;
+
+  const _ErrorCard({
+    required this.title,
+    required this.message,
+    required this.onRetry,
+  });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Scaffold(
-      body: Center(
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                const SizedBox(height: 10),
-                Text(message, textAlign: TextAlign.center, style: TextStyle(color: cs.error)),
-                const SizedBox(height: 14),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    OutlinedButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('重試')),
-                    const SizedBox(width: 10),
-                    FilledButton.icon(
-                      onPressed: () async => onLogout(),
-                      icon: const Icon(Icons.logout),
-                      label: const Text('登出'),
-                    ),
-                  ],
-                ),
-              ],
+
+    return Card(
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Icon(Icons.error_outline, color: cs.error, size: 42),
+            const SizedBox(height: 10),
+            Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
             ),
-          ),
+            const SizedBox(height: 10),
+            Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重試'),
+            ),
+          ],
         ),
       ),
     );

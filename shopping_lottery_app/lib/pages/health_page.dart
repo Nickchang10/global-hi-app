@@ -1,22 +1,15 @@
 // lib/pages/health_page.dart
-// =====================================================
-// ✅ HealthPage（Osmile 健康中心｜最終整合完整版）
-// - 支援雲端 + 手錶 BLE 雙來源資料
-// - 健康摘要卡：步數、睡眠、心率、血壓、積分
-// - 功能：同步、分享、SOS、地圖追蹤
-// - 相容 Osmile 商城架構
-// =====================================================
+//
+// ✅ HealthPage（最終完整版｜可直接使用｜已修正 unnecessary_cast）
+// - 無額外套件依賴（只用 Flutter SDK）
+// - 內建示範健康數據：步數/卡路里/距離/睡眠/心率
+// - 下拉刷新會重新產生示範數據
+// - ✅ 修正：withOpacity(deprecated) → withValues(alpha: ...)
 
+import 'dart:async';
 import 'dart:math';
-import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
 
-// === 服務層整合 ===
-import '../services/health_service.dart';
-import '../services/tracking_service.dart';
-import '../services/sos_service.dart';
-import '../services/bluetooth_service.dart';
+import 'package:flutter/material.dart';
 
 class HealthPage extends StatefulWidget {
   const HealthPage({super.key});
@@ -25,381 +18,714 @@ class HealthPage extends StatefulWidget {
   State<HealthPage> createState() => _HealthPageState();
 }
 
-class _HealthPageState extends State<HealthPage>
-    with SingleTickerProviderStateMixin {
-  late TabController _tab;
-  final _fmt = NumberFormat('#,###');
-  final String userId = 'demo_user';
+class _HealthPageState extends State<HealthPage> {
+  final Random _rand = Random();
+  Timer? _hrTimer;
+
+  // demo metrics
+  int _steps = 0;
+  int _calories = 0;
+  double _distanceKm = 0;
+  double _sleepHours = 0;
+  int _heartRate = 0;
+
+  // weekly demo
+  late List<int> _weeklySteps; // 7 days
+  late List<int> _weeklySleepMin; // 7 days
 
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 4, vsync: this);
-
-    // 初始化雲端同步與模擬資料
-    Future.microtask(() async {
-      await HealthService.instance.syncFromCloud(userId);
-    });
+    _regenDemoData();
+    _hrTimer = Timer.periodic(const Duration(seconds: 2), (_) => _tickHR());
   }
 
   @override
   void dispose() {
-    _tab.dispose();
+    _hrTimer?.cancel();
     super.dispose();
   }
 
-  void _toast(String msg) {
+  // ✅ 已修正：移除不必要 cast（unnecessary_cast）
+  String _s(num v, {int digits = 0}) {
+    if (v is int) return v.toString();
+    final d = digits.clamp(0, 6);
+    return v.toStringAsFixed(d); // <-- no cast needed
+  }
+
+  Future<void> _onRefresh() async {
+    await Future.delayed(const Duration(milliseconds: 350));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(milliseconds: 1200)),
+    setState(() => _regenDemoData());
+  }
+
+  void _regenDemoData() {
+    _steps = 1500 + _rand.nextInt(12000);
+    _calories = 80 + (_steps * (0.035 + _rand.nextDouble() * 0.02)).round();
+    _distanceKm = max(0.2, _steps * (0.00072 + _rand.nextDouble() * 0.00012));
+    _sleepHours = 5.2 + _rand.nextDouble() * 3.6;
+    _heartRate = 58 + _rand.nextInt(42);
+
+    _weeklySteps = List<int>.generate(7, (i) => 2000 + _rand.nextInt(12000));
+    _weeklySleepMin = List<int>.generate(
+      7,
+      (i) => 300 + _rand.nextInt(230), // 5h~8h50m
     );
+  }
+
+  void _tickHR() {
+    if (!mounted) return;
+    setState(() {
+      final delta = _rand.nextInt(9) - 4; // -4~+4
+      _heartRate = (_heartRate + delta).clamp(45, 150);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final health = context.watch<HealthService>();
-    final sos = context.watch<SOSService>();
-    final track = context.watch<TrackingService>();
-
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F8FA),
+      backgroundColor: const Color(0xFFF6F7F8),
       appBar: AppBar(
-        title: const Text("健康中心", style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.blueAccent,
-        foregroundColor: Colors.white,
+        title: const Text('健康中心'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.sync_rounded),
-            tooltip: "同步手錶資料",
-            onPressed: () async {
-              await health.startLocalSync(userId);
-              _toast("正在同步 Osmile 手錶資料...");
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.share_outlined),
-            tooltip: "分享健康報告",
-            onPressed: () => _toast("健康報告已匯出（模板）"),
+            tooltip: '重新產生示範數據',
+            icon: const Icon(Icons.refresh),
+            onPressed: () => setState(() => _regenDemoData()),
           ),
         ],
-        bottom: TabBar(
-          controller: _tab,
-          isScrollable: true,
-          indicatorColor: Colors.white,
-          tabs: const [
-            Tab(text: "步數"),
-            Tab(text: "睡眠"),
-            Tab(text: "心率"),
-            Tab(text: "血壓"),
+      ),
+      body: RefreshIndicator(
+        onRefresh: _onRefresh,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
+          children: [
+            _headerSummary(),
+            const SizedBox(height: 12),
+            _todayCards(),
+            const SizedBox(height: 12),
+            _heartRateCard(),
+            const SizedBox(height: 12),
+            _sleepCard(),
+            const SizedBox(height: 12),
+            _weeklyStepsCard(),
+            const SizedBox(height: 12),
+            _weeklySleepCard(),
           ],
         ),
       ),
-      body: Column(
+    );
+  }
+
+  Widget _headerSummary() {
+    final km = _s(_distanceKm, digits: 2);
+    final sleep = _s(_sleepHours, digits: 1);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black12.withValues(alpha: 0.04),
+            blurRadius: 10,
+          ),
+        ],
+      ),
+      child: Row(
         children: [
-          _buildSummaryCard(context, health, sos, track),
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Colors.blue.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.favorite, color: Colors.blue),
+          ),
+          const SizedBox(width: 12),
           Expanded(
-            child: TabBarView(
-              controller: _tab,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildStepsTab(health.steps),
-                _buildSleepTab(health.sleepHours),
-                _buildHeartTab(health.heartRate),
-                _buildBloodTab(health.bp),
+                Text(
+                  '今日概況',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey.shade900,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '距離 $km km · 睡眠 $sleep 小時 · 心率 $_heartRate bpm',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
               ],
             ),
           ),
+          TextButton(onPressed: _openSummaryDetail, child: const Text('查看')),
         ],
       ),
     );
   }
 
-  // =====================================================
-  // 健康摘要卡（整合 SOS / 追蹤 / 積分）
-  // =====================================================
-  Widget _buildSummaryCard(BuildContext ctx, HealthService h, SOSService s,
-      TrackingService t) {
-    return Container(
-      margin: const EdgeInsets.all(12),
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
+  Widget _todayCards() {
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      mainAxisSpacing: 10,
+      crossAxisSpacing: 10,
+      childAspectRatio: 1.55,
+      children: [
+        _metricCard(
+          icon: Icons.directions_walk,
+          title: '步數',
+          value: _s(_steps),
+          unit: 'steps',
+          color: Colors.orange,
+          onTap: () => _openMetricDetail('步數', '今日步數', '$_steps steps'),
+        ),
+        _metricCard(
+          icon: Icons.local_fire_department,
+          title: '熱量',
+          value: _s(_calories),
+          unit: 'kcal',
+          color: Colors.redAccent,
+          onTap: () => _openMetricDetail('熱量', '今日消耗熱量', '$_calories kcal'),
+        ),
+        _metricCard(
+          icon: Icons.route,
+          title: '距離',
+          value: _s(_distanceKm, digits: 2),
+          unit: 'km',
+          color: Colors.blue,
+          onTap: () => _openMetricDetail(
+            '距離',
+            '今日移動距離',
+            '${_s(_distanceKm, digits: 2)} km',
           ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Row(
+        ),
+        _metricCard(
+          icon: Icons.bedtime,
+          title: '睡眠',
+          value: _s(_sleepHours, digits: 1),
+          unit: 'hrs',
+          color: Colors.indigo,
+          onTap: () => _openMetricDetail(
+            '睡眠',
+            '昨晚睡眠',
+            '${_s(_sleepHours, digits: 1)} 小時',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _metricCard({
+    required IconData icon,
+    required String title,
+    required String value,
+    required String unit,
+    required Color color,
+    VoidCallback? onTap,
+  }) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
             children: [
-              const Icon(Icons.account_circle,
-                  size: 42, color: Colors.blueAccent),
-              const SizedBox(width: 10),
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: color),
+              ),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Text("今日健康狀態",
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    Text(
-                      DateFormat('MM/dd (EEE)', 'zh_TW').format(DateTime.now()),
-                      style: const TextStyle(color: Colors.grey),
+                    Text(title, style: TextStyle(color: Colors.grey.shade700)),
+                    AllowingTwoLines(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            value,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 20,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: Text(
+                              unit,
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.orangeAccent.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const Row(
+              const Icon(Icons.chevron_right, color: Colors.black26),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _heartRateCard() {
+    final zone = _heartRate < 60
+        ? '偏低'
+        : (_heartRate < 100 ? '正常' : (_heartRate < 130 ? '偏高' : '高'));
+
+    return _sectionCard(
+      title: '心率',
+      subtitle: '即時監測（示範）',
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$_heartRate bpm',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.pink.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              zone,
+              style: const TextStyle(
+                color: Colors.pink,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 6),
+          _hrBar(_heartRate),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '提示：此頁為示範資料，正式版可改接手錶/HealthKit/Google Fit。',
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+      onTap: () => _openMetricDetail('心率', '即時心率', '$_heartRate bpm（$zone）'),
+    );
+  }
+
+  Widget _sleepCard() {
+    final mins = (_sleepHours * 60).round();
+    final deep = (mins * (0.18 + _rand.nextDouble() * 0.08)).round();
+    final rem = (mins * (0.20 + _rand.nextDouble() * 0.07)).round();
+    final light = max(0, mins - deep - rem);
+
+    final hh = mins ~/ 60;
+    final mm = mins % 60;
+    final label = '${_s(hh)}h ${_s(mm)}m';
+
+    return _sectionCard(
+      title: '睡眠分析',
+      subtitle: '昨晚（示範）',
+      trailing: Text(
+        label,
+        style: const TextStyle(fontWeight: FontWeight.bold),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 6),
+          _sleepStackBar(deep: deep, rem: rem, light: light),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              _legendDot('深睡', Colors.indigo),
+              const SizedBox(width: 12),
+              _legendDot('REM', Colors.teal),
+              const SizedBox(width: 12),
+              _legendDot('淺睡', Colors.orange),
+            ],
+          ),
+        ],
+      ),
+      onTap: () => _openMetricDetail(
+        '睡眠分析',
+        '分段（示範）',
+        '深睡 ${deep}m · REM ${rem}m · 淺睡 ${light}m',
+      ),
+    );
+  }
+
+  Widget _weeklyStepsCard() {
+    final maxV = _weeklySteps.fold<int>(1, (p, c) => max(p, c));
+    final avg = (_weeklySteps.reduce((a, b) => a + b) / 7).round();
+
+    return _sectionCard(
+      title: '近 7 天步數',
+      subtitle: '趨勢（示範）',
+      trailing: Text(
+        '平均 ${_s(avg)}',
+        style: const TextStyle(fontWeight: FontWeight.bold),
+      ),
+      child: SizedBox(
+        height: 120,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: List.generate(7, (i) {
+            final v = _weeklySteps[i];
+            final h = (v / maxV) * 100;
+            return Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    Icon(Icons.stars_rounded,
-                        size: 16, color: Colors.orangeAccent),
-                    SizedBox(width: 4),
-                    Text("+120 積分",
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.orangeAccent)),
+                    Text(
+                      _s(v ~/ 1000),
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 11,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      height: max(8, h),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withValues(alpha: 0.20),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      _weekDayLabel(i),
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 11,
+                      ),
+                    ),
                   ],
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _metric("步數", _fmt.format(h.steps), "步", Icons.directions_walk),
-              _metric("睡眠", h.sleepHours.toStringAsFixed(1), "小時",
-                  Icons.bedtime_outlined),
-              _metric("心率", "${h.heartRate}", "bpm", Icons.favorite_border),
-              _metric("血壓", h.bp, "", Icons.monitor_heart_outlined),
-            ],
-          ),
-          const Divider(height: 28, thickness: 0.8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _actionIcon(
-                icon: Icons.watch,
-                label: h.online ? "已連線" : "連線手錶",
-                color: h.online ? Colors.green : Colors.blueAccent,
-                onTap: () async {
-                  h.online
-                      ? await h.stop()
-                      : await h.startLocalSync(userId);
-                },
-              ),
-              _actionIcon(
-                icon: Icons.map_outlined,
-                label: "即時追蹤",
-                color: Colors.indigo,
-                onTap: () => Navigator.pushNamed(ctx, '/tracking'),
-              ),
-              _actionIcon(
-                icon: Icons.sos_outlined,
-                label: s.active ? "已啟動" : "SOS",
-                color: s.active ? Colors.redAccent : Colors.orangeAccent,
-                onTap: () =>
-                    s.active ? s.cancelSOS() : s.triggerSOS(),
-              ),
-            ],
-          ),
-        ],
+            );
+          }),
+        ),
       ),
+      onTap: () =>
+          _openMetricDetail('近 7 天步數', '原始數據（示範）', _weeklySteps.join(', ')),
     );
   }
 
-  Widget _metric(String label, String value, String unit, IconData icon) {
-    return Column(
-      children: [
-        Icon(icon, color: Colors.blueAccent, size: 24),
-        const SizedBox(height: 6),
-        Text(label, style: const TextStyle(fontWeight: FontWeight.w900)),
-        const SizedBox(height: 2),
-        Text("$value $unit",
-            style: const TextStyle(
-                color: Colors.black87, fontWeight: FontWeight.bold)),
-      ],
+  Widget _weeklySleepCard() {
+    final maxV = _weeklySleepMin.fold<int>(1, (p, c) => max(p, c));
+    final avg = (_weeklySleepMin.reduce((a, b) => a + b) / 7).round();
+
+    return _sectionCard(
+      title: '近 7 天睡眠',
+      subtitle: '分鐘（示範）',
+      trailing: Text(
+        '平均 ${_s(avg)}m',
+        style: const TextStyle(fontWeight: FontWeight.bold),
+      ),
+      child: SizedBox(
+        height: 120,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: List.generate(7, (i) {
+            final v = _weeklySleepMin[i];
+            final h = (v / maxV) * 100;
+            return Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Text(
+                      _s(v ~/ 60),
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 11,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      height: max(8, h),
+                      decoration: BoxDecoration(
+                        color: Colors.indigo.withValues(alpha: 0.20),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      _weekDayLabel(i),
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ),
+      ),
+      onTap: () =>
+          _openMetricDetail('近 7 天睡眠', '原始數據（示範）', _weeklySleepMin.join(', ')),
     );
   }
 
-  Widget _actionIcon({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onTap,
+  Widget _sectionCard({
+    required String title,
+    required String subtitle,
+    Widget? trailing,
+    required Widget child,
+    VoidCallback? onTap,
   }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: Column(
-        children: [
-          CircleAvatar(
-            backgroundColor: color.withOpacity(0.15),
-            child: Icon(icon, color: color),
-          ),
-          const SizedBox(height: 6),
-          Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
-        ],
-      ),
-    );
-  }
-
-  // =====================================================
-  // 各分頁內容
-  // =====================================================
-  Widget _buildStepsTab(int steps) {
-    return _MetricTabTemplate(
-      title: "今日步數",
-      value: "$steps 步",
-      trend: _fakeChartData(),
-      color: Colors.blueAccent,
-      onViewHistory: () => _toast("查看步數歷史（模板）"),
-    );
-  }
-
-  Widget _buildSleepTab(double hours) {
-    return _MetricTabTemplate(
-      title: "昨晚睡眠時長",
-      value: "${hours.toStringAsFixed(1)} 小時",
-      trend: _fakeChartData(),
-      color: Colors.indigo,
-      onViewHistory: () => _toast("查看睡眠歷史（模板）"),
-    );
-  }
-
-  Widget _buildHeartTab(int bpm) {
-    return _MetricTabTemplate(
-      title: "平均心率",
-      value: "$bpm bpm",
-      trend: _fakeChartData(),
-      color: Colors.pinkAccent,
-      onViewHistory: () => _toast("查看心率歷史（模板）"),
-    );
-  }
-
-  Widget _buildBloodTab(String bp) {
-    return _MetricTabTemplate(
-      title: "血壓狀態",
-      value: bp,
-      trend: _fakeChartData(),
-      color: Colors.redAccent,
-      onViewHistory: () => _toast("查看血壓歷史（模板）"),
-    );
-  }
-
-  List<double> _fakeChartData() =>
-      List.generate(7, (_) => 50 + Random().nextDouble() * 100);
-}
-
-// =====================================================
-// 抽象化圖表模板元件
-// =====================================================
-class _MetricTabTemplate extends StatelessWidget {
-  final String title;
-  final String value;
-  final List<double> trend;
-  final Color color;
-  final VoidCallback onViewHistory;
-
-  const _MetricTabTemplate({
-    required this.title,
-    required this.value,
-    required this.trend,
-    required this.color,
-    required this.onViewHistory,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
           child: Column(
             children: [
-              Text(title,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 16)),
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          subtitle,
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (trailing != null) trailing,
+                ],
+              ),
               const SizedBox(height: 8),
-              Text(value,
-                  style: TextStyle(
-                      color: color,
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold)),
-              const SizedBox(height: 16),
-              SizedBox(
-                height: 120,
-                child: CustomPaint(painter: _LineChartPainter(trend, color)),
-              ),
-              const SizedBox(height: 12),
-              TextButton.icon(
-                onPressed: onViewHistory,
-                icon: const Icon(Icons.bar_chart_rounded),
-                label: const Text("查看歷史資料"),
-              ),
+              child,
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _hrBar(int hr) {
+    final t = ((hr - 45) / (150 - 45)).clamp(0.0, 1.0);
+
+    Color c;
+    if (t < 0.25) {
+      c = Colors.blue;
+    } else if (t < 0.55) {
+      c = Colors.green;
+    } else if (t < 0.80) {
+      c = Colors.orange;
+    } else {
+      c = Colors.redAccent;
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: LinearProgressIndicator(
+        value: t,
+        minHeight: 10,
+        backgroundColor: Colors.pink.withValues(alpha: 0.10),
+        valueColor: AlwaysStoppedAnimation<Color>(c),
+      ),
+    );
+  }
+
+  Widget _sleepStackBar({
+    required int deep,
+    required int rem,
+    required int light,
+  }) {
+    final total = max(1, deep + rem + light);
+    final deepF = deep / total;
+    final remF = rem / total;
+    final lightF = light / total;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: SizedBox(
+        height: 12,
+        child: Row(
+          children: [
+            Expanded(
+              flex: max(1, (deepF * 1000).round()),
+              child: Container(color: Colors.indigo.withValues(alpha: 0.8)),
+            ),
+            Expanded(
+              flex: max(1, (remF * 1000).round()),
+              child: Container(color: Colors.teal.withValues(alpha: 0.8)),
+            ),
+            Expanded(
+              flex: max(1, (lightF * 1000).round()),
+              child: Container(color: Colors.orange.withValues(alpha: 0.8)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _legendDot(String label, Color color) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
         ),
       ],
     );
   }
-}
 
-// =====================================================
-// 簡易折線圖繪製（不依賴外部套件）
-// =====================================================
-class _LineChartPainter extends CustomPainter {
-  final List<double> data;
-  final Color color;
-  _LineChartPainter(this.data, this.color);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (data.isEmpty) return;
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 2.5
-      ..style = PaintingStyle.stroke;
-
-    final path = Path();
-    final dx = size.width / (data.length - 1);
-    final minY = data.reduce(min);
-    final maxY = data.reduce(max);
-    for (int i = 0; i < data.length; i++) {
-      final x = i * dx;
-      final norm = (data[i] - minY) / (maxY - minY);
-      final y = size.height - norm * size.height;
-      if (i == 0) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
-      }
-    }
-    canvas.drawPath(path, paint);
+  String _weekDayLabel(int i) {
+    const labels = ['一', '二', '三', '四', '五', '六', '日'];
+    return labels[i % 7];
   }
 
+  void _openSummaryDetail() {
+    final km = _s(_distanceKm, digits: 2);
+    final sleep = _s(_sleepHours, digits: 1);
+
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                '今日概況（示範）',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 10),
+              _kv('步數', '$_steps steps'),
+              _kv('熱量', '$_calories kcal'),
+              _kv('距離', '$km km'),
+              _kv('睡眠', '$sleep 小時'),
+              _kv('心率', '$_heartRate bpm'),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openMetricDetail(String title, String subtitle, String content) {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(subtitle, style: TextStyle(color: Colors.grey.shade600)),
+              const SizedBox(height: 12),
+              Text(content),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(k, style: TextStyle(color: Colors.grey.shade700)),
+          ),
+          Text(v, style: const TextStyle(fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+}
+
+/// 小工具：避免某些裝置/字體造成 Row 高度不夠時溢位
+class AllowingTwoLines extends StatelessWidget {
+  final Widget child;
+  const AllowingTwoLines({super.key, required this.child});
+
   @override
-  bool shouldRepaint(_LineChartPainter old) =>
-      old.data != data || old.color != color;
+  Widget build(BuildContext context) {
+    return DefaultTextStyle.merge(
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      child: child,
+    );
+  }
 }

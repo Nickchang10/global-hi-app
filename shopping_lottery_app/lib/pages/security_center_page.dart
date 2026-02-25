@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:osmile_shopping_app/pages/change_password_page.dart';
 
-/// 🛡️ 帳號安全中心（完整版）
+import 'change_password_page.dart';
+
+/// 🛡️ 帳號安全中心（完整版｜可編譯）
 ///
 /// 功能：
-/// ✅ 顯示帳號安全概況  
-/// ✅ 更改密碼  
-/// ✅ 裝置管理（模擬登入裝置）  
-/// ✅ 帳號綁定（模擬綁定 Google / Line）  
-/// ✅ 安全通知開關  
+/// ✅ 顯示帳號安全概況
+/// ✅ 更改密碼
+/// ✅ 裝置管理（模擬登入裝置）
+/// ✅ 帳號綁定（模擬綁定 Google / Line）
+/// ✅ 安全通知開關
+/// ✅ 生物辨識開關（模擬）
+///
+/// 重要修正：
+/// - 裝置清單不再用 Map（避免 Object? -> bool/String 的型別錯誤）
+/// - 綁定狀態改成 State 可切換顯示
 class SecurityCenterPage extends StatefulWidget {
   const SecurityCenterPage({super.key});
 
@@ -19,6 +25,30 @@ class SecurityCenterPage extends StatefulWidget {
 class _SecurityCenterPageState extends State<SecurityCenterPage> {
   bool _securityNotice = true;
   bool _biometricEnabled = false;
+
+  bool _googleBound = false;
+  bool _lineBound = false;
+
+  final List<_DeviceRecord> _devices = const [
+    _DeviceRecord(
+      name: "iPhone 15 Pro",
+      location: "台北市",
+      time: "今日 10:23",
+      active: true,
+    ),
+    _DeviceRecord(
+      name: "MacBook Air M2",
+      location: "新北市",
+      time: "昨日 22:10",
+      active: false,
+    ),
+    _DeviceRecord(
+      name: "Samsung S24 Ultra",
+      location: "台中市",
+      time: "11月28日 14:37",
+      active: false,
+    ),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -48,6 +78,8 @@ class _SecurityCenterPageState extends State<SecurityCenterPage> {
   // 帳號安全概況
   // ===========================================================
   Widget _buildSummaryCard() {
+    final twoFactorEnabled = _biometricEnabled; // 這裡用生物辨識模擬「提升驗證強度」
+
     return Card(
       elevation: 3,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -55,21 +87,32 @@ class _SecurityCenterPageState extends State<SecurityCenterPage> {
         padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text(
+          children: [
+            const Text(
               "帳號安全概況",
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
-            SizedBox(height: 10),
-            ListTile(
+            const SizedBox(height: 10),
+            const ListTile(
               leading: Icon(Icons.verified_user, color: Colors.green),
               title: Text("密碼保護：已設定"),
               subtitle: Text("建議每 3 個月更新一次密碼"),
             ),
             ListTile(
-              leading: Icon(Icons.security, color: Colors.blueAccent),
-              title: Text("雙重驗證：未啟用"),
-              subtitle: Text("開啟可提升帳號安全性"),
+              leading: Icon(
+                Icons.security,
+                color: twoFactorEnabled ? Colors.green : Colors.blueAccent,
+              ),
+              title: Text("強化驗證：${twoFactorEnabled ? "已啟用" : "未啟用"}"),
+              subtitle: Text(twoFactorEnabled ? "已開啟生物辨識登入" : "開啟可提升帳號安全性"),
+            ),
+            ListTile(
+              leading: Icon(
+                Icons.notifications_active_outlined,
+                color: _securityNotice ? Colors.green : Colors.grey,
+              ),
+              title: Text("安全通知：${_securityNotice ? "已開啟" : "已關閉"}"),
+              subtitle: const Text("登入異常或安全事件提醒"),
             ),
           ],
         ),
@@ -109,7 +152,7 @@ class _SecurityCenterPageState extends State<SecurityCenterPage> {
           SwitchListTile(
             secondary: const Icon(Icons.fingerprint),
             title: const Text("啟用生物辨識"),
-            subtitle: const Text("使用指紋或臉部登入"),
+            subtitle: const Text("使用指紋或臉部登入（模擬）"),
             value: _biometricEnabled,
             onChanged: (v) => setState(() => _biometricEnabled = v),
           ),
@@ -122,27 +165,6 @@ class _SecurityCenterPageState extends State<SecurityCenterPage> {
   // 裝置登入紀錄（模擬）
   // ===========================================================
   Widget _buildDeviceSection() {
-    final devices = [
-      {
-        "name": "iPhone 15 Pro",
-        "location": "台北市",
-        "time": "今日 10:23",
-        "active": true
-      },
-      {
-        "name": "MacBook Air M2",
-        "location": "新北市",
-        "time": "昨日 22:10",
-        "active": false
-      },
-      {
-        "name": "Samsung S24 Ultra",
-        "location": "台中市",
-        "time": "11月28日 14:37",
-        "active": false
-      },
-    ];
-
     return Card(
       elevation: 3,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -156,23 +178,27 @@ class _SecurityCenterPageState extends State<SecurityCenterPage> {
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 10),
-            ...devices.map((d) {
+            ..._devices.map((d) {
+              final icon = d.active ? Icons.phone_iphone : Icons.devices;
+              final color = d.active ? Colors.green : Colors.grey;
+
               return ListTile(
-                leading: Icon(
-                  d["active"] ? Icons.phone_iphone : Icons.devices,
-                  color: d["active"] ? Colors.green : Colors.grey,
-                ),
-                title: Text(d["name"]),
-                subtitle: Text("${d["location"]} ・ ${d["time"]}"),
-                trailing: d["active"]
-                    ? const Text("目前使用中",
+                leading: Icon(icon, color: color),
+                title: Text(d.name),
+                subtitle: Text("${d.location} ・ ${d.time}"),
+                trailing: d.active
+                    ? const Text(
+                        "目前使用中",
                         style: TextStyle(
-                            color: Colors.green, fontWeight: FontWeight.bold))
+                          color: Colors.green,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      )
                     : TextButton(
                         child: const Text("登出"),
                         onPressed: () {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text("${d["name"]} 已登出")),
+                            SnackBar(content: Text("${d.name} 已登出（模擬）")),
                           );
                         },
                       ),
@@ -208,28 +234,52 @@ class _SecurityCenterPageState extends State<SecurityCenterPage> {
           ListTile(
             leading: const Icon(Icons.g_mobiledata),
             title: const Text("Google 帳號"),
-            trailing:
-                const Text("未綁定", style: TextStyle(color: Colors.orange)),
+            trailing: Text(
+              _googleBound ? "已綁定" : "未綁定",
+              style: TextStyle(
+                color: _googleBound ? Colors.green : Colors.orange,
+              ),
+            ),
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text("模擬：已成功綁定 Google 帳號 ✅"),
-              ));
+              setState(() => _googleBound = true);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("模擬：已成功綁定 Google 帳號 ✅")),
+              );
             },
           ),
           const Divider(height: 0),
           ListTile(
             leading: const Icon(Icons.chat_bubble_outline),
             title: const Text("LINE 帳號"),
-            trailing:
-                const Text("未綁定", style: TextStyle(color: Colors.orange)),
+            trailing: Text(
+              _lineBound ? "已綁定" : "未綁定",
+              style: TextStyle(
+                color: _lineBound ? Colors.green : Colors.orange,
+              ),
+            ),
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text("模擬：已成功綁定 LINE 帳號 ✅"),
-              ));
+              setState(() => _lineBound = true);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("模擬：已成功綁定 LINE 帳號 ✅")),
+              );
             },
           ),
         ],
       ),
     );
   }
+}
+
+class _DeviceRecord {
+  final String name;
+  final String location;
+  final String time;
+  final bool active;
+
+  const _DeviceRecord({
+    required this.name,
+    required this.location,
+    required this.time,
+    required this.active,
+  });
 }

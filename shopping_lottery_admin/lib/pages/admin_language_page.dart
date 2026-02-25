@@ -1,31 +1,15 @@
-// lib/pages/admin_language_page.dart
-//
-// ✅ AdminLanguagePage v6.4 Final（多語系管理｜最終完整版）
-// ------------------------------------------------------------
-// Firestore: languages/{id}
-// fields:
-// - code: String (例: zh-TW, en, ja)
-// - name: String (例: 中文、English)
-// - flagUrl: String
-// - isActive: bool
-// - isDefault: bool (僅允許一個)
-// - order: number
-// - createdAt: Timestamp
-// - updatedAt: Timestamp
-//
-// Storage: languages/{code}/{flag.png}
-// ------------------------------------------------------------
-// 依賴：cloud_firestore, firebase_storage, file_picker, intl
-// ------------------------------------------------------------
-
-import 'dart:typed_data';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
+/// AdminLanguagePage（正式版｜完整版｜可直接編譯）
+///
+/// Firestore 建議儲存位置：
+///   site_contents/app_settings
+///     - defaultLocale: String (e.g. "zh_TW")
+///     - supportedLocales: List<Map>
+///         [{ code: "zh_TW", name: "繁體中文", enabled: true, sort: 0 }, ...]
+///     - updatedAt: Timestamp
+///     - createdAt: Timestamp
 class AdminLanguagePage extends StatefulWidget {
   const AdminLanguagePage({super.key});
 
@@ -34,359 +18,474 @@ class AdminLanguagePage extends StatefulWidget {
 }
 
 class _AdminLanguagePageState extends State<AdminLanguagePage> {
-  final _db = FirebaseFirestore.instance;
-  bool _busyReorder = false;
+  DocumentReference<Map<String, dynamic>> get _ref => FirebaseFirestore.instance
+      .collection('site_contents')
+      .doc('app_settings');
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
+  bool _busy = false;
 
-  String _fmt(dynamic v) {
-    if (v is Timestamp) return DateFormat('yyyy/MM/dd HH:mm').format(v.toDate());
-    return '-';
-  }
+  Future<void> _save({
+    required String defaultLocale,
+    required List<Map<String, dynamic>> supported,
+  }) async {
+    final messenger = ScaffoldMessenger.of(context);
 
-  Query<Map<String, dynamic>> _query() {
-    return _db.collection('languages').orderBy('order');
-  }
-
-  Future<void> _create() async {
-    final ref = _db.collection('languages').doc();
-    final now = FieldValue.serverTimestamp();
-    await ref.set({
-      'code': 'xx',
-      'name': '新語系',
-      'flagUrl': '',
-      'isActive': true,
-      'isDefault': false,
-      'order': DateTime.now().millisecondsSinceEpoch,
-      'createdAt': now,
-      'updatedAt': now,
-    });
-    await _edit(ref.id);
-  }
-
-  Future<void> _edit(String id) async {
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => _LanguageEditSheet(id: id),
-    );
-  }
-
-  Future<void> _delete(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final data = doc.data() ?? {};
-    final code = (data['code'] ?? '').toString();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除語系'),
-        content: Text('確定要刪除 $code？'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await doc.reference.delete();
-      _snack('已刪除');
-    }
-  }
-
-  Future<void> _applyReorder(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) async {
-    if (_busyReorder) return;
-    setState(() => _busyReorder = true);
+    if (mounted) setState(() => _busy = true);
     try {
-      final batch = _db.batch();
-      for (int i = 0; i < docs.length; i++) {
-        batch.update(docs[i].reference, {'order': i + 1});
-      }
-      await batch.commit();
-    } finally {
-      if (mounted) setState(() => _busyReorder = false);
-    }
-  }
-
-  Future<void> _toggleActive(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final cur = doc.data()?['isActive'] == true;
-    await doc.reference.update({'isActive': !cur});
-  }
-
-  Future<void> _setDefault(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final all = await _db.collection('languages').get();
-    final batch = _db.batch();
-    for (final d in all.docs) {
-      batch.update(d.reference, {'isDefault': d.id == doc.id});
-    }
-    await batch.commit();
-    _snack('已設定為預設語系');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('多語系管理'),
-        actions: [
-          IconButton(
-            tooltip: '新增語系',
-            onPressed: _create,
-            icon: const Icon(Icons.add_outlined),
-          ),
-        ],
-      ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: _query().snapshots(),
-        builder: (context, snap) {
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          final docs = snap.data!.docs;
-          if (docs.isEmpty) return const Center(child: Text('尚無語系'));
-
-          return Stack(
-            children: [
-              ReorderableListView.builder(
-                itemCount: docs.length,
-                onReorder: (oldIndex, newIndex) async {
-                  if (_busyReorder) return;
-                  if (newIndex > oldIndex) newIndex--;
-                  final moved = docs.removeAt(oldIndex);
-                  docs.insert(newIndex, moved);
-                  await _applyReorder(docs);
-                },
-                itemBuilder: (context, i) {
-                  final d = docs[i].data();
-                  final code = (d['code'] ?? '').toString();
-                  final name = (d['name'] ?? '').toString();
-                  final flag = (d['flagUrl'] ?? '').toString();
-                  final active = d['isActive'] == true;
-                  final isDefault = d['isDefault'] == true;
-
-                  return Card(
-                    key: ValueKey(docs[i].id),
-                    margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    child: ListTile(
-                      leading: flag.isEmpty
-                          ? const CircleAvatar(child: Icon(Icons.flag_outlined))
-                          : CircleAvatar(backgroundImage: NetworkImage(flag)),
-                      title: Text('$name ($code)',
-                          style: const TextStyle(fontWeight: FontWeight.w900)),
-                      subtitle: Text(
-                        [
-                          '狀態：${active ? '啟用' : '停用'}',
-                          if (isDefault) '預設語系',
-                          '更新：${_fmt(d['updatedAt'])}',
-                        ].join('｜'),
-                      ),
-                      trailing: PopupMenuButton<String>(
-                        onSelected: (v) async {
-                          if (v == 'edit') await _edit(docs[i].id);
-                          if (v == 'toggle') await _toggleActive(docs[i]);
-                          if (v == 'default') await _setDefault(docs[i]);
-                          if (v == 'delete') await _delete(docs[i]);
-                        },
-                        itemBuilder: (_) => [
-                          const PopupMenuItem(value: 'edit', child: Text('編輯')),
-                          PopupMenuItem(value: 'toggle', child: Text(active ? '停用' : '啟用')),
-                          const PopupMenuItem(value: 'default', child: Text('設為預設')),
-                          const PopupMenuItem(value: 'delete', child: Text('刪除')),
-                        ],
-                      ),
-                      onTap: () => _edit(docs[i].id),
-                    ),
-                  );
-                },
-              ),
-              if (_busyReorder)
-                const Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: Material(
-                    elevation: 10,
-                    child: Padding(
-                      padding: EdgeInsets.all(10),
-                      child: Row(
-                        children: [
-                          SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-                          SizedBox(width: 10),
-                          Text('更新排序中...', style: TextStyle(fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// ✅ 編輯語系 BottomSheet
-// ------------------------------------------------------------
-class _LanguageEditSheet extends StatefulWidget {
-  final String id;
-  const _LanguageEditSheet({required this.id});
-
-  @override
-  State<_LanguageEditSheet> createState() => _LanguageEditSheetState();
-}
-
-class _LanguageEditSheetState extends State<_LanguageEditSheet> {
-  final _db = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
-
-  final _codeCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController();
-
-  bool _active = true;
-  bool _default = false;
-  bool _saving = false;
-  bool _loading = true;
-
-  String _flagUrl = '';
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final doc = await _db.collection('languages').doc(widget.id).get();
-    if (doc.exists) {
-      final d = doc.data()!;
-      _codeCtrl.text = (d['code'] ?? '').toString();
-      _nameCtrl.text = (d['name'] ?? '').toString();
-      _active = d['isActive'] == true;
-      _default = d['isDefault'] == true;
-      _flagUrl = (d['flagUrl'] ?? '').toString();
-    }
-    setState(() => _loading = false);
-  }
-
-  Future<void> _pickAndUploadFlag() async {
-    if (_saving) return;
-    final result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
-    if (result == null) return;
-    final f = result.files.first;
-    final bytes = f.bytes;
-    if (bytes == null) return;
-
-    setState(() => _saving = true);
-    try {
-      if (_flagUrl.isNotEmpty) {
-        try {
-          await _storage.refFromURL(_flagUrl).delete();
-        } catch (_) {}
-      }
-
-      final safeName = f.name.replaceAll(' ', '_');
-      final path = 'languages/${_codeCtrl.text.trim()}/$safeName';
-      final ref = _storage.ref().child(path);
-      await ref.putData(bytes, SettableMetadata(contentType: 'image/png'));
-      final url = await ref.getDownloadURL();
-      setState(() => _flagUrl = url);
-    } finally {
-      setState(() => _saving = false);
-    }
-  }
-
-  Future<void> _save() async {
-    if (_saving) return;
-    final code = _codeCtrl.text.trim();
-    if (code.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('請輸入代碼')));
-      return;
-    }
-
-    setState(() => _saving = true);
-    try {
-      await _db.collection('languages').doc(widget.id).set({
-        'code': code,
-        'name': _nameCtrl.text.trim(),
-        'flagUrl': _flagUrl,
-        'isActive': _active,
-        'isDefault': _default,
+      await _ref.set({
+        'defaultLocale': defaultLocale,
+        'supportedLocales': supported,
         'updatedAt': FieldValue.serverTimestamp(),
+        'createdAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+
       if (!mounted) return;
-      Navigator.pop(context);
+      messenger.showSnackBar(const SnackBar(content: Text('已儲存語言設定')));
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
     } finally {
-      setState(() => _saving = false);
+      if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<_LocaleItem?> _openAddDialog() async {
+    final codeCtrl = TextEditingController();
+    final nameCtrl = TextEditingController();
+
+    final res = await showDialog<_LocaleItem>(
+      context: context,
+      builder: (dialogCtx) {
+        final dialogMessenger = ScaffoldMessenger.of(dialogCtx);
+
+        return AlertDialog(
+          title: const Text('新增語言'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: codeCtrl,
+                decoration: const InputDecoration(
+                  labelText: '語言代碼（例如 zh_TW / en / ja）',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: '顯示名稱（例如 繁體中文 / English）',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '建議格式：語言 en、繁中 zh_TW、簡中 zh_CN',
+                style: TextStyle(color: Colors.grey[700], fontSize: 12),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final code = codeCtrl.text.trim();
+                final name = nameCtrl.text.trim();
+
+                if (!_isValidLocaleCode(code)) {
+                  dialogMessenger.showSnackBar(
+                    const SnackBar(content: Text('語言代碼格式不正確（例如 zh_TW / en）')),
+                  );
+                  return;
+                }
+                if (name.isEmpty) {
+                  dialogMessenger.showSnackBar(
+                    const SnackBar(content: Text('顯示名稱不可為空')),
+                  );
+                  return;
+                }
+
+                Navigator.of(dialogCtx).pop(
+                  _LocaleItem(code: code, name: name, enabled: true, sort: 0),
+                );
+              },
+              child: const Text('新增'),
+            ),
+          ],
+        );
+      },
+    );
+
+    codeCtrl.dispose();
+    nameCtrl.dispose();
+    return res;
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const SafeArea(child: Center(child: CircularProgressIndicator()));
-    }
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _ref.snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('語言管理')),
+            body: Center(
+              child: Text(
+                '讀取失敗：${snap.error}',
+                style: const TextStyle(color: Colors.red),
+              ),
+            ),
+          );
+        }
+        if (!snap.hasData) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('語言管理')),
+            body: const Center(child: CircularProgressIndicator()),
+          );
+        }
 
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 14,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              const Text('編輯語系', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _codeCtrl,
-                decoration: const InputDecoration(labelText: '語系代碼 (zh-TW, en...)', border: OutlineInputBorder()),
+        final data = snap.data!.data() ?? <String, dynamic>{};
+        final defaultLocale = (data['defaultLocale'] ?? 'zh_TW')
+            .toString()
+            .trim();
+
+        final raw = (data['supportedLocales'] as List?) ?? const [];
+        final items = raw
+            .whereType<Map>()
+            .map((m) => _LocaleItem.fromMap(m.cast<String, dynamic>()))
+            .toList();
+
+        if (items.isEmpty) {
+          items.addAll([
+            _LocaleItem(code: 'zh_TW', name: '繁體中文', enabled: true, sort: 0),
+            _LocaleItem(code: 'en', name: 'English', enabled: true, sort: 10),
+          ]);
+        }
+
+        items.sort((a, b) => a.sort.compareTo(b.sort));
+
+        String currentDefault = defaultLocale;
+        if (!items.any((e) => e.code == currentDefault)) {
+          currentDefault = items.first.code;
+        }
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('語言管理'),
+            actions: [
+              IconButton(
+                tooltip: '新增語言',
+                onPressed: _busy
+                    ? null
+                    : () async {
+                        final messenger = ScaffoldMessenger.of(context);
+
+                        final added = await _openAddDialog();
+                        if (added == null) return;
+
+                        if (items.any((e) => e.code == added.code)) {
+                          if (!mounted) return;
+                          messenger.showSnackBar(
+                            SnackBar(content: Text('已存在語言代碼：${added.code}')),
+                          );
+                          return;
+                        }
+
+                        final nextSort = (items.isEmpty
+                            ? 0
+                            : items.last.sort + 10);
+                        final newItems = [
+                          ...items,
+                          added.copyWith(sort: nextSort),
+                        ];
+
+                        await _save(
+                          defaultLocale: currentDefault,
+                          supported: _rebuildSort(
+                            newItems,
+                          ).map((e) => e.toMap()).toList(),
+                        );
+                      },
+                icon: const Icon(Icons.add),
               ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _nameCtrl,
-                decoration: const InputDecoration(labelText: '名稱', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Text('旗幟', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const Spacer(),
-                  OutlinedButton.icon(
-                    onPressed: _saving ? null : _pickAndUploadFlag,
-                    icon: const Icon(Icons.image_outlined),
-                    label: Text(_flagUrl.isEmpty ? '上傳' : '替換'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (_flagUrl.isNotEmpty)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.network(_flagUrl, height: 60),
-                ),
-              const SizedBox(height: 10),
-              SwitchListTile(
-                value: _active,
-                onChanged: (v) => setState(() => _active = v),
-                title: const Text('啟用'),
-              ),
-              SwitchListTile(
-                value: _default,
-                onChanged: (v) => setState(() => _default = v),
-                title: const Text('預設語系'),
-              ),
-              FilledButton.icon(
-                onPressed: _saving ? null : _save,
-                icon: const Icon(Icons.save),
-                label: const Text('儲存'),
-              ),
+              const SizedBox(width: 8),
             ],
           ),
-        ),
-      ),
+          body: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Card(
+                elevation: 0.7,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '預設語言',
+                        style: TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String>(
+                        // ✅ FIX: value deprecated -> initialValue
+                        initialValue: currentDefault,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        items: items
+                            .where((e) => e.enabled)
+                            .map(
+                              (e) => DropdownMenuItem(
+                                value: e.code,
+                                child: Text('${e.name} (${e.code})'),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: _busy
+                            ? null
+                            : (v) async {
+                                final next = v ?? currentDefault;
+                                await _save(
+                                  defaultLocale: next,
+                                  supported: _rebuildSort(
+                                    items,
+                                  ).map((e) => e.toMap()).toList(),
+                                );
+                              },
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '只有「啟用」的語言才能設為預設語言',
+                        style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '支援語言清單（可拖曳排序）',
+                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+              ),
+              const SizedBox(height: 8),
+              Card(
+                elevation: 0.6,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: ReorderableListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: items.length,
+                  onReorder: _busy
+                      ? (_, __) {}
+                      : (oldIndex, newIndex) async {
+                          if (newIndex > oldIndex) newIndex -= 1;
+                          final list = [...items];
+                          final moved = list.removeAt(oldIndex);
+                          list.insert(newIndex, moved);
+
+                          final normalized = _rebuildSort(list);
+                          await _save(
+                            defaultLocale: currentDefault,
+                            supported: normalized
+                                .map((e) => e.toMap())
+                                .toList(),
+                          );
+                        },
+                  itemBuilder: (context, i) {
+                    final it = items[i];
+                    return ListTile(
+                      key: ValueKey(it.code),
+                      leading: ReorderableDragStartListener(
+                        index: i,
+                        child: const Icon(Icons.drag_handle),
+                      ),
+                      title: Text(
+                        it.name,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      subtitle: Text(it.code),
+                      trailing: Wrap(
+                        spacing: 6,
+                        children: [
+                          Switch(
+                            value: it.enabled,
+                            onChanged: _busy
+                                ? null
+                                : (v) async {
+                                    final list = items
+                                        .map(
+                                          (e) => e.code == it.code
+                                              ? e.copyWith(enabled: v)
+                                              : e,
+                                        )
+                                        .toList();
+
+                                    String nextDefault = currentDefault;
+                                    if (!list.any(
+                                      (e) => e.code == nextDefault && e.enabled,
+                                    )) {
+                                      final firstEnabled = list.firstWhere(
+                                        (e) => e.enabled,
+                                        orElse: () =>
+                                            list.first.copyWith(enabled: true),
+                                      );
+                                      nextDefault = firstEnabled.code;
+                                    }
+
+                                    await _save(
+                                      defaultLocale: nextDefault,
+                                      supported: _rebuildSort(
+                                        list,
+                                      ).map((e) => e.toMap()).toList(),
+                                    );
+                                  },
+                          ),
+                          IconButton(
+                            tooltip: '刪除',
+                            onPressed: _busy
+                                ? null
+                                : () async {
+                                    final messenger = ScaffoldMessenger.of(
+                                      context,
+                                    );
+
+                                    final ok = await showDialog<bool>(
+                                      context: context,
+                                      builder: (dialogCtx) => AlertDialog(
+                                        title: const Text('刪除語言'),
+                                        content: Text(
+                                          '確定要刪除 ${it.name} (${it.code})？',
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.of(
+                                              dialogCtx,
+                                            ).pop(false),
+                                            child: const Text('取消'),
+                                          ),
+                                          FilledButton(
+                                            onPressed: () => Navigator.of(
+                                              dialogCtx,
+                                            ).pop(true),
+                                            child: const Text('刪除'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (ok != true) return;
+
+                                    final list = items
+                                        .where((e) => e.code != it.code)
+                                        .toList();
+                                    if (list.isEmpty) {
+                                      if (!mounted) return;
+                                      messenger.showSnackBar(
+                                        const SnackBar(
+                                          content: Text('至少需要保留 1 個語言'),
+                                        ),
+                                      );
+                                      return;
+                                    }
+
+                                    String nextDefault = currentDefault;
+                                    if (!list.any(
+                                      (e) => e.code == nextDefault,
+                                    )) {
+                                      nextDefault = list.first.code;
+                                    }
+
+                                    await _save(
+                                      defaultLocale: nextDefault,
+                                      supported: _rebuildSort(
+                                        list,
+                                      ).map((e) => e.toMap()).toList(),
+                                    );
+                                  },
+                            icon: const Icon(Icons.delete),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
+          ),
+        );
+      },
     );
   }
+}
+
+class _LocaleItem {
+  const _LocaleItem({
+    required this.code,
+    required this.name,
+    required this.enabled,
+    required this.sort,
+  });
+
+  final String code;
+  final String name;
+  final bool enabled;
+  final int sort;
+
+  _LocaleItem copyWith({String? code, String? name, bool? enabled, int? sort}) {
+    return _LocaleItem(
+      code: code ?? this.code,
+      name: name ?? this.name,
+      enabled: enabled ?? this.enabled,
+      sort: sort ?? this.sort,
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+    'code': code,
+    'name': name,
+    'enabled': enabled,
+    'sort': sort,
+  };
+
+  factory _LocaleItem.fromMap(Map<String, dynamic> m) {
+    return _LocaleItem(
+      code: (m['code'] ?? '').toString().trim(),
+      name: (m['name'] ?? '').toString().trim(),
+      enabled: m['enabled'] != false,
+      sort: _toInt(m['sort'], fallback: 0),
+    );
+  }
+}
+
+List<_LocaleItem> _rebuildSort(List<_LocaleItem> list) {
+  final out = <_LocaleItem>[];
+  for (int i = 0; i < list.length; i++) {
+    out.add(list[i].copyWith(sort: i * 10));
+  }
+  return out;
+}
+
+bool _isValidLocaleCode(String code) {
+  if (code.isEmpty) return false;
+  final r = RegExp(r'^[a-z]{2,3}([_-][A-Z]{2})?$');
+  return r.hasMatch(code);
+}
+
+int _toInt(dynamic v, {int fallback = 0}) {
+  if (v == null) return fallback;
+  if (v is int) return v;
+  if (v is double) return v.round();
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v.trim()) ?? fallback;
+  return fallback;
 }

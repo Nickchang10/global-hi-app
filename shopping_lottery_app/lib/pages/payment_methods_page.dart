@@ -51,9 +51,11 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
         if (decoded is List) {
           _items
             ..clear()
-            ..addAll(decoded
-                .whereType<Map>()
-                .map((m) => _CardItem.fromJson(m.cast<String, dynamic>())));
+            ..addAll(
+              decoded.whereType<Map>().map(
+                (m) => _CardItem.fromJson(m.cast<String, dynamic>()),
+              ),
+            );
         }
       } else {
         final parsed = _parseIncoming(widget.cards);
@@ -125,7 +127,8 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
     );
   }
 
-  String _id() => 'card_${DateTime.now().millisecondsSinceEpoch}_${_items.length}';
+  String _id() =>
+      'card_${DateTime.now().millisecondsSinceEpoch}_${_items.length}';
 
   void _select(_CardItem item) {
     if (!widget.selectionMode) return;
@@ -141,11 +144,8 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
-      builder: (_) => _CardEditorSheet(
-        primary: _primary,
-        brand: _brand,
-        initial: editing,
-      ),
+      builder: (_) =>
+          _CardEditorSheet(primary: _primary, brand: _brand, initial: editing),
     );
 
     if (result == null) return;
@@ -156,7 +156,10 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
       } else {
         final idx = _items.indexWhere((e) => e.id == editing.id);
         if (idx != -1) {
-          _items[idx] = result.copyWith(id: editing.id, isDefault: _items[idx].isDefault);
+          _items[idx] = result.copyWith(
+            id: editing.id,
+            isDefault: _items[idx].isDefault,
+          );
         }
       }
 
@@ -192,7 +195,10 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
         title: const Text('刪除付款方式'),
         content: const Text('確定要刪除這張卡片嗎？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(
@@ -224,8 +230,10 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        title: Text(widget.selectionMode ? '選擇付款方式' : '付款方式',
-            style: const TextStyle(fontWeight: FontWeight.w900)),
+        title: Text(
+          widget.selectionMode ? '選擇付款方式' : '付款方式',
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
         centerTitle: true,
         backgroundColor: Colors.white,
         elevation: 0.8,
@@ -240,60 +248,66 @@ class _PaymentMethodsPageState extends State<PaymentMethodsPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _items.isEmpty
-              ? _EmptyState(
-                  icon: Icons.credit_card_off_outlined,
-                  title: '尚無付款方式',
-                  subtitle: '新增一張卡片，結帳更快速。',
-                  buttonText: '新增卡片',
-                  onPressed: () => _openEditor(),
-                  primary: _primary,
-                )
-              : ListView(
-                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 20),
-                  children: [
-                    if (widget.selectionMode)
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(color: Colors.grey.shade200),
+          ? _EmptyState(
+              icon: Icons.credit_card_off_outlined,
+              title: '尚無付款方式',
+              subtitle: '新增一張卡片，結帳更快速。',
+              buttonText: '新增卡片',
+              onPressed: () => _openEditor(),
+              primary: _primary,
+            )
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 20),
+              children: [
+                if (widget.selectionMode)
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: Colors.grey.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.info_outline,
+                          color: _primary.withValues(alpha: 0.9),
                         ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.info_outline, color: _primary.withOpacity(0.9)),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                '點選卡片即可帶回結帳頁（示範）。',
-                                style: TextStyle(color: Colors.grey.shade700),
-                              ),
-                            ),
-                          ],
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            '點選卡片即可帶回結帳頁（示範）。',
+                            style: TextStyle(color: Colors.grey.shade700),
+                          ),
                         ),
-                      ),
-                    const SizedBox(height: 12),
-                    for (final c in _items) ...[
-                      _CardTile(
-                        item: c,
-                        primary: _primary,
-                        brand: _brand,
-                        onTap: () => _select(c),
-                        onSetDefault: () => _setDefault(c.id),
-                        onEdit: () => _openEditor(editing: c),
-                        onDelete: () => _delete(c.id),
-                      ),
-                      const SizedBox(height: 10),
-                    ],
-                    const SizedBox(height: 70),
-                  ],
-                ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                for (final c in _items) ...[
+                  _CardTile(
+                    item: c,
+                    primary: _primary,
+                    brand: _brand,
+                    onTap: () => _select(c),
+                    onSetDefault: () => _setDefault(c.id),
+                    onEdit: () => _openEditor(editing: c),
+                    onDelete: () => _delete(c.id),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                const SizedBox(height: 70),
+              ],
+            ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: _brand,
         foregroundColor: Colors.white,
         onPressed: () => _openEditor(),
         icon: const Icon(Icons.add),
-        label: const Text('新增卡片', style: TextStyle(fontWeight: FontWeight.w900)),
+        label: const Text(
+          '新增卡片',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
       ),
     );
   }
@@ -333,7 +347,8 @@ class _CardTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final exp = '${item.expMonth.toString().padLeft(2, '0')}/${item.expYear.toString().substring(item.expYear.toString().length - 2)}';
+    final exp =
+        '${item.expMonth.toString().padLeft(2, '0')}/${item.expYear.toString().substring(item.expYear.toString().length - 2)}';
     final masked = '••••  ••••  ••••  ${item.last4}';
 
     return InkWell(
@@ -346,7 +361,7 @@ class _CardTile extends StatelessWidget {
           border: Border.all(color: Colors.grey.shade200),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.04),
+              color: Colors.black.withValues(alpha: 0.04),
               blurRadius: 10,
               offset: const Offset(0, 6),
             ),
@@ -362,7 +377,7 @@ class _CardTile extends StatelessWidget {
                     width: 44,
                     height: 44,
                     decoration: BoxDecoration(
-                      color: primary.withOpacity(0.14),
+                      color: primary.withValues(alpha: 0.14),
                       borderRadius: BorderRadius.circular(16),
                     ),
                     child: Icon(_brandIcon(item.brand), color: primary),
@@ -372,24 +387,49 @@ class _CardTile extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(item.brand, style: const TextStyle(fontWeight: FontWeight.w900)),
+                        Text(
+                          item.brand,
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
                         const SizedBox(height: 4),
-                        Text(masked, style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w800)),
+                        Text(
+                          masked,
+                          style: TextStyle(
+                            color: Colors.grey.shade800,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
                         const SizedBox(height: 2),
-                        Text('到期：$exp · 持卡人：${item.holder}',
-                            style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                        Text(
+                          '到期：$exp · 持卡人：${item.holder}',
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: 12,
+                          ),
+                        ),
                       ],
                     ),
                   ),
                   if (item.isDefault)
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: brand.withOpacity(0.14),
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(color: brand.withOpacity(0.25)),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
                       ),
-                      child: Text('預設', style: TextStyle(color: brand, fontWeight: FontWeight.w900)),
+                      decoration: BoxDecoration(
+                        color: brand.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: brand.withValues(alpha: 0.25),
+                        ),
+                      ),
+                      child: Text(
+                        '預設',
+                        style: TextStyle(
+                          color: brand,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
                     ),
                 ],
               ),
@@ -402,8 +442,10 @@ class _CardTile extends StatelessWidget {
                     label: const Text('設為預設'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: primary,
-                      side: BorderSide(color: primary.withOpacity(0.35)),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      side: BorderSide(color: primary.withValues(alpha: 0.35)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
                     ),
                   ),
                   const Spacer(),
@@ -455,7 +497,9 @@ class _CardEditorSheetState extends State<_CardEditorSheet> {
   void initState() {
     super.initState();
     final i = widget.initial;
-    _number = TextEditingController(text: i == null ? '' : '**** **** **** ${i.last4}');
+    _number = TextEditingController(
+      text: i == null ? '' : '**** **** **** ${i.last4}',
+    );
     _holder = TextEditingController(text: i?.holder ?? '');
     _expMonth = TextEditingController(text: (i?.expMonth ?? '').toString());
     _expYear = TextEditingController(text: (i?.expYear ?? '').toString());
@@ -514,10 +558,16 @@ class _CardEditorSheetState extends State<_CardEditorSheet> {
                   Expanded(
                     child: Text(
                       widget.initial == null ? '新增卡片' : '編輯卡片',
-                      style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
                     ),
                   ),
-                  IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
                 ],
               ),
               const SizedBox(height: 10),
@@ -536,7 +586,8 @@ class _CardEditorSheetState extends State<_CardEditorSheet> {
               TextFormField(
                 controller: _holder,
                 decoration: _dec('持卡人姓名', Icons.person_outline),
-                validator: (v) => (v == null || v.trim().isEmpty) ? '請輸入持卡人' : null,
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? '請輸入持卡人' : null,
               ),
               const SizedBox(height: 10),
               Row(
@@ -592,20 +643,29 @@ class _CardEditorSheetState extends State<_CardEditorSheet> {
                     Navigator.pop(context, item);
                   },
                   icon: const Icon(Icons.save_outlined),
-                  label: const Text('儲存', style: TextStyle(fontWeight: FontWeight.w900)),
+                  label: const Text(
+                    '儲存',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: widget.brand,
                     foregroundColor: Colors.white,
                     elevation: 0,
                     padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                   ),
                 ),
               ),
               const SizedBox(height: 8),
               Text(
                 '安全提示：此示範 App 僅保存卡片末四碼與到期日，不保存完整卡號與 CVV。',
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 12, height: 1.2),
+                style: TextStyle(
+                  color: Colors.grey.shade600,
+                  fontSize: 12,
+                  height: 1.2,
+                ),
               ),
             ],
           ),
@@ -648,9 +708,16 @@ class _EmptyState extends StatelessWidget {
           children: [
             Icon(icon, size: 56, color: Colors.grey.shade400),
             const SizedBox(height: 10),
-            Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+            Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+            ),
             const SizedBox(height: 6),
-            Text(subtitle, textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade600)),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey.shade600),
+            ),
             const SizedBox(height: 12),
             ElevatedButton(
               onPressed: onPressed,
@@ -658,9 +725,14 @@ class _EmptyState extends StatelessWidget {
                 backgroundColor: primary,
                 foregroundColor: Colors.white,
                 elevation: 0,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
               ),
-              child: Text(buttonText, style: const TextStyle(fontWeight: FontWeight.w900)),
+              child: Text(
+                buttonText,
+                style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
             ),
           ],
         ),
@@ -713,28 +785,37 @@ class _CardItem {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'brand': brand,
-        'holder': holder,
-        'last4': last4,
-        'expMonth': expMonth,
-        'expYear': expYear,
-        'isDefault': isDefault,
-      };
+    'id': id,
+    'brand': brand,
+    'holder': holder,
+    'last4': last4,
+    'expMonth': expMonth,
+    'expYear': expYear,
+    'isDefault': isDefault,
+  };
 
   factory _CardItem.fromJson(Map<String, dynamic> m) {
     // 兼容常見 key（mock 可能叫 numberLast4/expiryMonth/expiryYear/default）
-    final last4 = (m['last4'] ?? m['numberLast4'] ?? m['last'] ?? '0000').toString();
+    final last4 = (m['last4'] ?? m['numberLast4'] ?? m['last'] ?? '0000')
+        .toString();
     final expMonth = (m['expMonth'] ?? m['expiryMonth'] ?? 12);
-    final expYear = (m['expYear'] ?? m['expiryYear'] ?? (DateTime.now().year + 1));
+    final expYear =
+        (m['expYear'] ?? m['expiryYear'] ?? (DateTime.now().year + 1));
 
     return _CardItem(
-      id: (m['id'] ?? 'card_${DateTime.now().millisecondsSinceEpoch}').toString(),
+      id: (m['id'] ?? 'card_${DateTime.now().millisecondsSinceEpoch}')
+          .toString(),
       brand: (m['brand'] ?? m['type'] ?? 'CARD').toString(),
       holder: (m['holder'] ?? m['name'] ?? 'Card Holder').toString(),
-      last4: last4.length >= 4 ? last4.substring(last4.length - 4) : last4.padLeft(4, '0'),
-      expMonth: (expMonth is int) ? expMonth : int.tryParse(expMonth.toString()) ?? 12,
-      expYear: (expYear is int) ? expYear : int.tryParse(expYear.toString()) ?? (DateTime.now().year + 1),
+      last4: last4.length >= 4
+          ? last4.substring(last4.length - 4)
+          : last4.padLeft(4, '0'),
+      expMonth: (expMonth is int)
+          ? expMonth
+          : int.tryParse(expMonth.toString()) ?? 12,
+      expYear: (expYear is int)
+          ? expYear
+          : int.tryParse(expYear.toString()) ?? (DateTime.now().year + 1),
       isDefault: (m['isDefault'] == true) || (m['default'] == true),
     );
   }

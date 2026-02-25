@@ -32,16 +32,17 @@ class NotificationsCenterPage extends StatefulWidget {
   const NotificationsCenterPage({super.key});
 
   @override
-  State<NotificationsCenterPage> createState() => _NotificationsCenterPageState();
+  State<NotificationsCenterPage> createState() =>
+      _NotificationsCenterPageState();
 }
 
 class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
   final _db = FirebaseFirestore.instance;
+
   String _q = '';
   bool? _isRead; // null=全部, false=未讀, true=已讀
   String _type = 'all'; // all / announcement / order / ...
   bool _working = false;
-  String? _selectedId;
 
   // ------------------------------------------------------------
   // 🔹 Utilities
@@ -51,10 +52,16 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
 
   DateTime? _toDate(dynamic v) {
     try {
-      if (v is Timestamp) return v.toDate();
-      if (v is DateTime) return v;
+      if (v is Timestamp) {
+        return v.toDate();
+      }
+      if (v is DateTime) {
+        return v;
+      }
       if (v is int) {
-        if (v < 10000000000) return DateTime.fromMillisecondsSinceEpoch(v * 1000);
+        if (v < 10000000000) {
+          return DateTime.fromMillisecondsSinceEpoch(v * 1000);
+        }
         return DateTime.fromMillisecondsSinceEpoch(v);
       }
     } catch (_) {}
@@ -62,13 +69,17 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
   }
 
   String _fmt(DateTime? d) {
-    if (d == null) return '-';
+    if (d == null) {
+      return '-';
+    }
     String two(int n) => n.toString().padLeft(2, '0');
     return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
   }
 
   void _snack(String msg) {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
     );
@@ -76,7 +87,9 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
 
   Future<void> _copy(String text, {String done = '已複製'}) async {
     final t = text.trim();
-    if (t.isEmpty) return;
+    if (t.isEmpty) {
+      return;
+    }
     await Clipboard.setData(ClipboardData(text: t));
     _snack(done);
   }
@@ -95,16 +108,22 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
   }
 
   bool _match(String id, Map<String, dynamic> d) {
-    if (_isRead != null && _b(d['isRead']) != _isRead) return false;
+    if (_isRead != null && _b(d['isRead']) != _isRead) {
+      return false;
+    }
 
     final t = _type.trim().toLowerCase();
     if (t.isNotEmpty && t != 'all') {
       final docType = _s(d['type']).toLowerCase();
-      if (docType != t) return false;
+      if (docType != t) {
+        return false;
+      }
     }
 
     final q = _q.trim().toLowerCase();
-    if (q.isEmpty) return true;
+    if (q.isEmpty) {
+      return true;
+    }
 
     final title = _s(d['title']).toLowerCase();
     final body = _s(d['body']).toLowerCase();
@@ -112,7 +131,9 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
     final extra = d['extra'];
     final extraStr = () {
       try {
-        if (extra is Map<String, dynamic>) return jsonEncode(extra).toLowerCase();
+        if (extra is Map<String, dynamic>) {
+          return jsonEncode(extra).toLowerCase();
+        }
         return _s(extra).toLowerCase();
       } catch (_) {
         return '';
@@ -140,38 +161,45 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
           .doc(uid)
           .collection('items')
           .doc(id)
-          .set(
-        <String, dynamic>{
-          'isRead': isRead,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
+          .set(<String, dynamic>{
+            'isRead': isRead,
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
     } catch (e) {
       _snack('操作失敗：$e');
     }
   }
 
-  Future<void> _deleteOne({
-    required String uid,
-    required String id,
-  }) async {
+  Future<void> _deleteOne({required String uid, required String id}) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogCtx) => AlertDialog(
         title: const Text('刪除通知'),
         content: const Text('確定要刪除此通知嗎？（不可復原）'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
-    if (ok != true) return;
+    if (ok != true) {
+      return;
+    }
+
     try {
-      await _db.collection('notifications').doc(uid).collection('items').doc(id).delete();
+      await _db
+          .collection('notifications')
+          .doc(uid)
+          .collection('items')
+          .doc(id)
+          .delete();
       _snack('已刪除');
-      if (mounted && _selectedId == id) setState(() => _selectedId = null);
     } catch (e) {
       _snack('刪除失敗：$e');
     }
@@ -181,7 +209,9 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
     required String uid,
     required List<_NotifRow> rows,
   }) async {
-    if (_working) return;
+    if (_working) {
+      return;
+    }
     setState(() => _working = true);
     try {
       final targets = rows.where((r) => !_b(r.data['isRead'])).toList();
@@ -189,24 +219,36 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
         _snack('沒有未讀通知');
         return;
       }
+
       const page = 450;
       int idx = 0;
       while (idx < targets.length) {
         final chunk = targets.skip(idx).take(page).toList();
         final batch = _db.batch();
+
         for (final r in chunk) {
-          final ref = _db.collection('notifications').doc(uid).collection('items').doc(r.id);
-          batch.set(ref, {'isRead': true, 'updatedAt': FieldValue.serverTimestamp()},
-              SetOptions(merge: true));
+          final ref = _db
+              .collection('notifications')
+              .doc(uid)
+              .collection('items')
+              .doc(r.id);
+          batch.set(ref, <String, dynamic>{
+            'isRead': true,
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
         }
+
         await batch.commit();
         idx += chunk.length;
       }
+
       _snack('已標記 ${targets.length} 則為已讀');
     } catch (e) {
       _snack('批次操作失敗：$e');
     } finally {
-      if (mounted) setState(() => _working = false);
+      if (mounted) {
+        setState(() => _working = false);
+      }
     }
   }
 
@@ -214,24 +256,37 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
     required String uid,
     required List<_NotifRow> rows,
   }) async {
-    if (_working) return;
+    if (_working) {
+      return;
+    }
+
     final targets = rows.where((r) => _b(r.data['isRead'])).toList();
     if (targets.isEmpty) {
       _snack('沒有已讀通知可刪除');
       return;
     }
+
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogCtx) => AlertDialog(
         title: const Text('刪除已讀通知'),
         content: Text('確定要刪除 ${targets.length} 則已讀通知嗎？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
-    if (ok != true) return;
+    if (ok != true) {
+      return;
+    }
+
     setState(() => _working = true);
     try {
       const page = 450;
@@ -239,19 +294,27 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
       while (idx < targets.length) {
         final chunk = targets.skip(idx).take(page).toList();
         final batch = _db.batch();
+
         for (final r in chunk) {
-          final ref = _db.collection('notifications').doc(uid).collection('items').doc(r.id);
+          final ref = _db
+              .collection('notifications')
+              .doc(uid)
+              .collection('items')
+              .doc(r.id);
           batch.delete(ref);
         }
+
         await batch.commit();
         idx += chunk.length;
       }
+
       _snack('已刪除 ${targets.length} 則已讀通知');
-      if (mounted) setState(() => _selectedId = null);
     } catch (e) {
       _snack('批次刪除失敗：$e');
     } finally {
-      if (mounted) setState(() => _working = false);
+      if (mounted) {
+        setState(() => _working = false);
+      }
     }
   }
 
@@ -264,14 +327,18 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, authSnap) {
         final user = authSnap.data;
+
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
         if (user == null) {
           return const Scaffold(body: Center(child: Text('請先登入')));
         }
 
         final uid = user.uid;
+
         return Scaffold(
           appBar: AppBar(
             title: const Text('通知中心'),
@@ -318,18 +385,23 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
               if (!snap.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
+
               final docs = snap.data!.docs;
               final rows = docs
                   .map((d) => _NotifRow(id: d.id, data: d.data()))
                   .where((r) => _match(r.id, r.data))
                   .toList();
 
-              final unreadCount = rows.where((r) => !_b(r.data['isRead'])).length;
+              final unreadCount = rows
+                  .where((r) => !_b(r.data['isRead']))
+                  .length;
 
               final types = <String>{'all'};
               for (final r in docs) {
                 final t = _s(r.data()['type']).toLowerCase();
-                if (t.isNotEmpty) types.add(t);
+                if (t.isNotEmpty) {
+                  types.add(t);
+                }
               }
               final typeList = types.toList()..sort();
 
@@ -356,7 +428,10 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
                         DropdownButton<String>(
                           value: _type,
                           items: typeList
-                              .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                              .map(
+                                (t) =>
+                                    DropdownMenuItem(value: t, child: Text(t)),
+                              )
                               .toList(),
                           onChanged: (v) => setState(() => _type = v ?? 'all'),
                         ),
@@ -379,15 +454,18 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
                         ? const Center(child: Text('目前沒有通知'))
                         : ListView.separated(
                             itemCount: rows.length,
-                            separatorBuilder: (_, __) => const Divider(height: 1),
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1),
                             itemBuilder: (_, i) {
                               final r = rows[i];
                               final d = r.data;
+
                               final title = _s(d['title']);
                               final body = _s(d['body']);
                               final type = _s(d['type']);
                               final isRead = _b(d['isRead']);
                               final createdAt = _fmt(_toDate(d['createdAt']));
+
                               return ListTile(
                                 leading: Icon(
                                   isRead
@@ -398,8 +476,9 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
                                 title: Text(
                                   title.isEmpty ? '(未命名通知)' : title,
                                   style: TextStyle(
-                                    fontWeight:
-                                        isRead ? FontWeight.normal : FontWeight.bold,
+                                    fontWeight: isRead
+                                        ? FontWeight.normal
+                                        : FontWeight.bold,
                                   ),
                                 ),
                                 subtitle: Text(
@@ -408,27 +487,45 @@ class _NotificationsCenterPageState extends State<NotificationsCenterPage> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                                 onTap: () async {
-                                  await _setRead(uid: uid, id: r.id, isRead: true);
-                                  showDialog(
+                                  await _setRead(
+                                    uid: uid,
+                                    id: r.id,
+                                    isRead: true,
+                                  );
+
+                                  // ✅ 正解：用 context.mounted 來 guard BuildContext
+                                  if (!context.mounted) {
+                                    return;
+                                  }
+
+                                  await showDialog<void>(
                                     context: context,
-                                    builder: (_) => AlertDialog(
-                                      title: Text(title),
-                                      content: Text(body.isEmpty ? '(無內容)' : body),
+                                    builder: (dialogCtx) => AlertDialog(
+                                      title: Text(title.isEmpty ? '通知' : title),
+                                      content: Text(
+                                        body.isEmpty ? '(無內容)' : body,
+                                      ),
                                       actions: [
                                         TextButton(
-                                            onPressed: () => Navigator.pop(context),
-                                            child: const Text('關閉')),
+                                          onPressed: () =>
+                                              Navigator.pop(dialogCtx),
+                                          child: const Text('關閉'),
+                                        ),
                                         TextButton(
-                                            onPressed: () =>
-                                                _copy(jsonEncode(d), done: 'JSON 已複製'),
-                                            child: const Text('複製 JSON')),
+                                          onPressed: () => _copy(
+                                            jsonEncode(d),
+                                            done: 'JSON 已複製',
+                                          ),
+                                          child: const Text('複製 JSON'),
+                                        ),
                                       ],
                                     ),
                                   );
                                 },
                                 trailing: IconButton(
                                   icon: const Icon(Icons.delete_outline),
-                                  onPressed: () => _deleteOne(uid: uid, id: r.id),
+                                  onPressed: () =>
+                                      _deleteOne(uid: uid, id: r.id),
                                 ),
                               );
                             },

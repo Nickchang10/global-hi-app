@@ -26,6 +26,14 @@
 // - 快速啟用/停用（單筆 + 批次）
 // - 庫存調整（單筆 + 批次歸零）
 // ------------------------------------------------------------
+//
+// ✅ 本版修正：
+// - 修正 lint：avoid_types_as_parameter_names（fold accumulator 改名 total）
+// - 修正 lint：unnecessary_string_interpolations（移除多餘插值）
+// - 修正 lint：use_build_context_synchronously
+//   - showDialog await 後先檢查 mounted
+//   - _VariantEditDialog.resultOf() 移除 context 依賴（直接讀 static store）
+//
 
 import 'dart:math' as math;
 
@@ -68,7 +76,9 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
   @override
   void initState() {
     super.initState();
-    _productId = widget.productId?.trim().isEmpty == true ? null : widget.productId?.trim();
+    _productId = widget.productId?.trim().isEmpty == true
+        ? null
+        : widget.productId?.trim();
     _load();
   }
 
@@ -119,6 +129,7 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
           .orderBy('createdAt', descending: false)
           .get();
 
+      if (!mounted) return;
       setState(() {
         _productDoc = p;
         _basePrice = base;
@@ -155,10 +166,7 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
     final batch = _db.batch();
     for (int i = 0; i < _variants.length; i++) {
       final ref = _variants[i].reference;
-      batch.update(ref, {
-        'sort': i,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      batch.update(ref, {'sort': i, 'updatedAt': FieldValue.serverTimestamp()});
     }
     await batch.commit();
 
@@ -191,7 +199,10 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
     if (_error != null) {
       return Scaffold(
         appBar: AppBar(
-          title: const Text('商品規格管理', style: TextStyle(fontWeight: FontWeight.w900)),
+          title: const Text(
+            '商品規格管理',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
           actions: [
             IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
           ],
@@ -200,7 +211,8 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
           title: '載入失敗',
           message: _error!,
           onRetry: _load,
-          hint: '常見原因：Firestore 權限不足、products/variants 欄位結構不同、缺少必要欄位（例如 name/stock）。',
+          hint:
+              '常見原因：Firestore 權限不足、products/variants 欄位結構不同、缺少必要欄位（例如 name/stock）。',
         ),
       );
     }
@@ -209,23 +221,36 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
     if (_productId == null) {
       return _ProductPicker(
         onPicked: (id) async {
+          if (!mounted) return;
           setState(() => _productId = id);
           await _load();
         },
       );
     }
 
-    final pname = (_productDoc?.data()?['name'] ?? _productDoc?.data()?['title'] ?? '商品').toString();
+    final pname =
+        (_productDoc?.data()?['name'] ?? _productDoc?.data()?['title'] ?? '商品')
+            .toString();
     final fmtMoney = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
 
     final filtered = _filteredVariants();
 
-    final activeCount = _variants.where((v) => _readBool(v.data()['isActive'], fallback: true)).length;
-    final stockSum = _variants.fold<int>(0, (sum, v) => sum + _readInt(v.data()['stock'], 0));
+    final activeCount = _variants
+        .where((v) => _readBool(v.data()['isActive'], fallback: true))
+        .length;
+
+    // ✅ 修正：避免 lint（avoid_types_as_parameter_names）
+    final stockSum = _variants.fold<int>(
+      0,
+      (total, v) => total + _readInt(v.data()['stock'], 0),
+    );
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('商品規格管理｜$pname', style: const TextStyle(fontWeight: FontWeight.w900)),
+        title: Text(
+          '商品規格管理｜$pname',
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
             tooltip: '重新整理',
@@ -239,7 +264,7 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
           ),
           PopupMenuButton<String>(
             tooltip: '批次操作',
-            onSelected: (v) => _handleBatchAction(v),
+            onSelected: _handleBatchAction,
             itemBuilder: (_) => const [
               PopupMenuItem(value: 'enable_all', child: Text('全部啟用')),
               PopupMenuItem(value: 'disable_all', child: Text('全部停用')),
@@ -262,10 +287,8 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
               stockSum: stockSum,
             ),
             const SizedBox(height: 12),
-
             _toolbar(),
             const SizedBox(height: 12),
-
             if (_variants.isEmpty)
               const Card(
                 child: Padding(
@@ -282,7 +305,6 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
               )
             else
               _variantsList(filtered, fmtMoney),
-
             const SizedBox(height: 40),
           ],
         ),
@@ -303,21 +325,27 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(productName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+            Text(
+              productName,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+            ),
             const SizedBox(height: 6),
-            Text('基礎價格：$basePriceText', style: const TextStyle(color: Colors.black54)),
+            Text(
+              '基礎價格：$basePriceText',
+              style: const TextStyle(color: Colors.black54),
+            ),
             const SizedBox(height: 12),
             Row(
               children: [
-                _statChip('規格數', '$variantCount'),
+                _statChip('規格數', variantCount.toString()),
                 const SizedBox(width: 8),
-                _statChip('啟用中', '$activeCount'),
+                _statChip('啟用中', activeCount.toString()),
                 const SizedBox(width: 8),
-                _statChip('總庫存', '$stockSum'),
+                _statChip('總庫存', stockSum.toString()),
                 const Spacer(),
                 TextButton.icon(
                   onPressed: () async {
-                    // 回到商品選擇
+                    if (!mounted) return;
                     setState(() => _productId = null);
                     await _load();
                   },
@@ -325,7 +353,7 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
                   label: const Text('切換商品'),
                 ),
               ],
-            )
+            ),
           ],
         ),
       ),
@@ -339,7 +367,10 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
         borderRadius: BorderRadius.circular(999),
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
       ),
-      child: Text('$title：$value', style: const TextStyle(fontWeight: FontWeight.w800)),
+      child: Text(
+        '$title：$value',
+        style: const TextStyle(fontWeight: FontWeight.w800),
+      ),
     );
   }
 
@@ -358,7 +389,9 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
                   prefixIcon: const Icon(Icons.search),
                   hintText: '搜尋：名稱 / SKU / 屬性（color,size...）',
                   isDense: true,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
               ),
             ),
@@ -374,9 +407,10 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
     );
   }
 
-  Widget _variantsList(List<QueryDocumentSnapshot<Map<String, dynamic>>> list, NumberFormat fmtMoney) {
-    // ReorderableListView 需要以當前顯示順序操作，所以我們用 list 作為 UI 列表
-    // 但重排完成後要回寫全量 sort（以 _variants 為準），因此我們在 reorder 後同步回 _variants。
+  Widget _variantsList(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> list,
+    NumberFormat fmtMoney,
+  ) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
@@ -384,7 +418,8 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           itemCount: list.length,
-          onReorder: (oldIndex, newIndex) => _onReorder(oldIndex, newIndex, list),
+          onReorder: (oldIndex, newIndex) =>
+              _onReorder(oldIndex, newIndex, list),
           itemBuilder: (context, index) {
             final doc = list[index];
             final data = doc.data();
@@ -415,21 +450,29 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Text(priceText, style: const TextStyle(fontWeight: FontWeight.w800)),
+                    Text(
+                      priceText,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
                   ],
                 ),
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    if (sku.isNotEmpty) Text('SKU：$sku', style: const TextStyle(color: Colors.black54)),
+                    if (sku.isNotEmpty)
+                      Text(
+                        'SKU：$sku',
+                        style: const TextStyle(color: Colors.black54),
+                      ),
                     const SizedBox(height: 6),
                     Wrap(
                       spacing: 6,
                       runSpacing: 6,
                       children: [
+                        // ✅ 修正：移除不必要的字串插值
                         for (final e in attrs.entries)
-                          _attrChip('${e.key}', '${e.value}'),
-                        _attrChip('stock', '$stock'),
+                          _attrChip(e.key.toString(), e.value.toString()),
+                        _attrChip('stock', stock.toString()),
                       ],
                     ),
                   ],
@@ -469,7 +512,10 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
       ),
-      child: Text('$k:$v', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+      child: Text(
+        '$k:$v',
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+      ),
     );
   }
 
@@ -489,7 +535,10 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
       final name = (d['name'] ?? '').toString().toLowerCase();
       final sku = (d['sku'] ?? '').toString().toLowerCase();
       final attrs = _readMap(d['attrs']);
-      final attrsText = attrs.entries.map((e) => '${e.key}:${e.value}').join(' ').toLowerCase();
+      final attrsText = attrs.entries
+          .map((e) => '${e.key}:${e.value}')
+          .join(' ')
+          .toLowerCase();
 
       return name.contains(q) || sku.contains(q) || attrsText.contains(q);
     }).toList();
@@ -505,17 +554,13 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
   ) async {
     if (_productId == null) return;
 
-    // ReorderableListView 的 newIndex 需要修正
     if (newIndex > oldIndex) newIndex -= 1;
     if (oldIndex < 0 || oldIndex >= visibleList.length) return;
     if (newIndex < 0 || newIndex >= visibleList.length) return;
 
-    // 只重排「可見清單」會造成 sort 與全量不一致；
-    // 簡化規則：重排以「全量 _variants」為準（按 docId 對應），並以可見清單移動順序同步到全量。
     final moving = visibleList.removeAt(oldIndex);
     visibleList.insert(newIndex, moving);
 
-    // 把可見順序映射回全量排序（把可見項目按順序提到前面，其餘維持原相對順序）
     final visibleIds = visibleList.map((e) => e.id).toSet();
     final rest = _variants.where((v) => !visibleIds.contains(v.id)).toList();
 
@@ -524,9 +569,9 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
       ...rest,
     ];
 
+    if (!mounted) return;
     setState(() => _variants = newAll);
 
-    // 回寫 sort
     await _persistOrder();
   }
 
@@ -544,12 +589,15 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
       }
       await batch.commit();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('排序已更新')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('排序已更新')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新排序失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新排序失敗：$e')));
     } finally {
-      // 重新讀一次避免排序/快取差異
       await _reloadVariantsOnly();
     }
   }
@@ -557,7 +605,10 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
   // ============================================================
   // Row actions
   // ============================================================
-  Future<void> _handleRowAction(String action, QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _handleRowAction(
+    String action,
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     switch (action) {
       case 'edit':
         await _openEditDialogEdit(doc);
@@ -571,7 +622,10 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
     }
   }
 
-  Future<void> _setVariantActive(QueryDocumentSnapshot<Map<String, dynamic>> doc, bool v) async {
+  Future<void> _setVariantActive(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+    bool v,
+  ) async {
     try {
       await doc.reference.update({
         'isActive': v,
@@ -580,11 +634,15 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
       await _reloadVariantsOnly();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新啟用狀態失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新啟用狀態失敗：$e')));
     }
   }
 
-  Future<void> _adjustStock(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _adjustStock(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     final data = doc.data();
     final name = (data['name'] ?? '規格').toString();
     final current = _readInt(data['stock'], 0);
@@ -600,8 +658,14 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
           decoration: const InputDecoration(labelText: '庫存數量（整數）'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('更新')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('更新'),
+          ),
         ],
       ),
     );
@@ -617,14 +681,20 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
       });
       await _reloadVariantsOnly();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('庫存已更新：$newStock')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('庫存已更新：$newStock')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新庫存失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新庫存失敗：$e')));
     }
   }
 
-  Future<void> _deleteVariant(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _deleteVariant(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     final name = (doc.data()['name'] ?? '規格').toString();
 
     final ok = await showDialog<bool>(
@@ -633,10 +703,15 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
         title: const Text('確認刪除'),
         content: Text('確定要刪除規格「$name」？此操作不可復原。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
             child: const Text('刪除'),
           ),
         ],
@@ -648,12 +723,16 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
     try {
       await doc.reference.delete();
       await _reloadVariantsOnly();
-      await _ensureSortIndexes(); // 刪除後補齊 sort
+      await _ensureSortIndexes();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刪除')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已刪除')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
     }
   }
 
@@ -671,8 +750,14 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
           title: Text(title),
           content: Text(msg),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('確認')),
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('確認'),
+            ),
           ],
         ),
       );
@@ -686,12 +771,17 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
 
         final batch = _db.batch();
         for (final v in _variants) {
-          batch.update(v.reference, {'isActive': true, 'updatedAt': FieldValue.serverTimestamp()});
+          batch.update(v.reference, {
+            'isActive': true,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
         }
         await batch.commit();
         await _reloadVariantsOnly();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已全部啟用')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已全部啟用')));
       }
 
       if (action == 'disable_all') {
@@ -700,12 +790,17 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
 
         final batch = _db.batch();
         for (final v in _variants) {
-          batch.update(v.reference, {'isActive': false, 'updatedAt': FieldValue.serverTimestamp()});
+          batch.update(v.reference, {
+            'isActive': false,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
         }
         await batch.commit();
         await _reloadVariantsOnly();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已全部停用')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已全部停用')));
       }
 
       if (action == 'stock_zero') {
@@ -714,16 +809,23 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
 
         final batch = _db.batch();
         for (final v in _variants) {
-          batch.update(v.reference, {'stock': 0, 'updatedAt': FieldValue.serverTimestamp()});
+          batch.update(v.reference, {
+            'stock': 0,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
         }
         await batch.commit();
         await _reloadVariantsOnly();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已全部庫存歸零')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已全部庫存歸零')));
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('批次操作失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('批次操作失敗：$e')));
     }
   }
 
@@ -743,12 +845,17 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
       ),
     );
 
+    // ✅ 修正：跨 async gap 先檢查 mounted，且 resultOf 不用 context
+    if (!mounted) return;
+
     if (created == true) {
-      await _createVariantFromDialog(_VariantEditDialog.resultOf(context));
+      await _createVariantFromDialog(_VariantEditDialog.resultOf());
     }
   }
 
-  Future<void> _openEditDialogEdit(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _openEditDialogEdit(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     final initial = doc.data();
 
     final updated = await showDialog<bool>(
@@ -761,8 +868,11 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
       ),
     );
 
+    // ✅ 修正：跨 async gap 先檢查 mounted，且 resultOf 不用 context
+    if (!mounted) return;
+
     if (updated == true) {
-      await _updateVariantFromDialog(doc, _VariantEditDialog.resultOf(context));
+      await _updateVariantFromDialog(doc, _VariantEditDialog.resultOf());
     }
   }
 
@@ -773,19 +883,27 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
     try {
       final nextSort = _variants.length;
 
-      await _db.collection('products').doc(_productId).collection('variants').add({
-        ...payload,
-        'sort': nextSort,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await _db
+          .collection('products')
+          .doc(_productId)
+          .collection('variants')
+          .add({
+            ...payload,
+            'sort': nextSort,
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
 
       await _reloadVariantsOnly();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已新增規格')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已新增規格')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('新增失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('新增失敗：$e')));
     }
   }
 
@@ -803,10 +921,14 @@ class _AdminVariantsPageState extends State<AdminVariantsPage> {
 
       await _reloadVariantsOnly();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已更新規格')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已更新規格')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
@@ -891,11 +1013,13 @@ class _ProductPickerState extends State<_ProductPicker> {
 
     try {
       final snap = await _db.collection('products').orderBy('name').get();
+      if (!mounted) return;
       setState(() {
         _products = snap.docs;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = e.toString();
         _loading = false;
@@ -930,7 +1054,10 @@ class _ProductPickerState extends State<_ProductPicker> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('選擇商品', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '選擇商品',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
         ],
@@ -947,7 +1074,9 @@ class _ProductPickerState extends State<_ProductPicker> {
                 prefixIcon: const Icon(Icons.search),
                 hintText: '搜尋商品',
                 isDense: true,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
             ),
             const SizedBox(height: 12),
@@ -967,7 +1096,10 @@ class _ProductPickerState extends State<_ProductPicker> {
                 return Card(
                   child: ListTile(
                     leading: _productImage(d),
-                    title: Text(name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                    title: Text(
+                      name,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
                     subtitle: Text('價格：$price'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => widget.onPicked(p.id),
@@ -1010,15 +1142,9 @@ class _VariantEditDialog extends StatefulWidget {
     required this.initial,
   });
 
-  /// Dialog 關閉後，透過 Navigator 的 context 讀回暫存 result
-  static Map<String, dynamic>? resultOf(BuildContext context) {
-    final route = ModalRoute.of(context);
-    if (route is PopupRoute) {
-      // 無法穩定取得，改用 static 暫存（避免你專案到處改）
-      return _VariantEditDialogResultStore.value;
-    }
-    return _VariantEditDialogResultStore.value;
-  }
+  /// ✅ 修正：不需要 BuildContext（避免 async gap lint）
+  static Map<String, dynamic>? resultOf() =>
+      _VariantEditDialogResultStore.value;
 
   @override
   State<_VariantEditDialog> createState() => _VariantEditDialogState();
@@ -1052,12 +1178,13 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
     _size = TextEditingController(text: (attrs['size'] ?? '').toString());
 
     _priceOverride = TextEditingController(text: _stringOrEmpty(init['price']));
-    _priceDelta = TextEditingController(text: _stringOrEmpty(init['priceDelta']));
+    _priceDelta = TextEditingController(
+      text: _stringOrEmpty(init['priceDelta']),
+    );
     _stock = TextEditingController(text: (init['stock'] ?? 0).toString());
 
     _isActive = _readBool(init['isActive'], fallback: true);
 
-    // extra attrs：排除 color/size
     final extras = <String, dynamic>{...attrs};
     extras.remove('color');
     extras.remove('size');
@@ -1082,11 +1209,13 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
     final cs = Theme.of(context).colorScheme;
     final fmtMoney = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
 
-    final previewPrice = _previewFinalPrice();
-    final previewText = fmtMoney.format(previewPrice);
+    final previewText = fmtMoney.format(_previewFinalPrice());
 
     return AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontWeight: FontWeight.w900)),
+      title: Text(
+        widget.title,
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
         child: Form(
@@ -1096,39 +1225,48 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
               children: [
                 _tipCard(cs, '價格規則：price（覆蓋） > basePrice + priceDelta（加價/減價）'),
                 const SizedBox(height: 10),
-
                 TextFormField(
                   controller: _name,
-                  decoration: const InputDecoration(labelText: '規格名稱（必填）', border: OutlineInputBorder()),
-                  validator: (v) => (v == null || v.trim().isEmpty) ? '請輸入規格名稱' : null,
+                  decoration: const InputDecoration(
+                    labelText: '規格名稱（必填）',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? '請輸入規格名稱' : null,
                 ),
                 const SizedBox(height: 10),
-
                 TextFormField(
                   controller: _sku,
-                  decoration: const InputDecoration(labelText: 'SKU（選填）', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                    labelText: 'SKU（選填）',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
                 const SizedBox(height: 10),
-
                 Row(
                   children: [
                     Expanded(
                       child: TextFormField(
                         controller: _color,
-                        decoration: const InputDecoration(labelText: '顏色（color）', border: OutlineInputBorder()),
+                        decoration: const InputDecoration(
+                          labelText: '顏色（color）',
+                          border: OutlineInputBorder(),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: TextFormField(
                         controller: _size,
-                        decoration: const InputDecoration(labelText: '尺寸（size）', border: OutlineInputBorder()),
+                        decoration: const InputDecoration(
+                          labelText: '尺寸（size）',
+                          border: OutlineInputBorder(),
+                        ),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 10),
-
                 Row(
                   children: [
                     Expanded(
@@ -1155,11 +1293,13 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
                   ],
                 ),
                 const SizedBox(height: 10),
-
                 TextFormField(
                   controller: _stock,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: '庫存 stock（必填，整數）', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                    labelText: '庫存 stock（必填，整數）',
+                    border: OutlineInputBorder(),
+                  ),
                   validator: (v) {
                     final n = int.tryParse((v ?? '').trim());
                     if (n == null) return '請輸入整數';
@@ -1168,7 +1308,6 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
                   },
                 ),
                 const SizedBox(height: 10),
-
                 SwitchListTile(
                   value: _isActive,
                   onChanged: (v) => setState(() => _isActive = v),
@@ -1176,7 +1315,6 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
                   contentPadding: EdgeInsets.zero,
                 ),
                 const SizedBox(height: 10),
-
                 TextFormField(
                   controller: _extraAttrs,
                   minLines: 3,
@@ -1188,10 +1326,15 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
                   ),
                 ),
                 const SizedBox(height: 12),
-
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: Text('預估顯示價格：$previewText', style: TextStyle(color: cs.primary, fontWeight: FontWeight.w900)),
+                  child: Text(
+                    '預估顯示價格：$previewText',
+                    style: TextStyle(
+                      color: cs.primary,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -1199,7 +1342,10 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('取消'),
+        ),
         FilledButton.icon(
           onPressed: _submit,
           icon: const Icon(Icons.check),
@@ -1217,7 +1363,14 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
         color: cs.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Text(text, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12, fontWeight: FontWeight.w700)),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: cs.onSurfaceVariant,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
     );
   }
 
@@ -1241,7 +1394,6 @@ class _VariantEditDialogState extends State<_VariantEditDialog> {
       'isActive': _isActive,
     };
 
-    // price / priceDelta
     final p = num.tryParse(_priceOverride.text.trim());
     final d = num.tryParse(_priceDelta.text.trim());
     if (p != null) {
@@ -1348,7 +1500,13 @@ class _ErrorView extends StatelessWidget {
                 children: [
                   Icon(Icons.error_outline, size: 44, color: cs.error),
                   const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                   const SizedBox(height: 10),
                   Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
                   if (hint != null) ...[

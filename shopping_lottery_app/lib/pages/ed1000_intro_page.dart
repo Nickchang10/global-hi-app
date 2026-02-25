@@ -1,341 +1,350 @@
+// lib/pages/ed1000_intro_page.dart
+//
+// ✅ ED1000 產品介紹頁（修正版｜完整版｜可編譯）
+// - ✅ 修正：移除 withOpacity（deprecated）→ 改用 withValues(alpha: ...)
+// - ✅ 修正：_Feature / _Scenario 列表改 const（解 prefer_const_constructors）
+// - ✅ 保留：GoogleFonts.getFont('Noto Sans TC', ...) 相容寫法
+//
+// 依賴：flutter/material, google_fonts
+//
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../services/cart_service.dart';
 
-class Ed1000IntroPage extends StatefulWidget {
-  const Ed1000IntroPage({super.key});
+class Ed1000IntroPage extends StatelessWidget {
+  const Ed1000IntroPage({
+    super.key,
+    this.buyRoute = '/shop',
+    this.moreRoute = '/products',
+  });
 
-  @override
-  State<Ed1000IntroPage> createState() => _Ed1000IntroPageState();
-}
+  /// 點「立即選購」要去的路由（你可依專案調整）
+  final String buyRoute;
 
-class _Ed1000IntroPageState extends State<Ed1000IntroPage> {
-  final CartService _cart = CartService.instance;
+  /// 點「查看更多商品」要去的路由（你可依專案調整）
+  final String moreRoute;
+
+  TextStyle _font({
+    double? fontSize,
+    FontWeight? fontWeight,
+    Color? color,
+    double? height,
+    double? letterSpacing,
+  }) {
+    return GoogleFonts.getFont(
+      'Noto Sans TC',
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      color: color,
+      height: height,
+      letterSpacing: letterSpacing,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F6FA),
       appBar: AppBar(
-        title: const Text("ED1000 智能手錶"),
-        backgroundColor: Colors.blueAccent,
-        centerTitle: true,
-        foregroundColor: Colors.white,
+        title: Text('ED1000 介紹', style: _font(fontWeight: FontWeight.w900)),
       ),
-      body: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 頂部圖片 Banner
-            Stack(
-              children: [
-                Image.network(
-                  "https://images.unsplash.com/photo-1512499617640-c2f999098c1a?auto=format&fit=crop&w=1200&q=80",
-                  height: 260,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
-                Container(
-                  height: 260,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.black.withOpacity(0.1),
-                        Colors.black.withOpacity(0.6),
-                      ],
-                    ),
-                  ),
-                ),
-                const Positioned(
-                  bottom: 20,
-                  left: 20,
-                  child: Text(
-                    "ED1000 智能手錶",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      shadows: [
-                        Shadow(
-                          color: Colors.black45,
-                          blurRadius: 4,
-                          offset: Offset(1, 1),
-                        )
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 16),
-
-            // 商品簡介
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Text(
-                "智慧健康・安全守護・展場熱銷中！",
-                style: GoogleFonts.notoSansTc(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blueAccent,
-                ),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Text(
-                "ED1000 是一款融合健康偵測與 SOS 求助功能的智慧手錶，適合長輩與孩童使用。透過手機 App，家人可即時查看健康狀況與定位。",
-                style: const TextStyle(fontSize: 14, height: 1.6),
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // 特色區塊
-            _buildFeatureSection(),
-
-            const SizedBox(height: 16),
-
-            // 影片展示（可放產品影片）
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Container(
-                  color: Colors.black12,
-                  height: 180,
-                  child: const Center(
-                    child: Icon(Icons.play_circle_fill,
-                        size: 60, color: Colors.blueAccent),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20),
-              child: Text(
-                "（此區可嵌入產品影片或操作介紹）",
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-            ),
-
-            const SizedBox(height: 24),
-
-            // 規格表
-            _buildSpecSection(),
-
-            const SizedBox(height: 24),
-          ],
-        ),
-      ),
-
-      // 底部購買欄
-      bottomNavigationBar: SafeArea(
-        child: Container(
-          color: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          child: Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  icon: const Icon(Icons.add_shopping_cart),
-                  label: const Text("加入購物車"),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.blueAccent,
-                    side: const BorderSide(color: Colors.blueAccent),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  ),
-                  onPressed: () {
-                    _cart.addProduct({
-                      "name": "ED1000 智能手錶",
-                      "price": 3990,
-                      "image":
-                          "https://images.unsplash.com/photo-1512499617640-c2f999098c1a?auto=format&fit=crop&w=800&q=80",
-                    });
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("ED1000 已加入購物車")),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: ElevatedButton.icon(
-                  icon: const Icon(Icons.payment),
-                  label: const Text("立即購買"),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueAccent,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  ),
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("結帳流程 Demo 中")),
-                    );
-                  },
-                ),
-              ),
-            ],
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        children: [
+          _heroCard(context, cs),
+          const SizedBox(height: 14),
+          Text('核心亮點', style: _font(fontSize: 18, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 10),
+          _featureGrid(cs),
+          const SizedBox(height: 14),
+          Text('適用族群', style: _font(fontSize: 18, fontWeight: FontWeight.w900)),
+          const SizedBox(height: 10),
+          _audienceCard(cs),
+          const SizedBox(height: 14),
+          Text(
+            '常見使用情境',
+            style: _font(fontSize: 18, fontWeight: FontWeight.w900),
           ),
-        ),
+          const SizedBox(height: 10),
+          _scenarios(cs),
+          const SizedBox(height: 18),
+          _ctaBar(context, cs),
+        ],
       ),
     );
   }
 
-  /// 特色區塊
-  Widget _buildFeatureSection() {
-    final features = [
-      {
-        "icon": Icons.health_and_safety_outlined,
-        "title": "健康監測",
-        "desc": "支援心率、血氧、步數與睡眠追蹤，24 小時健康守護。"
-      },
-      {
-        "icon": Icons.sos_outlined,
-        "title": "SOS 緊急求助",
-        "desc": "長按側邊按鈕即可一鍵求助，App 端即時通知家人。"
-      },
-      {
-        "icon": Icons.location_on_outlined,
-        "title": "GPS 即時定位",
-        "desc": "精準定位家人位置，防走失功能安心可靠。"
-      },
-      {
-        "icon": Icons.water_drop_outlined,
-        "title": "防潑水設計",
-        "desc": "生活防水等級，日常使用不怕雨水或汗水。"
-      },
+  Widget _heroCard(BuildContext context, ColorScheme cs) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        gradient: LinearGradient(
+          colors: [
+            cs.primaryContainer.withValues(alpha: 0.95),
+            cs.secondaryContainer.withValues(alpha: 0.85),
+          ],
+        ),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: cs.surface.withValues(alpha: 0.7),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Icon(Icons.watch, color: cs.primary, size: 34),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'ED1000 智慧守護錶',
+                  style: _font(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    color: cs.onPrimaryContainer,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '主打 SOS 求助、定位守護與日常健康提醒，讓家人更安心。',
+                  style: _font(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: cs.onPrimaryContainer.withValues(alpha: 0.9),
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _pill(cs, Icons.sos, '一鍵 SOS'),
+                    _pill(cs, Icons.location_on_outlined, '定位守護'),
+                    _pill(cs, Icons.favorite_border, '健康提醒'),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _pill(ColorScheme cs, IconData icon, String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: cs.surface.withValues(alpha: 0.65),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: cs.primary),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: _font(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: cs.onSurface,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _featureGrid(ColorScheme cs) {
+    // ✅ const：解 prefer_const_constructors
+    const items = <_Feature>[
+      _Feature(Icons.sos, 'SOS 求助', '長按/按鍵快速求救\n通知家長端'),
+      _Feature(Icons.location_searching, '定位追蹤', '即時定位\n安全範圍提醒'),
+      _Feature(Icons.phone_in_talk_outlined, '通話/語音', '重要聯絡人\n一鍵撥打'),
+      _Feature(Icons.notifications_active_outlined, '通知提醒', '系統公告/活動\n即時推播'),
+      _Feature(Icons.shield_outlined, '守護設定', '家庭成員管理\n權限分流'),
+      _Feature(Icons.health_and_safety_outlined, '健康管理', '日常提醒\n關懷更貼心'),
     ];
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "功能特色",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+    return LayoutBuilder(
+      builder: (context, c) {
+        final isNarrow = c.maxWidth < 720;
+        final cross = isNarrow ? 2 : 3;
+
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: items.length,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cross,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: isNarrow ? 1.25 : 1.45,
           ),
-          const SizedBox(height: 8),
-          ...features.map((f) {
+          itemBuilder: (_, i) {
+            final it = items[i];
             return Container(
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
-                    blurRadius: 5,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
+                color: cs.surfaceContainerHighest.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: cs.outlineVariant.withValues(alpha: 0.35),
+                ),
               ),
-              child: Row(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(f["icon"] as IconData,
-                      color: Colors.blueAccent, size: 26),
-                  const SizedBox(width: 10),
+                  Icon(it.icon, color: cs.primary, size: 26),
+                  const SizedBox(height: 8),
+                  Text(
+                    it.title,
+                    style: _font(fontWeight: FontWeight.w900, fontSize: 14),
+                  ),
+                  const SizedBox(height: 6),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          f["title"].toString(),
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          f["desc"].toString(),
-                          style:
-                              const TextStyle(fontSize: 13, color: Colors.black87),
-                        ),
-                      ],
+                    child: Text(
+                      it.desc,
+                      style: _font(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                        color: cs.onSurfaceVariant,
+                        height: 1.25,
+                      ),
                     ),
                   ),
                 ],
               ),
             );
-          }).toList(),
-        ],
-      ),
+          },
+        );
+      },
     );
   }
 
-  /// 規格表
-  Widget _buildSpecSection() {
-    final specs = [
-      ["產品型號", "ED1000 智能手錶"],
-      ["螢幕尺寸", "1.54 吋彩色觸控螢幕"],
-      ["藍牙版本", "Bluetooth 5.0"],
-      ["電池容量", "400mAh（續航約 5 天）"],
-      ["防水等級", "IP67 生活防潑水"],
-      ["適用系統", "Android / iOS 皆支援"],
-      ["保固服務", "一年保固（非人為損壞）"],
+  Widget _audienceCard(ColorScheme cs) {
+    final bullets = <String>[
+      '國小～國中：上下學、課後活動安全守護',
+      '長輩：日常外出定位與緊急聯絡',
+      '需要關懷的家人：健康提醒、即時通知',
     ];
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "產品規格",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 10),
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 6,
-                  offset: const Offset(0, 3),
-                ),
-              ],
+    return Card(
+      elevation: 0,
+      color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '誰最適合 ED1000？',
+              style: _font(fontWeight: FontWeight.w900, fontSize: 14),
             ),
-            child: Column(
-              children: specs.map((s) {
-                return Column(
+            const SizedBox(height: 10),
+            for (final b in bullets)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    ListTile(
-                      dense: true,
-                      title: Text(
-                        s[0],
-                        style: const TextStyle(
-                            fontSize: 13, fontWeight: FontWeight.bold),
-                      ),
-                      trailing: Text(
-                        s[1],
-                        style: const TextStyle(fontSize: 13),
+                    Icon(Icons.check_circle, size: 18, color: cs.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        b,
+                        style: _font(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: cs.onSurface,
+                        ),
                       ),
                     ),
-                    if (s != specs.last)
-                      const Divider(height: 1, color: Color(0x11000000)),
                   ],
-                );
-              }).toList(),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _scenarios(ColorScheme cs) {
+    // ✅ const：解 prefer_const_constructors（你報的第 284 行）
+    const items = <_Scenario>[
+      _Scenario(Icons.school_outlined, '上學下課', '孩子遇到陌生人或迷路，可快速 SOS'),
+      _Scenario(Icons.directions_walk_outlined, '外出活動', '定位查看路線，家人即時掌握'),
+      _Scenario(Icons.elderly_outlined, '長輩散步', '突發狀況能立即通知家人'),
+    ];
+
+    return Card(
+      elevation: 0,
+      color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+      child: Column(
+        children: [
+          for (int i = 0; i < items.length; i++) ...[
+            ListTile(
+              leading: Icon(items[i].icon, color: cs.primary),
+              title: Text(
+                items[i].title,
+                style: _font(fontWeight: FontWeight.w900),
+              ),
+              subtitle: Text(
+                items[i].desc,
+                style: _font(
+                  fontWeight: FontWeight.w600,
+                  color: cs.onSurfaceVariant,
+                ),
+              ),
             ),
-          ),
+            if (i != items.length - 1) const Divider(height: 1),
+          ],
         ],
       ),
     );
   }
+
+  Widget _ctaBar(BuildContext context, ColorScheme cs) {
+    return Row(
+      children: [
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: () => Navigator.pushNamed(context, buyRoute),
+            icon: const Icon(Icons.shopping_cart_outlined),
+            label: Text('立即選購', style: _font(fontWeight: FontWeight.w900)),
+          ),
+        ),
+        const SizedBox(width: 10),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.pushNamed(context, moreRoute),
+          icon: const Icon(Icons.apps_outlined),
+          label: Text('查看更多商品', style: _font(fontWeight: FontWeight.w900)),
+        ),
+      ],
+    );
+  }
+}
+
+class _Feature {
+  final IconData icon;
+  final String title;
+  final String desc;
+  const _Feature(this.icon, this.title, this.desc);
+}
+
+class _Scenario {
+  final IconData icon;
+  final String title;
+  final String desc;
+  const _Scenario(this.icon, this.title, this.desc);
 }

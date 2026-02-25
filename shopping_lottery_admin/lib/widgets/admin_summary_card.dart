@@ -20,7 +20,9 @@ class AdminSummaryCard extends StatelessWidget {
       width: 110,
       height: 100,
       decoration: BoxDecoration(
-        color: cs.surfaceVariant.withOpacity(0.25),
+        // ✅ surfaceVariant deprecated → surfaceContainerHighest
+        // ✅ withOpacity deprecated → withValues(alpha: ...)
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.25),
         borderRadius: BorderRadius.circular(16),
       ),
       padding: const EdgeInsets.all(12),
@@ -29,9 +31,15 @@ class AdminSummaryCard extends StatelessWidget {
         children: [
           Icon(icon, size: 30, color: cs.primary),
           const SizedBox(height: 6),
-          Text(title, style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+          Text(
+            title,
+            style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+          ),
           const SizedBox(height: 4),
-          Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+          ),
         ],
       ),
     );

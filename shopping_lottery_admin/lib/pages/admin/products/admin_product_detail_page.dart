@@ -1,24 +1,31 @@
 // lib/pages/admin/products/admin_product_detail_page.dart
 //
-// ✅ AdminProductDetailPage（完整版）
+// ✅ AdminProductDetailPage（商品詳情｜完整版｜可編譯）
 // ------------------------------------------------------------
-// - 商品基本資訊（名稱、價格、分類、狀態）
-// - 多圖上傳 / 預覽 / 刪除
-// - 商品亮點（可新增 / 編輯 / 移除）
-// - 商品說明（多行文字）
-// - 售後服務（icon + 文字列表）
-// - 即時儲存到 Firestore
-// ------------------------------------------------------------
+// - Firestore: products/{productId}
+// - 顯示：名稱 / 價格 / 狀態 / 庫存 / 分類 / 圖片 / 描述 / tags
+// - 操作：上架/下架、調整庫存、編輯基本資料（名稱/價格/分類/描述）、編輯 tags
+// - ✅ FIX: withOpacity deprecated → withValues(alpha: 0~1)
+// - 相容 Web/桌面/手機
+//
+// 路由建議：
+// '/admin_product_detail': (_) => const AdminProductDetailPage(),
+// Navigator.pushNamed(context, '/admin_product_detail', arguments: {'productId': id});
+//
+// 若你的欄位命名不同（如 price / salePrice / stockQty / images），告訴我我直接改成你的結構。
 
-import 'dart:io';
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+
+/// ✅ FIX: withOpacity deprecated → withValues(alpha: 0~1)
+Color _withOpacity(Color c, double opacity01) {
+  final o = opacity01.clamp(0.0, 1.0).toDouble();
+  return c.withValues(alpha: o);
+}
 
 class AdminProductDetailPage extends StatefulWidget {
-  final String productId;
-  const AdminProductDetailPage({super.key, required this.productId});
+  const AdminProductDetailPage({super.key});
 
   @override
   State<AdminProductDetailPage> createState() => _AdminProductDetailPageState();
@@ -26,368 +33,875 @@ class AdminProductDetailPage extends StatefulWidget {
 
 class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
   final _db = FirebaseFirestore.instance;
-  final _picker = ImagePicker();
 
-  bool _loading = true;
-  bool _saving = false;
-  Object? _error;
-  Map<String, dynamic>? _data;
-
-  // 控制器
-  final _name = TextEditingController();
-  final _price = TextEditingController();
-  final _desc = TextEditingController();
-
-  List<String> _images = [];
-  List<String> _highlights = [];
-  List<Map<String, String>> _afterService = [];
-  String _category = '未分類';
-  String _status = 'active';
+  String? _productId;
+  String? _argError;
 
   @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final doc = await _db.collection('products').doc(widget.productId).get();
-      if (!doc.exists) throw Exception('商品不存在');
-      final d = doc.data()!;
-      setState(() {
-        _data = d;
-        _name.text = d['name'] ?? '';
-        _price.text = (d['price'] ?? '').toString();
-        _desc.text = d['description'] ?? '';
-        _images = (d['images'] as List?)?.cast<String>() ?? [];
-        _highlights = (d['highlight'] as List?)?.cast<String>() ?? [];
-        _afterService = (d['afterService'] as List?)
-                ?.map((e) => Map<String, String>.from(e))
-                .toList() ??
-            [];
-        _category = d['category'] ?? '未分類';
-        _status = d['status'] ?? 'active';
-      });
-    } catch (e) {
-      setState(() => _error = e);
-    } finally {
-      setState(() => _loading = false);
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_productId != null || _argError != null) {
+      return;
     }
+
+    final args = ModalRoute.of(context)?.settings.arguments;
+
+    String? pid;
+    if (args is String) {
+      pid = args.trim();
+    }
+    if (args is Map) {
+      final v = args['productId'] ?? args['id'];
+      if (v != null) {
+        pid = v.toString().trim();
+      }
+    }
+
+    if (pid == null || pid.isEmpty) {
+      setState(() {
+        _argError =
+            '缺少 productId 參數，請用 Navigator.pushNamed(..., arguments: {\'productId\': id})';
+      });
+      return;
+    }
+
+    setState(() => _productId = pid);
   }
 
-  Future<void> _save() async {
-    setState(() => _saving = true);
+  DocumentReference<Map<String, dynamic>> get _ref =>
+      _db.collection('products').doc(_productId!);
+
+  final _money = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
+  final _df = DateFormat('yyyy/MM/dd HH:mm');
+
+  // ===========================================================
+  // Utils
+  // ===========================================================
+  num _asNum(dynamic v) {
+    if (v is num) return v;
+    return num.tryParse((v ?? '').toString()) ?? 0;
+  }
+
+  int _asInt(dynamic v) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse((v ?? '').toString()) ?? 0;
+  }
+
+  bool _asBool(dynamic v) => v == true;
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  DateTime? _toDt(dynamic v) {
+    if (v == null) return null;
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+    return null;
+  }
+
+  List<String> _strList(dynamic v) {
+    if (v is! List) return const [];
+    final out = <String>[];
+    for (final x in v) {
+      final t = (x ?? '').toString().trim();
+      if (t.isNotEmpty) out.add(t);
+    }
+    return out;
+  }
+
+  void _snack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<bool> _confirm({
+    required String title,
+    required String message,
+    String confirmText = '確認',
+    bool danger = false,
+  }) async {
+    final cs = Theme.of(context).colorScheme;
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: danger ? cs.error : null,
+              foregroundColor: danger ? cs.onError : null,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmText),
+          ),
+        ],
+      ),
+    );
+    return res == true;
+  }
+
+  Future<String?> _askText({
+    required String title,
+    required String hint,
+    String initial = '',
+    String confirmText = '儲存',
+    int maxLines = 2,
+  }) async {
+    final c = TextEditingController(text: initial);
+    final res = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+        content: TextField(
+          controller: c,
+          maxLines: maxLines,
+          decoration: InputDecoration(
+            hintText: hint,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, c.text),
+            child: Text(confirmText),
+          ),
+        ],
+      ),
+    );
+    c.dispose();
+    return res;
+  }
+
+  // ===========================================================
+  // Actions
+  // ===========================================================
+  Future<void> _togglePublished(bool current) async {
+    final ok = await _confirm(
+      title: current ? '下架商品' : '上架商品',
+      message: '確定要${current ? '下架' : '上架'}此商品嗎？\nproductId: $_productId',
+      confirmText: current ? '下架' : '上架',
+      danger: current,
+    );
+    if (!ok) return;
+
     try {
-      await _db.collection('products').doc(widget.productId).update({
-        'name': _name.text.trim(),
-        'price': double.tryParse(_price.text) ?? 0,
-        'description': _desc.text.trim(),
-        'category': _category,
-        'status': _status,
-        'images': _images,
-        'highlight': _highlights,
-        'afterService': _afterService,
+      await _ref.update({
+        'published': !current,
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已儲存商品資料')),
-        );
-      }
+      if (!mounted) return;
+      _snack(current ? '已下架' : '已上架');
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('儲存失敗：$e')),
-      );
-    } finally {
-      setState(() => _saving = false);
+      if (!mounted) return;
+      _snack('更新失敗：$e');
     }
   }
 
-  // ==========================================================
-  // 主要畫面
-  // ==========================================================
+  Future<void> _editBasic(Map<String, dynamic> d) async {
+    final name = _s(d['name'] ?? d['title']);
+    final category = _s(d['categoryId'] ?? d['category']);
+    final desc = _s(d['description']);
+    final price = _asNum(d['price'] ?? d['salePrice']);
+
+    final newName = await _askText(
+      title: '編輯名稱（1/4）',
+      hint: '商品名稱',
+      initial: name,
+      confirmText: '下一步',
+      maxLines: 2,
+    );
+    if (newName == null) return;
+
+    final newPriceStr = await _askText(
+      title: '編輯價格（2/4）',
+      hint: '價格（數字）',
+      initial: price.toString(),
+      confirmText: '下一步',
+      maxLines: 1,
+    );
+    if (newPriceStr == null) return;
+    final newPrice = num.tryParse(newPriceStr.trim()) ?? price;
+
+    final newCategory = await _askText(
+      title: '編輯分類（3/4）',
+      hint: 'categoryId / category（可留空）',
+      initial: category,
+      confirmText: '下一步',
+      maxLines: 1,
+    );
+    if (newCategory == null) return;
+
+    final newDesc = await _askText(
+      title: '編輯描述（4/4）',
+      hint: '商品描述（可留空）',
+      initial: desc,
+      confirmText: '儲存',
+      maxLines: 6,
+    );
+    if (newDesc == null) return;
+
+    try {
+      await _ref.update({
+        'name': newName.trim(),
+        'price': newPrice,
+        'categoryId': newCategory.trim(),
+        'description': newDesc.trim(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (!mounted) return;
+      _snack('基本資料已更新');
+    } catch (e) {
+      if (!mounted) return;
+      _snack('更新失敗：$e');
+    }
+  }
+
+  Future<void> _editStock(Map<String, dynamic> d) async {
+    final stock = _asInt(d['stock'] ?? d['stockQty'] ?? d['inventory'] ?? 0);
+
+    final res = await _askText(
+      title: '調整庫存',
+      hint: '輸入新的庫存數量（整數）',
+      initial: stock.toString(),
+      confirmText: '儲存',
+      maxLines: 1,
+    );
+    if (res == null) return;
+
+    final next = int.tryParse(res.trim());
+    if (next == null) {
+      _snack('庫存必須是整數');
+      return;
+    }
+
+    try {
+      await _ref.update({
+        'stock': next,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (!mounted) return;
+      _snack('庫存已更新');
+    } catch (e) {
+      if (!mounted) return;
+      _snack('更新失敗：$e');
+    }
+  }
+
+  Future<void> _editTags(List<String> tags) async {
+    final res = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _TagsDialog(initial: tags),
+    );
+    if (res == null) return;
+
+    try {
+      await _ref.update({
+        'tags': res,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (!mounted) return;
+      _snack('Tags 已更新');
+    } catch (e) {
+      if (!mounted) return;
+      _snack('更新失敗：$e');
+    }
+  }
+
+  // ===========================================================
+  // UI
+  // ===========================================================
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-    if (_error != null) {
+    final cs = Theme.of(context).colorScheme;
+
+    if (_argError != null) {
       return Scaffold(
         appBar: AppBar(title: const Text('商品詳情')),
-        body: Center(child: Text('載入失敗：$_error')),
+        body: _ErrorView(
+          title: '開啟失敗',
+          message: _argError!,
+          hint: '請確認你有傳入 productId 參數。',
+          onRetry: () => Navigator.pop(context),
+          retryText: '返回',
+        ),
       );
+    }
+
+    if (_productId == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('商品詳情管理', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: Text(
+          '商品詳情：$_productId',
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.save),
-            tooltip: '儲存商品',
-            onPressed: _saving ? null : _save,
+            tooltip: '重新整理',
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh_rounded),
           ),
         ],
       ),
-      body: _saving
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildBasicInfo(),
-                  const SizedBox(height: 16),
-                  _buildImageSection(),
-                  const SizedBox(height: 16),
-                  _buildHighlightSection(),
-                  const SizedBox(height: 16),
-                  _buildDescriptionSection(),
-                  const SizedBox(height: 16),
-                  _buildAfterServiceSection(),
-                  const SizedBox(height: 40),
-                ],
-              ),
-            ),
-    );
-  }
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: _ref.snapshots(),
+        builder: (context, snap) {
+          if (snap.hasError) {
+            return _ErrorView(
+              title: '讀取失敗',
+              message: snap.error.toString(),
+              hint: '常見原因：products 權限不足、文件不存在、欄位型別錯誤。',
+              onRetry: () => setState(() {}),
+            );
+          }
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
 
-  // ==========================================================
-  // 商品基本資訊
-  // ==========================================================
-  Widget _buildBasicInfo() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('基本資訊',
-                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _name,
-              decoration: const InputDecoration(labelText: '商品名稱'),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _price,
-              decoration: const InputDecoration(labelText: '商品價格 (NT\$)'),
-              keyboardType: TextInputType.number,
-            ),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              value: _category,
-              items: const [
-                DropdownMenuItem(value: '未分類', child: Text('未分類')),
-                DropdownMenuItem(value: '手錶', child: Text('手錶')),
-                DropdownMenuItem(value: '配件', child: Text('配件')),
-                DropdownMenuItem(value: '服務', child: Text('服務')),
-                DropdownMenuItem(value: '優惠', child: Text('優惠')),
+          final doc = snap.data!;
+          if (!doc.exists) {
+            return _ErrorView(
+              title: '商品不存在',
+              message: '找不到此 productId 的 products 文件：$_productId',
+              hint: '請確認 products/{productId} 是否存在。',
+              onRetry: () => Navigator.pop(context),
+              retryText: '返回',
+            );
+          }
+
+          final d = doc.data() ?? <String, dynamic>{};
+
+          final name = _s(d['name'] ?? d['title']);
+          final price = _asNum(d['price'] ?? d['salePrice'] ?? 0);
+          final published = _asBool(d['published'] ?? d['isPublished']);
+          final stock = _asInt(
+            d['stock'] ?? d['stockQty'] ?? d['inventory'] ?? 0,
+          );
+
+          final category = _s(d['categoryId'] ?? d['category']);
+          final desc = _s(d['description']);
+          final tags = _strList(d['tags']);
+
+          final images = _strList(d['images'] ?? d['imageUrls']);
+          final cover = images.isNotEmpty ? images.first : _s(d['imageUrl']);
+
+          final createdAt = _toDt(d['createdAt']);
+          final updatedAt = _toDt(d['updatedAt']);
+
+          final statusColor = published ? cs.primary : cs.error;
+          final statusText = published ? '上架中' : '未上架';
+
+          return ListView(
+            padding: const EdgeInsets.all(12),
+            children: [
+              Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              name.isEmpty ? '（未命名商品）' : name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 18,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _withOpacity(statusColor, 0.12),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: _withOpacity(statusColor, 0.35),
+                              ),
+                            ),
+                            child: Text(
+                              statusText,
+                              style: TextStyle(
+                                color: statusColor,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 8,
+                        children: [
+                          _pill('價格', _money.format(price)),
+                          _pill('庫存', '$stock'),
+                          _pill('分類', category.isEmpty ? '—' : category),
+                        ],
+                      ),
+
+                      if (createdAt != null || updatedAt != null) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          [
+                            if (createdAt != null)
+                              '建立：${_df.format(createdAt)}',
+                            if (updatedAt != null)
+                              '更新：${_df.format(updatedAt)}',
+                          ].join('  •  '),
+                          style: TextStyle(
+                            color: cs.onSurfaceVariant,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          FilledButton.tonalIcon(
+                            onPressed: () => _togglePublished(published),
+                            icon: Icon(
+                              published
+                                  ? Icons.visibility_off
+                                  : Icons.visibility,
+                            ),
+                            label: Text(published ? '下架' : '上架'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () => _editStock(d),
+                            icon: const Icon(Icons.inventory_2_outlined),
+                            label: const Text('調整庫存'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () => _editBasic(d),
+                            icon: const Icon(Icons.edit_outlined),
+                            label: const Text('編輯基本資料'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () => _editTags(tags),
+                            icon: const Icon(Icons.sell_outlined),
+                            label: const Text('編輯 Tags'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              if (cover.isNotEmpty || images.isNotEmpty) ...[
+                Card(
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '圖片',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        if (cover.isNotEmpty)
+                          _ImageTile(url: cover)
+                        else
+                          Text(
+                            '（無封面）',
+                            style: TextStyle(color: cs.onSurfaceVariant),
+                          ),
+                        if (images.length > 1) ...[
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 10,
+                            children: [
+                              for (final u in images.skip(1).take(8))
+                                SizedBox(width: 160, child: _ImageTile(url: u)),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
               ],
-              onChanged: (v) => setState(() => _category = v ?? '未分類'),
-              decoration: const InputDecoration(labelText: '商品分類'),
-            ),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              value: _status,
-              items: const [
-                DropdownMenuItem(value: 'active', child: Text('上架中')),
-                DropdownMenuItem(value: 'inactive', child: Text('下架')),
-              ],
-              onChanged: (v) => setState(() => _status = v ?? 'active'),
-              decoration: const InputDecoration(labelText: '狀態'),
-            ),
-          ],
-        ),
+
+              Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '描述',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        desc.isEmpty ? '—' : desc,
+                        style: TextStyle(
+                          color: cs.onSurfaceVariant,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Tags',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      if (tags.isEmpty)
+                        Text('—', style: TextStyle(color: cs.onSurfaceVariant))
+                      else
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final t in tags)
+                              _Tag(text: t, color: cs.primary),
+                          ],
+                        ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          FilledButton.tonalIcon(
+                            onPressed: () => _editTags(tags),
+                            icon: const Icon(Icons.edit),
+                            label: const Text('編輯 Tags'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  // ==========================================================
-  // 圖片區
-  // ==========================================================
-  Widget _buildImageSection() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(
+  Widget _pill(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.black12),
+        borderRadius: BorderRadius.circular(999),
+        color: Colors.white,
+      ),
+      child: Text(
+        '$k：$v',
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// Dialog: Tags
+// ============================================================================
+class _TagsDialog extends StatefulWidget {
+  final List<String> initial;
+  const _TagsDialog({required this.initial});
+
+  @override
+  State<_TagsDialog> createState() => _TagsDialogState();
+}
+
+class _TagsDialogState extends State<_TagsDialog> {
+  late List<String> tags;
+  final TextEditingController _add = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    tags = [...widget.initial]
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  }
+
+  @override
+  void dispose() {
+    _add.dispose();
+    super.dispose();
+  }
+
+  void _addTag(String t) {
+    final s = t.trim();
+    if (s.isEmpty) {
+      return;
+    }
+    if (tags.map((e) => e.toLowerCase()).contains(s.toLowerCase())) {
+      return;
+    }
+    setState(() {
+      tags.add(s);
+      tags.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    });
+  }
+
+  void _removeTag(String t) {
+    setState(() => tags.removeWhere((e) => e.toLowerCase() == t.toLowerCase()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text(
+        '編輯 Tags',
+        style: TextStyle(fontWeight: FontWeight.w900),
+      ),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Expanded(
-                child: Text('商品圖片',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _add,
+                      decoration: InputDecoration(
+                        hintText: '新增 Tag（例如：熱賣 / 新品 / 限量）',
+                        isDense: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      onSubmitted: (v) {
+                        _addTag(v);
+                        _add.clear();
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton.tonalIcon(
+                    onPressed: () {
+                      _addTag(_add.text);
+                      _add.clear();
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('加入'),
+                  ),
+                ],
               ),
-              IconButton(
-                icon: const Icon(Icons.add_a_photo),
-                tooltip: '新增圖片',
-                onPressed: _addImage,
+              const SizedBox(height: 12),
+              const Text(
+                '目前 Tags',
+                style: TextStyle(fontWeight: FontWeight.w900),
               ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final url in _images)
-                Stack(
-                  alignment: Alignment.topRight,
+              const SizedBox(height: 8),
+              if (tags.isEmpty)
+                const Text('（尚無 Tags）', style: TextStyle(color: Colors.black54))
+              else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.network(url,
-                          width: 120, height: 120, fit: BoxFit.cover),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.red),
-                      onPressed: () =>
-                          setState(() => _images.remove(url)),
-                    ),
+                    for (final t in tags)
+                      InputChip(label: Text(t), onDeleted: () => _removeTag(t)),
                   ],
                 ),
             ],
           ),
-        ]),
+        ),
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(context, tags),
+          icon: const Icon(Icons.check),
+          label: const Text('套用'),
+        ),
+      ],
     );
   }
+}
 
-  Future<void> _addImage() async {
-    final picked = await _picker.pickImage(source: ImageSource.gallery);
-    if (picked == null) return;
-    final file = File(picked.path);
-    final name = picked.name;
-    final ref = FirebaseStorage.instance.ref('products/${widget.productId}/$name');
-    await ref.putFile(file);
-    final url = await ref.getDownloadURL();
-    setState(() => _images.add(url));
-  }
+// ============================================================================
+// Shared small views
+// ============================================================================
+class _ImageTile extends StatelessWidget {
+  const _ImageTile({required this.url});
+  final String url;
 
-  // ==========================================================
-  // 商品亮點
-  // ==========================================================
-  Widget _buildHighlightSection() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text('商品亮點',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-              ),
-              IconButton(
-                icon: const Icon(Icons.add_circle_outline),
-                onPressed: _addHighlight,
-              ),
-            ],
-          ),
-          for (int i = 0; i < _highlights.length; i++)
-            ListTile(
-              leading: const Icon(Icons.check_circle, color: Colors.teal),
-              title: TextField(
-                controller: TextEditingController(text: _highlights[i]),
-                onChanged: (v) => _highlights[i] = v,
-                decoration: const InputDecoration(
-                    border: InputBorder.none, hintText: '亮點內容'),
-              ),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete_outline),
-                onPressed: () => setState(() => _highlights.removeAt(i)),
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: AspectRatio(
+        aspectRatio: 16 / 10,
+        child: Container(
+          color: _withOpacity(cs.primary, 0.06),
+          child: Image.network(
+            url,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Center(
+              child: Text(
+                '圖片載入失敗',
+                style: TextStyle(color: cs.onSurfaceVariant),
               ),
             ),
-        ]),
+            loadingBuilder: (_, child, progress) {
+              if (progress == null) return child;
+              return Center(
+                child: CircularProgressIndicator(
+                  value: progress.expectedTotalBytes == null
+                      ? null
+                      : progress.cumulativeBytesLoaded /
+                            (progress.expectedTotalBytes ?? 1),
+                ),
+              );
+            },
+          ),
+        ),
       ),
     );
   }
+}
 
-  void _addHighlight() {
-    setState(() => _highlights.add(''));
-  }
+class _ErrorView extends StatelessWidget {
+  final String title;
+  final String message;
+  final String? hint;
+  final VoidCallback onRetry;
+  final String retryText;
 
-  // ==========================================================
-  // 商品說明
-  // ==========================================================
-  Widget _buildDescriptionSection() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('商品說明',
-              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _desc,
-            maxLines: 6,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              hintText: '輸入商品詳細說明...',
+  const _ErrorView({
+    required this.title,
+    required this.message,
+    required this.onRetry,
+    this.hint,
+    this.retryText = '重試',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Card(
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline, size: 44, color: cs.error),
+                  const SizedBox(height: 10),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
+                  if (hint != null) ...[
+                    const SizedBox(height: 10),
+                    Text(hint!, style: TextStyle(color: cs.onSurfaceVariant)),
+                  ],
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: Text(retryText),
+                  ),
+                ],
+              ),
             ),
           ),
-        ]),
+        ),
       ),
     );
   }
+}
 
-  // ==========================================================
-  // 售後服務
-  // ==========================================================
-  Widget _buildAfterServiceSection() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text('售後服務',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-              ),
-              IconButton(
-                icon: const Icon(Icons.add_circle_outline),
-                onPressed: _addService,
-              ),
-            ],
-          ),
-          for (int i = 0; i < _afterService.length; i++)
-            ListTile(
-              leading: IconButton(
-                icon: const Icon(Icons.delete_outline),
-                onPressed: () => setState(() => _afterService.removeAt(i)),
-              ),
-              title: TextField(
-                controller:
-                    TextEditingController(text: _afterService[i]['text'] ?? ''),
-                onChanged: (v) => _afterService[i]['text'] = v,
-                decoration: const InputDecoration(
-                    border: InputBorder.none, hintText: '服務內容'),
-              ),
-              subtitle: TextField(
-                controller:
-                    TextEditingController(text: _afterService[i]['icon'] ?? ''),
-                onChanged: (v) => _afterService[i]['icon'] = v,
-                decoration: const InputDecoration(
-                    border: InputBorder.none, hintText: 'Icon 名稱（如 local_shipping）'),
-              ),
-            ),
-        ]),
+class _Tag extends StatelessWidget {
+  const _Tag({required this.text, this.color});
+  final String text;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = color ?? Colors.black54;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: _withOpacity(c, 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: _withOpacity(c, 0.35)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 12, color: c, fontWeight: FontWeight.w800),
       ),
     );
-  }
-
-  void _addService() {
-    setState(() => _afterService.add({'icon': '', 'text': ''}));
   }
 }

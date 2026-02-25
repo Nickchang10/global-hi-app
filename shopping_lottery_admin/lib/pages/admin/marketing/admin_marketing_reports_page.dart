@@ -1,33 +1,43 @@
 // lib/pages/admin/marketing/admin_marketing_reports_page.dart
 //
-// ✅ AdminMarketingReportsPage（行銷報表｜最終可編譯完整版・已修正 RenderFlex overflow）
+// ✅ AdminMarketingReportsPage（正式版｜完整版｜可直接編譯）
 // ------------------------------------------------------------
-// - Firestore 集合：coupons / lotteries / segments / auto_campaigns / campaign_logs
-// - 報表區間：可選日期起迄（預設近 30 天）
-// - KPI：
-//   1) 優惠券：總發放/總點擊/總使用、CTR/CVR、Top5 使用率
-//   2) 抽獎：總參與/總得獎、轉換率
-//   3) 自動派發：總轉換量、Top5 活動
-//   4) 日誌：區間內 success / fail / pending 次數 + 每日趨勢圖
-// - 圖表：Line（每日事件）/ Bar（Top5）/ Pie（狀態分佈）
-// - 匯出：目前區間報表匯出 CSV（file_saver）
-// - 容錯：欄位不存在也不會噴錯
+// ✅ 修正：移除不必要 cast（避免 unnecessary_cast）
+//    - 不使用：xxx as Map<String, dynamic>
+//    - 改用：if (v is Map) Map<String, dynamic>.from(v)
 //
-// ✅ 本次修正：
-// - KPI 卡片原本固定 height=92 + padding=12，導致內層 Column 只有 68px 高度，文字一多就溢出。
-// - 改為「不固定高度」，並使用 maxLines/ellipsis，徹底消除 RenderFlex overflow。
+// ✅ 修正：unnecessary_to_list_in_spreads
+//    - ...iterable.toList() → ...iterable
+//
+// ✅ 修正：curly_braces_in_flow_control_structures
+//    - if (...) return ...; → if (...) { return ...; }
+//
+// ✅ 預防：withOpacity deprecated → withValues(alpha: double 0~1)
+//
+// ✅ 功能：
+//   - Tab 1：自動活動報表（auto_campaign_reports）
+//   - Tab 2：AI 洞察（ai_campaign_insights）
+//   - Tab 3：抽獎中獎（lottery_winners）
+//   - 搜尋（campaignId / segment / channel / user / prize 等）
+//   - KPI 彙總（CTR/CVR/ROI...）
+//
+// 依賴：cloud_firestore, flutter/material
 // ------------------------------------------------------------
-
-import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:file_saver/file_saver.dart';
-import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
 class AdminMarketingReportsPage extends StatefulWidget {
-  const AdminMarketingReportsPage({super.key});
+  const AdminMarketingReportsPage({
+    super.key,
+    this.autoReportsCollection = 'auto_campaign_reports',
+    this.aiInsightsCollection = 'ai_campaign_insights',
+    this.lotteryWinnersCollection = 'lottery_winners',
+  });
+
+  final String autoReportsCollection;
+  final String aiInsightsCollection;
+  final String lotteryWinnersCollection;
 
   @override
   State<AdminMarketingReportsPage> createState() =>
@@ -35,858 +45,954 @@ class AdminMarketingReportsPage extends StatefulWidget {
 }
 
 class _AdminMarketingReportsPageState extends State<AdminMarketingReportsPage> {
-  bool _loading = true;
-  bool _exporting = false;
+  final _searchCtrl = TextEditingController();
+  String _keyword = '';
 
-  DateTime _fromDate = DateTime.now().subtract(const Duration(days: 30));
-  DateTime _toDate = DateTime.now();
-
-  // KPI
-  int couponCount = 0;
-  int activeCoupons = 0;
-  num totalIssued = 0;
-  num totalClicks = 0;
-  num totalUsed = 0;
-  num avgCTR = 0;
-  num avgCVR = 0;
-
-  int lotteryCount = 0;
-  int activeLotteries = 0;
-  num totalParticipants = 0;
-  num totalWinners = 0;
-  num lotteryCVR = 0;
-
-  int segmentCount = 0;
-
-  int autoCampaignCount = 0;
-  num totalAutoConversions = 0;
-
-  // Logs KPI
-  int logTotal = 0;
-  int logSuccess = 0;
-  int logFail = 0;
-  int logPending = 0;
-
-  // Charts data
-  List<_DayPoint> dailyLogPoints = [];
-  List<MapEntry<String, double>> topCoupons = [];
-  List<MapEntry<String, double>> topAuto = [];
-
-  // Raw docs (optional)
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _logDocs = [];
-
-  // ------------------------------------------------------------
-  // Helpers
-  // ------------------------------------------------------------
-  DateTime? _asDateTime(dynamic v) {
-    if (v == null) return null;
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
-    return null;
-  }
-
-  String _s(dynamic v, {String fallback = ''}) {
-    if (v == null) return fallback;
-    return v.toString();
-  }
-
-  num _n(dynamic v, {num fallback = 0}) {
-    if (v == null) return fallback;
-    if (v is num) return v;
-    final p = num.tryParse(v.toString());
-    return p ?? fallback;
-  }
-
-  bool _isTrue(dynamic v) => v == true;
-
-  DateTime _startOfDay(DateTime d) => DateTime(d.year, d.month, d.day);
-  DateTime _endOfDay(DateTime d) =>
-      DateTime(d.year, d.month, d.day, 23, 59, 59, 999);
-
-  String _statusNormalize(String s) {
-    final v = s.trim().toLowerCase();
-    if (v == 'ok') return 'success';
-    if (v == 'error') return 'fail';
-    if (v.isEmpty) return 'unknown';
-    return v;
-  }
-
-  // ------------------------------------------------------------
-  // Lifecycle
-  // ------------------------------------------------------------
   @override
   void initState() {
     super.initState();
-    _load();
-  }
-
-  // ------------------------------------------------------------
-  // Date pickers
-  // ------------------------------------------------------------
-  Future<void> _pickDate({required bool isFrom}) async {
-    final initial = isFrom ? _fromDate : _toDate;
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2035),
-    );
-    if (picked == null) return;
-
-    setState(() {
-      if (isFrom) {
-        _fromDate = _startOfDay(picked);
-        if (_toDate.isBefore(_fromDate)) {
-          _toDate = _fromDate;
-        }
-      } else {
-        _toDate = _startOfDay(picked);
-        if (_toDate.isBefore(_fromDate)) {
-          _fromDate = _toDate;
-        }
-      }
+    _searchCtrl.addListener(() {
+      final v = _searchCtrl.text.trim();
+      if (v == _keyword) return;
+      setState(() => _keyword = v);
     });
-
-    await _load();
   }
 
-  // ------------------------------------------------------------
-  // Load data
-  // ------------------------------------------------------------
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    try {
-      final fs = FirebaseFirestore.instance;
-
-      final from = _startOfDay(_fromDate);
-      final to = _endOfDay(_toDate);
-
-      final futures = await Future.wait([
-        fs.collection('coupons').get(),
-        fs.collection('lotteries').get(),
-        fs.collection('segments').get(),
-        fs.collection('auto_campaigns').get(),
-        fs
-            .collection('campaign_logs')
-            .where('createdAt',
-                isGreaterThanOrEqualTo: Timestamp.fromDate(from))
-            .where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(to))
-            .orderBy('createdAt', descending: false)
-            .limit(2000)
-            .get(),
-      ]);
-
-      final couponSnap = futures[0] as QuerySnapshot<Map<String, dynamic>>;
-      final lotterySnap = futures[1] as QuerySnapshot<Map<String, dynamic>>;
-      final segmentSnap = futures[2] as QuerySnapshot<Map<String, dynamic>>;
-      final autoSnap = futures[3] as QuerySnapshot<Map<String, dynamic>>;
-      final logSnap = futures[4] as QuerySnapshot<Map<String, dynamic>>;
-
-      // -------------------------
-      // Coupons KPI
-      // -------------------------
-      couponCount = couponSnap.size;
-      activeCoupons =
-          couponSnap.docs.where((d) => _isTrue(d.data()['isActive'])).length;
-
-      totalIssued = 0;
-      totalClicks = 0;
-      totalUsed = 0;
-
-      for (final doc in couponSnap.docs) {
-        final d = doc.data();
-        totalIssued += _n(d['issuedCount']);
-        totalClicks += _n(d['clickCount']);
-        totalUsed += _n(d['usedCount']);
-      }
-
-      avgCTR = totalIssued > 0 ? (totalClicks / totalIssued) * 100 : 0;
-      avgCVR = totalIssued > 0 ? (totalUsed / totalIssued) * 100 : 0;
-
-      // Top 5 coupons by use rate (used/issued)
-      final couponEntries = couponSnap.docs.map((e) {
-        final d = e.data();
-        final title = _s(d['title'], fallback: '未命名');
-        final issued = _n(d['issuedCount']);
-        final used = _n(d['usedCount']);
-        final rate = issued > 0 ? (used / issued) * 100 : 0.0;
-        return MapEntry(title, rate.toDouble());
-      }).toList()
-        ..sort((a, b) => b.value.compareTo(a.value));
-      topCoupons = couponEntries.take(5).toList();
-
-      // -------------------------
-      // Lotteries KPI
-      // -------------------------
-      lotteryCount = lotterySnap.size;
-      activeLotteries = lotterySnap.docs
-          .where((d) => _isTrue(d.data()['isActive']))
-          .length;
-
-      totalParticipants = 0;
-      totalWinners = 0;
-
-      for (final doc in lotterySnap.docs) {
-        final d = doc.data();
-        final p = (d['participants'] as List?)?.length ?? 0;
-        final w = (d['winners'] as List?)?.length ?? 0;
-        totalParticipants += p;
-        totalWinners += w;
-      }
-
-      lotteryCVR =
-          totalParticipants > 0 ? (totalWinners / totalParticipants) * 100 : 0;
-
-      // -------------------------
-      // Segments KPI
-      // -------------------------
-      segmentCount = segmentSnap.size;
-
-      // -------------------------
-      // Auto campaigns KPI
-      // -------------------------
-      autoCampaignCount = autoSnap.size;
-      totalAutoConversions = 0;
-      for (final doc in autoSnap.docs) {
-        final d = doc.data();
-        totalAutoConversions += _n(d['conversionCount']);
-      }
-
-      final autoEntries = autoSnap.docs.map((e) {
-        final d = e.data();
-        final title = _s(d['title'], fallback: '未命名');
-        final conv = _n(d['conversionCount']).toDouble();
-        return MapEntry(title, conv);
-      }).toList()
-        ..sort((a, b) => b.value.compareTo(a.value));
-      topAuto = autoEntries.take(5).toList();
-
-      // -------------------------
-      // Logs KPI + daily series
-      // -------------------------
-      _logDocs = logSnap.docs;
-      logTotal = _logDocs.length;
-      logSuccess = 0;
-      logFail = 0;
-      logPending = 0;
-
-      final Map<DateTime, _DayAgg> byDay = {};
-      for (final doc in _logDocs) {
-        final d = doc.data();
-        final dt = _asDateTime(d['createdAt']) ??
-            _asDateTime(d['time']) ??
-            _asDateTime(d['updatedAt']);
-        final day = _startOfDay(dt ?? from);
-        final status = _statusNormalize(_s(d['status']));
-
-        byDay.putIfAbsent(day, () => _DayAgg(day));
-        byDay[day]!.total++;
-
-        if (status == 'success') {
-          logSuccess++;
-          byDay[day]!.success++;
-        } else if (status == 'fail' || status == 'error') {
-          logFail++;
-          byDay[day]!.fail++;
-        } else if (status == 'pending' || status == 'queued') {
-          logPending++;
-          byDay[day]!.pending++;
-        } else {
-          byDay[day]!.other++;
-        }
-      }
-
-      // ensure every day exists in range (for smooth line)
-      final days = <DateTime>[];
-      var cur = _startOfDay(from);
-      final end = _startOfDay(to);
-      while (!cur.isAfter(end)) {
-        days.add(cur);
-        cur = cur.add(const Duration(days: 1));
-      }
-      for (final d in days) {
-        byDay.putIfAbsent(d, () => _DayAgg(d));
-      }
-
-      final sortedDays = byDay.keys.toList()..sort((a, b) => a.compareTo(b));
-      dailyLogPoints = sortedDays
-          .map((day) {
-            final agg = byDay[day]!;
-            return _DayPoint(day: day, value: agg.total.toDouble());
-          })
-          .toList(growable: false);
-
-      if (mounted) setState(() => _loading = false);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('讀取報表失敗：$e')));
-    }
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
-  // ------------------------------------------------------------
-  // Export CSV
-  // ------------------------------------------------------------
-  String _csvEscape(String s) {
-    final needsQuote = s.contains(',') || s.contains('\n') || s.contains('"');
-    final escaped = s.replaceAll('"', '""');
-    return needsQuote ? '"$escaped"' : escaped;
-  }
-
-  Future<void> _exportCsv() async {
-    if (_exporting) return;
-
-    setState(() => _exporting = true);
-    try {
-      final df = DateFormat('yyyy-MM-dd');
-      final dft = DateFormat('yyyy-MM-dd HH:mm:ss');
-
-      final b = StringBuffer();
-
-      // Summary block
-      b.writeln('Report Range,${_csvEscape("${df.format(_fromDate)} ~ ${df.format(_toDate)}")}');
-      b.writeln('Coupons,${couponCount}');
-      b.writeln('Active Coupons,${activeCoupons}');
-      b.writeln('Total Issued,${totalIssued}');
-      b.writeln('Total Clicks,${totalClicks}');
-      b.writeln('Total Used,${totalUsed}');
-      b.writeln('Avg CTR(%),${avgCTR.toStringAsFixed(2)}');
-      b.writeln('Avg CVR(%),${avgCVR.toStringAsFixed(2)}');
-      b.writeln('Lotteries,${lotteryCount}');
-      b.writeln('Active Lotteries,${activeLotteries}');
-      b.writeln('Total Participants,${totalParticipants}');
-      b.writeln('Total Winners,${totalWinners}');
-      b.writeln('Lottery CVR(%),${lotteryCVR.toStringAsFixed(2)}');
-      b.writeln('Segments,${segmentCount}');
-      b.writeln('Auto Campaigns,${autoCampaignCount}');
-      b.writeln('Auto Conversions,${totalAutoConversions}');
-      b.writeln('Logs Total,${logTotal}');
-      b.writeln('Logs Success,${logSuccess}');
-      b.writeln('Logs Fail,${logFail}');
-      b.writeln('Logs Pending,${logPending}');
-      b.writeln('');
-
-      // Daily series
-      b.writeln('Daily Logs');
-      b.writeln('date,total');
-      for (final p in dailyLogPoints) {
-        b.writeln('${df.format(p.day)},${p.value.toInt()}');
-      }
-      b.writeln('');
-
-      // Top coupons
-      b.writeln('Top Coupons (Use Rate)');
-      b.writeln('title,use_rate');
-      for (final e in topCoupons) {
-        b.writeln('${_csvEscape(e.key)},${e.value.toStringAsFixed(2)}');
-      }
-      b.writeln('');
-
-      // Top auto
-      b.writeln('Top Auto Campaigns (Conversions)');
-      b.writeln('title,conversions');
-      for (final e in topAuto) {
-        b.writeln('${_csvEscape(e.key)},${e.value.toStringAsFixed(0)}');
-      }
-      b.writeln('');
-
-      // Raw logs (optional, keep lightweight)
-      b.writeln('Campaign Logs (filtered, limited)');
-      b.writeln('time,type,status,campaignTitle,campaignId,segmentId,couponId,lotteryId,userId,channel,title,message,docId');
-
-      for (final doc in _logDocs) {
-        final d = doc.data();
-        final dt = _asDateTime(d['createdAt']) ??
-            _asDateTime(d['time']) ??
-            _asDateTime(d['updatedAt']);
-        final timeText = dt == null ? '' : dft.format(dt);
-
-        final row = <String>[
-          timeText,
-          _s(d['type']),
-          _s(d['status']),
-          _s(d['campaignTitle']),
-          _s(d['campaignId']),
-          _s(d['segmentId']),
-          _s(d['couponId']),
-          _s(d['lotteryId']),
-          _s(d['userId']),
-          _s(d['channel']),
-          _s(d['title']),
-          _s(d['message']),
-          doc.id,
-        ].map((x) => _csvEscape(x)).join(',');
-        b.writeln(row);
-      }
-
-      final bytes = Uint8List.fromList(b.toString().codeUnits);
-      final name =
-          'marketing_report_${DateFormat('yyyyMMdd').format(_fromDate)}_${DateFormat('yyyyMMdd').format(_toDate)}';
-
-      await FileSaver.instance.saveFile(
-        name: name,
-        bytes: bytes,
-        ext: 'csv',
-        mimeType: MimeType.csv,
-      );
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已匯出 CSV 報表')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('匯出失敗：$e')));
-    } finally {
-      if (mounted) setState(() => _exporting = false);
-    }
-  }
-
-  // ------------------------------------------------------------
-  // UI
-  // ------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    final df = DateFormat('yyyy/MM/dd');
-
-    if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('行銷報表'),
-        actions: [
-          IconButton(
-            tooltip: '重新整理',
-            onPressed: _load,
-            icon: const Icon(Icons.refresh),
-          ),
-          FilledButton.icon(
-            onPressed: _exporting ? null : _exportCsv,
-            icon: const Icon(Icons.download, size: 18),
-            label: Text(_exporting ? '匯出中...' : '匯出 CSV'),
-          ),
-          const SizedBox(width: 10),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          _filtersCard(df),
-          const SizedBox(height: 14),
-          _kpiGrid(),
-          const SizedBox(height: 16),
-          _buildLineChartDailyLogs(),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(child: _buildPieChartLogStatus()),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildBarChart(
-                  'Top 5 優惠券使用率（used/issued%）',
-                  topCoupons,
-                  maxY: 100,
-                ),
+    return DefaultTabController(
+      length: 3,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('行銷報表'),
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(106),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _searchCtrl,
+                    decoration: InputDecoration(
+                      hintText:
+                          '搜尋（campaignId / segment / channel / user / prize / note）',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _keyword.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: '清除',
+                              onPressed: () => _searchCtrl.clear(),
+                              icon: const Icon(Icons.clear),
+                            ),
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  const TabBar(
+                    tabs: [
+                      Tab(icon: Icon(Icons.bar_chart), text: '自動活動'),
+                      Tab(icon: Icon(Icons.insights), text: 'AI 洞察'),
+                      Tab(icon: Icon(Icons.emoji_events), text: '抽獎中獎'),
+                    ],
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-          const SizedBox(height: 16),
-          _buildBarChart(
-            'Top 5 自動派發轉換量（conversionCount）',
-            topAuto,
-            maxY: _calcMaxY(topAuto),
-          ),
-          const SizedBox(height: 16),
-          _buildNotesCard(),
-        ],
-      ),
-    );
-  }
-
-  Widget _filtersCard(DateFormat df) {
-    return Card(
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          crossAxisAlignment: WrapCrossAlignment.center,
+        ),
+        body: TabBarView(
           children: [
-            OutlinedButton.icon(
-              onPressed: () => _pickDate(isFrom: true),
-              icon: const Icon(Icons.date_range, size: 18),
-              label: Text('起：${df.format(_fromDate)}'),
+            _AutoReportsTab(
+              keyword: _keyword,
+              collectionName: widget.autoReportsCollection,
             ),
-            OutlinedButton.icon(
-              onPressed: () => _pickDate(isFrom: false),
-              icon: const Icon(Icons.date_range, size: 18),
-              label: Text('迄：${df.format(_toDate)}'),
+            _AiInsightsTab(
+              keyword: _keyword,
+              collectionName: widget.aiInsightsCollection,
             ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Text(
-                'Logs：$logTotal（success $logSuccess / fail $logFail / pending $logPending）',
-                style: TextStyle(
-                  color: Colors.grey.shade800,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
+            _LotteryWinnersTab(
+              keyword: _keyword,
+              collectionName: widget.lotteryWinnersCollection,
             ),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _kpiGrid() {
-    return Wrap(
-      spacing: 12,
-      runSpacing: 12,
+// ============================================================
+// Tab 1: Auto Campaign Reports
+// ============================================================
+
+class _AutoReportsTab extends StatefulWidget {
+  const _AutoReportsTab({required this.keyword, required this.collectionName});
+
+  final String keyword;
+  final String collectionName;
+
+  @override
+  State<_AutoReportsTab> createState() => _AutoReportsTabState();
+}
+
+class _AutoReportsTabState extends State<_AutoReportsTab> {
+  String _segment = 'all';
+
+  static const _segments = <_Option>[
+    _Option('all', '全部'),
+    _Option('new', '新客'),
+    _Option('active', '活躍'),
+    _Option('vip', 'VIP'),
+    _Option('churn_risk', '流失風險'),
+    _Option('sleeping', '沉睡'),
+  ];
+
+  Query<Map<String, dynamic>> _query() {
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection(
+      widget.collectionName,
+    );
+
+    if (_segment != 'all') {
+      q = q.where('segment', isEqualTo: _segment);
+    }
+
+    // 若你不是 date 欄位，可改成 createdAt
+    q = q.orderBy('date', descending: true).limit(250);
+    return q;
+  }
+
+  bool _match(Map<String, dynamic> m) {
+    final k = widget.keyword.trim().toLowerCase();
+    if (k.isEmpty) return true;
+    final campaignId = (m['campaignId'] ?? '').toString().toLowerCase();
+    final segment = (m['segment'] ?? '').toString().toLowerCase();
+    final channel = (m['channel'] ?? '').toString().toLowerCase();
+    final note = (m['note'] ?? '').toString().toLowerCase();
+    return campaignId.contains(k) ||
+        segment.contains(k) ||
+        channel.contains(k) ||
+        note.contains(k);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
       children: [
-        _kpiCard('優惠券', '$activeCoupons / $couponCount', Icons.local_offer),
-        _kpiCard('總發放量', totalIssued.toInt().toString(), Icons.send),
-        _kpiCard('總點擊量', totalClicks.toInt().toString(), Icons.touch_app),
-        _kpiCard('總使用量', totalUsed.toInt().toString(), Icons.check_circle),
-        _kpiCard('平均 CTR', '${avgCTR.toStringAsFixed(1)}%', Icons.ads_click),
-        _kpiCard('平均 CVR', '${avgCVR.toStringAsFixed(1)}%', Icons.trending_up),
-        _kpiCard('抽獎活動', '$activeLotteries / $lotteryCount', Icons.emoji_events),
-        _kpiCard('參與人次', totalParticipants.toInt().toString(), Icons.groups),
-        _kpiCard('得獎人次', totalWinners.toInt().toString(), Icons.verified),
-        _kpiCard('抽獎轉換率', '${lotteryCVR.toStringAsFixed(1)}%', Icons.percent),
-        _kpiCard('受眾分群', segmentCount.toString(), Icons.group_work),
-        _kpiCard('自動派發', autoCampaignCount.toString(), Icons.campaign),
-        _kpiCard('自動派發轉換', totalAutoConversions.toInt().toString(), Icons.auto_graph),
+        _FilterBar(
+          left: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _segments.map((s) {
+              final selected = _segment == s.value;
+              return ChoiceChip(
+                label: Text(s.label),
+                selected: selected,
+                onSelected: (_) => setState(() => _segment = s.value),
+              );
+            }).toList(),
+          ),
+        ),
+        Expanded(
+          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: _query().snapshots(),
+            builder: (context, snap) {
+              if (snap.hasError) {
+                return _ErrorView(
+                  message:
+                      '讀取自動活動報表失敗：${snap.error}\n\n'
+                      '若提示需要索引，請建立索引（segment/date 或 campaignId/segment/date）。\n'
+                      '若你沒有 date 欄位，請把 orderBy(\'date\') 改成 orderBy(\'createdAt\')。',
+                );
+              }
+              if (!snap.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              final docs = snap.data!.docs;
+              final filtered = docs.where((d) => _match(d.data())).toList();
+
+              if (filtered.isEmpty) {
+                return const Center(child: Text('沒有符合條件的自動活動報表資料'));
+              }
+
+              final summary = _AutoSummary.fromDocs(filtered);
+
+              return ListView(
+                padding: const EdgeInsets.all(12),
+                children: [
+                  _SummaryCard(title: '自動活動 KPI', tiles: summary.tiles()),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '明細',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 8),
+                  // ✅ FIX: unnecessary_to_list_in_spreads
+                  ...filtered.map((d) => _AutoReportCard(doc: d)),
+                ],
+              );
+            },
+          ),
+        ),
       ],
     );
   }
+}
 
-  // ✅ 修正版 KPI 卡：移除固定高度，避免 Column overflow
-  Widget _kpiCard(String label, String value, IconData icon) {
-    return SizedBox(
-      width: 180,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(color: Colors.grey.shade300, blurRadius: 4),
+class _AutoSummary {
+  final int rows;
+  final int sent;
+  final int delivered;
+  final int opened;
+  final int clicked;
+  final int conversions;
+  final int errors;
+  final double cost;
+  final double revenue;
+
+  _AutoSummary({
+    required this.rows,
+    required this.sent,
+    required this.delivered,
+    required this.opened,
+    required this.clicked,
+    required this.conversions,
+    required this.errors,
+    required this.cost,
+    required this.revenue,
+  });
+
+  static _AutoSummary fromDocs(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    int sent = 0,
+        delivered = 0,
+        opened = 0,
+        clicked = 0,
+        conversions = 0,
+        errors = 0;
+    double cost = 0, revenue = 0;
+
+    for (final d in docs) {
+      final m = d.data();
+      sent += _Num.asInt(m['sent']);
+      delivered += _Num.asInt(m['delivered']);
+      opened += _Num.asInt(m['opened']);
+      clicked += _Num.asInt(m['clicked']);
+      conversions += _Num.asInt(m['conversions']);
+      errors += _Num.asInt(m['errors']);
+      cost += _Num.asDouble(m['cost']);
+      revenue += _Num.asDouble(m['revenue']);
+    }
+
+    return _AutoSummary(
+      rows: docs.length,
+      sent: sent,
+      delivered: delivered,
+      opened: opened,
+      clicked: clicked,
+      conversions: conversions,
+      errors: errors,
+      cost: cost,
+      revenue: revenue,
+    );
+  }
+
+  List<_Metric> tiles() {
+    final openRate = delivered <= 0 ? 0.0 : opened / delivered;
+    final ctr = delivered <= 0 ? 0.0 : clicked / delivered;
+    final cvr = clicked <= 0 ? 0.0 : conversions / clicked;
+    final cpc = clicked <= 0 ? 0.0 : cost / clicked;
+    final cpa = conversions <= 0 ? 0.0 : cost / conversions;
+    final roi = cost <= 0 ? 0.0 : (revenue - cost) / cost;
+
+    return [
+      _Metric('筆數', '$rows', Icons.dataset),
+      _Metric('發送', '$sent', Icons.send),
+      _Metric('送達', '$delivered', Icons.mark_email_read),
+      _Metric('開啟', '$opened', Icons.drafts),
+      _Metric('點擊', '$clicked', Icons.ads_click),
+      _Metric('轉換', '$conversions', Icons.check_circle),
+      _Metric('錯誤', '$errors', Icons.error_outline),
+      _Metric('OpenRate', _Fmt.pct(openRate), Icons.mail),
+      _Metric('CTR', _Fmt.pct(ctr), Icons.trending_up),
+      _Metric('CVR', _Fmt.pct(cvr), Icons.insights),
+      _Metric('花費', _Fmt.money(cost), Icons.payments),
+      _Metric('營收', _Fmt.money(revenue), Icons.monetization_on),
+      _Metric('CPC', _Fmt.money(cpc), Icons.calculate),
+      _Metric('CPA', _Fmt.money(cpa), Icons.price_check),
+      _Metric('ROI', _Fmt.pct(roi), Icons.auto_graph),
+    ];
+  }
+}
+
+class _AutoReportCard extends StatelessWidget {
+  const _AutoReportCard({required this.doc});
+  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
+
+  @override
+  Widget build(BuildContext context) {
+    final m = doc.data();
+
+    final campaignId = (m['campaignId'] ?? '').toString();
+    final segment = (m['segment'] ?? '').toString();
+    final channel = (m['channel'] ?? '').toString();
+    final date = _Fmt.date(m['date'] ?? m['createdAt']);
+
+    final sent = _Num.asInt(m['sent']);
+    final delivered = _Num.asInt(m['delivered']);
+    final opened = _Num.asInt(m['opened']);
+    final clicked = _Num.asInt(m['clicked']);
+    final conversions = _Num.asInt(m['conversions']);
+    final errors = _Num.asInt(m['errors']);
+
+    final cost = _Num.asDouble(m['cost']);
+    final revenue = _Num.asDouble(m['revenue']);
+
+    final openRate = delivered <= 0 ? 0.0 : opened / delivered;
+    final ctr = delivered <= 0 ? 0.0 : clicked / delivered;
+    final cvr = clicked <= 0 ? 0.0 : conversions / clicked;
+
+    // ✅ 不用 cast：meta 用安全解析（避免 unnecessary_cast）
+    final meta = _Safe.asMap(m['meta']);
+    final note = (m['note'] ?? '').toString();
+
+    return Card(
+      elevation: 0.6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    [
+                      if (campaignId.isNotEmpty) campaignId,
+                      if (date.isNotEmpty) date,
+                    ].join(' · '),
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (segment.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  _Tag(text: segment),
+                ],
+                if (channel.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  _Tag(text: channel),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                _kv('sent', '$sent'),
+                _kv('delivered', '$delivered'),
+                _kv('opened', '$opened'),
+                _kv('clicked', '$clicked'),
+                _kv('conversions', '$conversions'),
+                _kv('errors', '$errors'),
+                _kv('OpenRate', _Fmt.pct(openRate)),
+                _kv('CTR', _Fmt.pct(ctr)),
+                _kv('CVR', _Fmt.pct(cvr)),
+                _kv('cost', _Fmt.money(cost)),
+                _kv('revenue', _Fmt.money(revenue)),
+              ],
+            ),
+            if (note.trim().isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(note, style: TextStyle(color: Colors.grey[800])),
+            ],
+            if (meta.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              _MetaBox(meta: meta),
+            ],
           ],
         ),
-        child: Padding(
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.black12),
+      ),
+      child: Text('$k：$v', style: const TextStyle(fontWeight: FontWeight.w700)),
+    );
+  }
+}
+
+// ============================================================
+// Tab 2: AI Insights
+// ============================================================
+
+class _AiInsightsTab extends StatelessWidget {
+  const _AiInsightsTab({required this.keyword, required this.collectionName});
+
+  final String keyword;
+  final String collectionName;
+
+  Query<Map<String, dynamic>> _query() {
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection(
+      collectionName,
+    );
+
+    // 若你不是 date 欄位，可改 createdAt
+    q = q.orderBy('date', descending: true).limit(250);
+    return q;
+  }
+
+  bool _match(Map<String, dynamic> m) {
+    final k = keyword.trim().toLowerCase();
+    if (k.isEmpty) return true;
+    final campaignId = (m['campaignId'] ?? '').toString().toLowerCase();
+    final segment = (m['segment'] ?? '').toString().toLowerCase();
+    final note = (m['note'] ?? m['summary'] ?? '').toString().toLowerCase();
+    return campaignId.contains(k) || segment.contains(k) || note.contains(k);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _query().snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return _ErrorView(
+            message:
+                '讀取 AI 洞察失敗：${snap.error}\n\n'
+                '若你沒有 date 欄位，請把 orderBy(\'date\') 改成 orderBy(\'createdAt\')。',
+          );
+        }
+        // ✅ FIX: curly braces
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final docs = snap.data!.docs;
+        final filtered = docs.where((d) => _match(d.data())).toList();
+
+        if (filtered.isEmpty) {
+          return const Center(child: Text('沒有符合條件的 AI 洞察資料'));
+        }
+
+        final summary = _AiSummary.fromDocs(filtered);
+
+        return ListView(
           padding: const EdgeInsets.all(12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min, // ✅ 關鍵：不要強制撐滿
-            crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _SummaryCard(title: 'AI 洞察 KPI', tiles: summary.tiles()),
+            const SizedBox(height: 12),
+            const Text('明細', style: TextStyle(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 8),
+            // ✅ FIX: unnecessary_to_list_in_spreads
+            ...filtered.map((d) => _AiInsightCard(doc: d)),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _AiSummary {
+  final int rows;
+  final int impressions;
+  final int clicks;
+  final int conversions;
+  final double cost;
+  final double revenue;
+
+  _AiSummary({
+    required this.rows,
+    required this.impressions,
+    required this.clicks,
+    required this.conversions,
+    required this.cost,
+    required this.revenue,
+  });
+
+  static _AiSummary fromDocs(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    int impressions = 0, clicks = 0, conversions = 0;
+    double cost = 0, revenue = 0;
+
+    for (final d in docs) {
+      final m = d.data();
+      impressions += _Num.asInt(m['impressions']);
+      clicks += _Num.asInt(m['clicks']);
+      conversions += _Num.asInt(m['conversions']);
+      cost += _Num.asDouble(m['cost']);
+      revenue += _Num.asDouble(m['revenue']);
+    }
+
+    return _AiSummary(
+      rows: docs.length,
+      impressions: impressions,
+      clicks: clicks,
+      conversions: conversions,
+      cost: cost,
+      revenue: revenue,
+    );
+  }
+
+  List<_Metric> tiles() {
+    final ctr = impressions <= 0 ? 0.0 : clicks / impressions;
+    final cvr = clicks <= 0 ? 0.0 : conversions / clicks;
+    final cpc = clicks <= 0 ? 0.0 : cost / clicks;
+    final cpa = conversions <= 0 ? 0.0 : cost / conversions;
+    final roi = cost <= 0 ? 0.0 : (revenue - cost) / cost;
+
+    return [
+      _Metric('筆數', '$rows', Icons.dataset),
+      _Metric('曝光', '$impressions', Icons.remove_red_eye),
+      _Metric('點擊', '$clicks', Icons.ads_click),
+      _Metric('轉換', '$conversions', Icons.check_circle),
+      _Metric('CTR', _Fmt.pct(ctr), Icons.trending_up),
+      _Metric('CVR', _Fmt.pct(cvr), Icons.insights),
+      _Metric('花費', _Fmt.money(cost), Icons.payments),
+      _Metric('營收', _Fmt.money(revenue), Icons.monetization_on),
+      _Metric('CPC', _Fmt.money(cpc), Icons.calculate),
+      _Metric('CPA', _Fmt.money(cpa), Icons.price_check),
+      _Metric('ROI', _Fmt.pct(roi), Icons.auto_graph),
+    ];
+  }
+}
+
+class _AiInsightCard extends StatelessWidget {
+  const _AiInsightCard({required this.doc});
+  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
+
+  @override
+  Widget build(BuildContext context) {
+    final m = doc.data();
+
+    final campaignId = (m['campaignId'] ?? '').toString();
+    final segment = (m['segment'] ?? '').toString();
+    final date = _Fmt.date(m['date'] ?? m['createdAt']);
+
+    final impressions = _Num.asInt(m['impressions']);
+    final clicks = _Num.asInt(m['clicks']);
+    final conversions = _Num.asInt(m['conversions']);
+    final cost = _Num.asDouble(m['cost']);
+    final revenue = _Num.asDouble(m['revenue']);
+
+    final ctr = impressions <= 0 ? 0.0 : clicks / impressions;
+    final cvr = clicks <= 0 ? 0.0 : conversions / clicks;
+
+    final note = (m['note'] ?? m['summary'] ?? '').toString();
+
+    return Card(
+      elevation: 0.6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    [
+                      if (campaignId.isNotEmpty) campaignId,
+                      if (date.isNotEmpty) date,
+                    ].join(' · '),
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (segment.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  _Tag(text: segment),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                _kv('impr', '$impressions'),
+                _kv('click', '$clicks'),
+                _kv('conv', '$conversions'),
+                _kv('CTR', _Fmt.pct(ctr)),
+                _kv('CVR', _Fmt.pct(cvr)),
+                _kv('cost', _Fmt.money(cost)),
+                _kv('rev', _Fmt.money(revenue)),
+              ],
+            ),
+            if (note.trim().isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(note, style: TextStyle(color: Colors.grey[800])),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.black12),
+      ),
+      child: Text('$k：$v', style: const TextStyle(fontWeight: FontWeight.w700)),
+    );
+  }
+}
+
+// ============================================================
+// Tab 3: Lottery Winners
+// ============================================================
+
+class _LotteryWinnersTab extends StatefulWidget {
+  const _LotteryWinnersTab({
+    required this.keyword,
+    required this.collectionName,
+  });
+
+  final String keyword;
+  final String collectionName;
+
+  @override
+  State<_LotteryWinnersTab> createState() => _LotteryWinnersTabState();
+}
+
+class _LotteryWinnersTabState extends State<_LotteryWinnersTab> {
+  bool _onlyUnfulfilled = false;
+
+  Query<Map<String, dynamic>> _query() {
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection(
+      widget.collectionName,
+    );
+
+    if (_onlyUnfulfilled) {
+      q = q.where('fulfilled', isEqualTo: false);
+    }
+
+    // 若你不是 createdAt 欄位，可改 date
+    q = q.orderBy('createdAt', descending: true).limit(300);
+    return q;
+  }
+
+  bool _match(Map<String, dynamic> m) {
+    final k = widget.keyword.trim().toLowerCase();
+    if (k.isEmpty) return true;
+
+    final lotteryId = (m['lotteryId'] ?? '').toString().toLowerCase();
+    final userId = (m['userId'] ?? '').toString().toLowerCase();
+    final userName = (m['userName'] ?? '').toString().toLowerCase();
+    final prizeName = (m['prizeName'] ?? '').toString().toLowerCase();
+    return lotteryId.contains(k) ||
+        userId.contains(k) ||
+        userName.contains(k) ||
+        prizeName.contains(k);
+  }
+
+  Future<void> _toggleFulfilled(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+    bool next,
+  ) async {
+    try {
+      await doc.reference.update({
+        'fulfilled': next,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _FilterBar(
+          left: Row(
             children: [
-              Icon(icon, color: Colors.blueAccent),
-              const SizedBox(height: 6),
-              Text(
-                value,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+              Switch(
+                value: _onlyUnfulfilled,
+                onChanged: (v) => setState(() => _onlyUnfulfilled = v),
               ),
-              const SizedBox(height: 2),
-              Text(
-                label,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.grey),
-              ),
+              const SizedBox(width: 6),
+              const Text('只看未發放'),
             ],
           ),
         ),
-      ),
-    );
-  }
+        Expanded(
+          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: _query().snapshots(),
+            builder: (context, snap) {
+              if (snap.hasError) {
+                return _ErrorView(
+                  message:
+                      '讀取抽獎中獎失敗：${snap.error}\n\n'
+                      '若你沒有 createdAt 欄位，請把 orderBy(\'createdAt\') 改成 orderBy(\'date\')。',
+                );
+              }
+              // ✅ FIX: curly braces
+              if (!snap.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
 
-  // ------------------------------------------------------------
-  // Charts
-  // ------------------------------------------------------------
-  Widget _buildLineChartDailyLogs() {
-    if (dailyLogPoints.isEmpty) {
-      return _emptyCard('每日趨勢（Logs）', '目前區間內沒有日誌資料');
-    }
+              final docs = snap.data!.docs;
+              final filtered = docs.where((d) => _match(d.data())).toList();
 
-    final maxY =
-        dailyLogPoints.map((e) => e.value).fold<double>(0, (m, v) => v > m ? v : m);
-    final paddedMaxY = (maxY <= 0) ? 10.0 : (maxY * 1.2);
+              if (filtered.isEmpty) {
+                return const Center(child: Text('沒有符合條件的中獎紀錄'));
+              }
 
-    // use index for x (0..n-1)
-    final spots = <FlSpot>[];
-    for (int i = 0; i < dailyLogPoints.length; i++) {
-      spots.add(FlSpot(i.toDouble(), dailyLogPoints[i].value));
-    }
+              final summary = _LotterySummary.fromDocs(filtered);
 
-    final df = DateFormat('MM/dd');
-
-    return Card(
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '每日趨勢（Logs Total / Day）',
-              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
-            ),
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 220,
-              child: LineChart(
-                LineChartData(
-                  minY: 0,
-                  maxY: paddedMaxY,
-                  gridData: FlGridData(show: true),
-                  borderData: FlBorderData(show: false),
-                  titlesData: FlTitlesData(
-                    rightTitles:
-                        const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    topTitles:
-                        const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    leftTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 40,
-                        getTitlesWidget: (v, meta) => Text(v.toInt().toString()),
-                      ),
-                    ),
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 30,
-                        interval: _calcBottomInterval(dailyLogPoints.length),
-                        getTitlesWidget: (v, meta) {
-                          final i = v.toInt();
-                          if (i < 0 || i >= dailyLogPoints.length) {
-                            return const SizedBox.shrink();
-                          }
-                          return Text(
-                            df.format(dailyLogPoints[i].day),
-                            style: const TextStyle(fontSize: 10),
-                          );
-                        },
-                      ),
-                    ),
+              return ListView(
+                padding: const EdgeInsets.all(12),
+                children: [
+                  _SummaryCard(title: '抽獎 KPI', tiles: summary.tiles()),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '明細',
+                    style: TextStyle(fontWeight: FontWeight.w900),
                   ),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: spots,
-                      isCurved: true,
-                      dotData: const FlDotData(show: false),
-                      belowBarData: BarAreaData(show: true),
-                      barWidth: 3,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+                  const SizedBox(height: 8),
+                  // ✅ FIX: unnecessary_to_list_in_spreads
+                  ...filtered.map(
+                    (d) => _WinnerCard(doc: d, onToggle: _toggleFulfilled),
+                  ),
+                ],
+              );
+            },
+          ),
         ),
-      ),
+      ],
     );
   }
+}
 
-  double _calcBottomInterval(int len) {
-    if (len <= 7) return 1;
-    if (len <= 14) return 2;
-    if (len <= 31) return 4;
-    return 7;
+class _LotterySummary {
+  final int rows;
+  final int fulfilled;
+  final int unfulfilled;
+
+  _LotterySummary({
+    required this.rows,
+    required this.fulfilled,
+    required this.unfulfilled,
+  });
+
+  static _LotterySummary fromDocs(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    int f = 0, uf = 0;
+    for (final d in docs) {
+      final m = d.data();
+      final ok = m['fulfilled'] == true;
+      if (ok) {
+        f += 1;
+      } else {
+        uf += 1;
+      }
+    }
+    return _LotterySummary(rows: docs.length, fulfilled: f, unfulfilled: uf);
   }
 
-  Widget _buildPieChartLogStatus() {
-    final total = (logSuccess + logFail + logPending);
-    if (total <= 0) {
-      return _emptyCard('狀態分佈（Logs）', '目前區間內沒有 success/fail/pending 記錄');
-    }
-
-    final sections = <PieChartSectionData>[
-      PieChartSectionData(
-        value: logSuccess.toDouble(),
-        title: 'success\n$logSuccess',
-        radius: 52,
-        titleStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
-      ),
-      PieChartSectionData(
-        value: logFail.toDouble(),
-        title: 'fail\n$logFail',
-        radius: 52,
-        titleStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
-      ),
-      PieChartSectionData(
-        value: logPending.toDouble(),
-        title: 'pending\n$logPending',
-        radius: 52,
-        titleStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
-      ),
+  List<_Metric> tiles() {
+    final rate = rows <= 0 ? 0.0 : fulfilled / rows;
+    return [
+      _Metric('筆數', '$rows', Icons.dataset),
+      _Metric('已發放', '$fulfilled', Icons.check_circle),
+      _Metric('未發放', '$unfulfilled', Icons.pending_actions),
+      _Metric('發放率', _Fmt.pct(rate), Icons.trending_up),
     ];
+  }
+}
+
+class _WinnerCard extends StatelessWidget {
+  const _WinnerCard({required this.doc, required this.onToggle});
+
+  final QueryDocumentSnapshot<Map<String, dynamic>> doc;
+  final Future<void> Function(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+    bool next,
+  )
+  onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final m = doc.data();
+
+    final lotteryId = (m['lotteryId'] ?? '').toString();
+    final userId = (m['userId'] ?? '').toString();
+    final userName = (m['userName'] ?? '').toString();
+    final prizeName = (m['prizeName'] ?? '').toString();
+    final fulfilled = m['fulfilled'] == true;
+    final time = _Fmt.dateTime(m['createdAt'] ?? m['date']);
+
+    // ✅ 不用 cast：meta 用安全解析（避免 unnecessary_cast）
+    final meta = _Safe.asMap(m['meta']);
 
     return Card(
-      elevation: 1,
+      elevation: 0.6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              '狀態分佈（Logs）',
-              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
-            ),
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 240,
-              child: PieChart(
-                PieChartData(
-                  sections: sections,
-                  centerSpaceRadius: 28,
-                  sectionsSpace: 2,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  double _calcMaxY(List<MapEntry<String, double>> entries) {
-    if (entries.isEmpty) return 10;
-    final max = entries.map((e) => e.value).reduce((a, b) => a > b ? a : b);
-    final padded = max <= 0 ? 10.0 : (max * 1.2);
-    return padded;
-  }
-
-  Widget _buildBarChart(
-    String title,
-    List<MapEntry<String, double>> entries, {
-    required double maxY,
-  }) {
-    if (entries.isEmpty) return _emptyCard(title, '無資料');
-
-    return Card(
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 260,
-              child: BarChart(
-                BarChartData(
-                  maxY: maxY,
-                  alignment: BarChartAlignment.spaceAround,
-                  borderData: FlBorderData(show: false),
-                  gridData: FlGridData(show: false),
-                  titlesData: FlTitlesData(
-                    topTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
-                    leftTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 40,
-                        getTitlesWidget: (v, meta) => Text(v.toInt().toString()),
-                      ),
-                    ),
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 74,
-                        getTitlesWidget: (v, meta) {
-                          final i = v.toInt();
-                          if (i < 0 || i >= entries.length) {
-                            return const SizedBox.shrink();
-                          }
-                          final t = entries[i].key;
-                          return Padding(
-                            padding: const EdgeInsets.only(top: 6),
-                            child: Text(
-                              t,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(fontSize: 10),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    prizeName.isEmpty ? '(未命名獎品)' : prizeName,
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  barGroups: [
-                    for (int i = 0; i < entries.length; i++)
-                      BarChartGroupData(
-                        x: i,
-                        barRods: [
-                          BarChartRodData(
-                            toY: entries[i].value,
-                            width: 14,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        ],
-                      ),
-                  ],
                 ),
+                const SizedBox(width: 8),
+                _Tag(
+                  text: fulfilled ? '已發放' : '未發放',
+                  color: fulfilled ? Colors.green : Colors.orange,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                _kv('lotteryId', lotteryId),
+                _kv('userId', userId),
+                _kv('userName', userName),
+                if (time.isNotEmpty) _kv('time', time),
+              ],
+            ),
+            if (meta.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              _MetaBox(meta: meta),
+            ],
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () => onToggle(doc, !fulfilled),
+              icon: Icon(fulfilled ? Icons.undo : Icons.check),
+              label: Text(fulfilled ? '改為未發放' : '標記已發放'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    final text = v.trim().isEmpty ? '-' : v.trim();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.black12),
+      ),
+      child: Text(
+        '$k：$text',
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Shared Widgets / Utils
+// ============================================================
+
+class _FilterBar extends StatelessWidget {
+  const _FilterBar({required this.left});
+  final Widget left;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            // ✅ FIX: withOpacity deprecated
+            color: _ColorX.withOpacity(Colors.black, 0.08),
+          ),
+        ),
+      ),
+      child: left,
+    );
+  }
+}
+
+class _SummaryCard extends StatelessWidget {
+  const _SummaryCard({required this.title, required this.tiles});
+  final String title;
+  final List<_Metric> tiles;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w900,
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _emptyCard(String title, String message) {
-    return Card(
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-            const SizedBox(height: 8),
-            Text(message, style: TextStyle(color: Colors.grey.shade700)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildNotesCard() {
-    return Card(
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('備註',
-                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
             const SizedBox(height: 10),
-            Text(
-              '1) 本頁優惠券/抽獎/自動派發的 counters（issuedCount / usedCount / conversionCount）多為「累計值」。\n'
-              '2) 若你要做「區間增量」報表，建議在 campaign_logs 寫入 action（issued/click/used/conversion）並用日誌聚合。\n'
-              '3) 若 campaign_logs 數量很大，建議改成：後端每日聚合表（marketing_daily_stats）以提升速度與降低讀取成本。',
-              style: TextStyle(color: Colors.grey.shade800, height: 1.35),
+            LayoutBuilder(
+              builder: (context, c) {
+                final w = c.maxWidth;
+                final crossAxisCount = w >= 900
+                    ? 4
+                    : w >= 600
+                    ? 3
+                    : 2;
+
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: tiles.length,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: crossAxisCount,
+                    crossAxisSpacing: 10,
+                    mainAxisSpacing: 10,
+                    childAspectRatio: 2.8,
+                  ),
+                  itemBuilder: (_, i) => _MetricTile(metric: tiles[i]),
+                );
+              },
             ),
           ],
         ),
@@ -895,22 +1001,205 @@ class _AdminMarketingReportsPageState extends State<AdminMarketingReportsPage> {
   }
 }
 
-// ------------------------------------------------------------
-// Models
-// ------------------------------------------------------------
-class _DayPoint {
-  final DateTime day;
-  final double value;
-  const _DayPoint({required this.day, required this.value});
+class _Metric {
+  final String title;
+  final String value;
+  final IconData icon;
+  const _Metric(this.title, this.value, this.icon);
 }
 
-class _DayAgg {
-  final DateTime day;
-  int total = 0;
-  int success = 0;
-  int fail = 0;
-  int pending = 0;
-  int other = 0;
+class _MetricTile extends StatelessWidget {
+  const _MetricTile({required this.metric});
+  final _Metric metric;
 
-  _DayAgg(this.day);
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black12),
+      ),
+      child: Row(
+        children: [
+          Icon(metric.icon, size: 20, color: theme.colorScheme.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  metric.title,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: Colors.grey[700],
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  metric.value,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetaBox extends StatelessWidget {
+  const _MetaBox({required this.meta});
+  final Map<String, dynamic> meta;
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = meta.entries.toList()
+      ..sort((a, b) => a.key.toString().compareTo(b.key.toString()));
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black12),
+        // ✅ FIX: withOpacity deprecated
+        color: _ColorX.withOpacity(Colors.black, 0.03),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Meta', style: TextStyle(fontWeight: FontWeight.w900)),
+          const SizedBox(height: 6),
+          ...entries.map(
+            (e) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text('${e.key}: ${e.value}'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Tag extends StatelessWidget {
+  const _Tag({required this.text, this.color});
+  final String text;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = color ?? Colors.black54;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        // ✅ FIX: withOpacity deprecated
+        color: _ColorX.withOpacity(c, 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: _ColorX.withOpacity(c, 0.35)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 12, color: c, fontWeight: FontWeight.w800),
+      ),
+    );
+  }
+}
+
+class _ErrorView extends StatelessWidget {
+  const _ErrorView({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Text(message, style: const TextStyle(color: Colors.red)),
+        ),
+      ),
+    );
+  }
+}
+
+class _Option {
+  final String value;
+  final String label;
+  const _Option(this.value, this.label);
+}
+
+class _Safe {
+  // ✅ 不用 cast：避免 unnecessary_cast
+  static Map<String, dynamic> asMap(dynamic v) {
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return <String, dynamic>{};
+  }
+}
+
+class _Num {
+  static int asInt(dynamic v) {
+    if (v == null) return 0;
+    if (v is int) return v;
+    if (v is double) return v.round();
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v.trim()) ?? 0;
+    if (v is List) return v.length;
+    if (v is Map) return v.length;
+    return 0;
+  }
+
+  static double asDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is double) return v;
+    if (v is int) return v.toDouble();
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v.trim()) ?? 0.0;
+    return 0.0;
+  }
+}
+
+class _Fmt {
+  static String pct(double v) => '${(v * 100).toStringAsFixed(2)}%';
+  static String money(double v) => v.toStringAsFixed(2);
+
+  static DateTime? _asDateTime(dynamic v) {
+    try {
+      if (v == null) return null;
+      if (v is Timestamp) return v.toDate();
+      if (v is DateTime) return v;
+      if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+      if (v is String) return DateTime.tryParse(v);
+    } catch (_) {}
+    return null;
+  }
+
+  static String date(dynamic v) {
+    final dt = _asDateTime(v);
+    if (dt == null) return '';
+    String two(int x) => x.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)}';
+  }
+
+  static String dateTime(dynamic v) {
+    final dt = _asDateTime(v);
+    if (dt == null) return '';
+    String two(int x) => x.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+  }
+}
+
+/// ✅ 統一處理透明度（withOpacity deprecated → withValues(alpha: 0~1)）
+class _ColorX {
+  static Color withOpacity(Color c, double opacity01) {
+    final o = opacity01.clamp(0.0, 1.0).toDouble();
+    return c.withValues(alpha: o);
+  }
 }

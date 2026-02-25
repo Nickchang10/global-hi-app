@@ -1,6 +1,6 @@
 // lib/pages/admin/content/admin_content_shell_page.dart
 //
-// ✅ AdminContentShellPage（內容管理中心｜完整版）
+// ✅ AdminContentShellPage（內容管理中心｜完整版｜已修正 deprecated）
 // ------------------------------------------------------------
 // - 管理內容型模組（最新消息 / 公告 / 下載專區 / 聯絡表單 / 內容頁）
 // - 支援 Firestore 結構：news / announcements / downloads / contacts / site_contents
@@ -18,21 +18,23 @@ class AdminContentShellPage extends StatefulWidget {
 }
 
 class _AdminContentShellPageState extends State<AdminContentShellPage> {
+  int _alpha255(double opacity01) => (opacity01 * 255).round().clamp(0, 255);
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('內容管理中心', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '內容管理中心',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
         children: [
-          _SectionTitle(
-            title: '內容模組總覽',
-            subtitle: '集中管理前台可見的靜態內容與文章資料',
-          ),
+          const _SectionTitle(title: '內容模組總覽', subtitle: '集中管理前台可見的靜態內容與文章資料'),
           const SizedBox(height: 8),
 
           _ContentTile(
@@ -42,7 +44,8 @@ class _AdminContentShellPageState extends State<AdminContentShellPage> {
             onTap: () => _openPlaceholder(
               context,
               title: '最新消息管理（待接入）',
-              desc: '下一步我可提供 admin_news_page.dart 完整版，\n'
+              desc:
+                  '下一步我可提供 admin_news_page.dart 完整版，\n'
                   '含上傳封面、內容編輯、上下架與排序。',
             ),
           ),
@@ -90,7 +93,9 @@ class _AdminContentShellPageState extends State<AdminContentShellPage> {
           const SizedBox(height: 18),
           Card(
             elevation: 0,
-            color: cs.surfaceVariant.withOpacity(0.4),
+            // ✅ FIX: surfaceVariant deprecated → surfaceContainerHighest
+            // ✅ FIX: withOpacity deprecated → withAlpha
+            color: cs.surfaceContainerHighest.withAlpha(_alpha255(0.40)),
             child: Padding(
               padding: const EdgeInsets.all(14),
               child: Text(
@@ -105,8 +110,11 @@ class _AdminContentShellPageState extends State<AdminContentShellPage> {
     );
   }
 
-  void _openPlaceholder(BuildContext context,
-      {required String title, required String desc}) {
+  void _openPlaceholder(
+    BuildContext context, {
+    required String title,
+    required String desc,
+  }) {
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -131,10 +139,18 @@ class _SectionTitle extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+        Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+        ),
         if (subtitle != null)
-          Text(subtitle!,
-              style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600)),
+          Text(
+            subtitle!,
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
       ],
     );
   }
@@ -164,8 +180,13 @@ class _ContentTile extends StatelessWidget {
           child: Icon(icon, color: cs.onPrimaryContainer),
         ),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-        subtitle: Text(subtitle,
-            style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600)),
+        subtitle: Text(
+          subtitle,
+          style: TextStyle(
+            color: cs.onSurfaceVariant,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
         trailing: const Icon(Icons.chevron_right),
         onTap: onTap,
       ),
@@ -197,14 +218,19 @@ class _PlaceholderPage extends StatelessWidget {
                   children: [
                     Icon(Icons.info_outline, size: 44, color: cs.primary),
                     const SizedBox(height: 10),
-                    Text(title,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w900, fontSize: 18)),
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18,
+                      ),
+                    ),
                     const SizedBox(height: 8),
-                    Text(desc,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            color: cs.onSurfaceVariant, height: 1.4)),
+                    Text(
+                      desc,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: cs.onSurfaceVariant, height: 1.4),
+                    ),
                     const SizedBox(height: 14),
                     FilledButton.icon(
                       onPressed: () => Navigator.pop(context),

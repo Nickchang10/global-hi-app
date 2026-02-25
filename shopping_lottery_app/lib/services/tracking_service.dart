@@ -23,7 +23,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ⚠️ 你必須在 pubspec.yaml 加上 geolocator 才能 resolve：
-// geolocator: ^14.0.2
+// geolocator: ^14.x
 import 'package:geolocator/geolocator.dart';
 
 /// ======================================================
@@ -43,11 +43,11 @@ class TrackingPoint {
   });
 
   Map<String, dynamic> toMap() => {
-        'lat': lat,
-        'lng': lng,
-        'time': time.millisecondsSinceEpoch,
-        'source': source,
-      };
+    'lat': lat,
+    'lng': lng,
+    'time': time.millisecondsSinceEpoch,
+    'source': source,
+  };
 
   factory TrackingPoint.fromMap(Map<String, dynamic> m) {
     DateTime dt = DateTime.now();
@@ -67,14 +67,17 @@ class TrackingPoint {
       }
     }
 
-    double _toDouble(dynamic v) {
+    // ✅ local identifier 不能用底線開頭：把 _toDouble 改名
+    double toDoubleVal(dynamic v) {
+      if (v == null) return 0.0;
       if (v is num) return v.toDouble();
+      if (v is String) return double.tryParse(v.trim()) ?? 0.0;
       return double.tryParse('$v') ?? 0.0;
     }
 
     return TrackingPoint(
-      lat: _toDouble(m['lat']),
-      lng: _toDouble(m['lng']),
+      lat: toDoubleVal(m['lat']),
+      lng: toDoubleVal(m['lng']),
       time: dt,
       source: (m['source'] ?? 'history').toString(),
     );
@@ -130,16 +133,18 @@ class TrackingService extends ChangeNotifier {
           final h = map['history'];
 
           if (ll is Map) {
-            lastLocal = TrackingPoint.fromMap(ll.cast<String, dynamic>());
+            lastLocal = TrackingPoint.fromMap(Map<String, dynamic>.from(ll));
           }
           if (lr is Map) {
-            lastRemote = TrackingPoint.fromMap(lr.cast<String, dynamic>());
+            lastRemote = TrackingPoint.fromMap(Map<String, dynamic>.from(lr));
           }
           if (h is List) {
             history
               ..clear()
               ..addAll(
-                h.whereType<Map>().map((e) => TrackingPoint.fromMap(e.cast<String, dynamic>())),
+                h.whereType<Map>().map(
+                  (e) => TrackingPoint.fromMap(Map<String, dynamic>.from(e)),
+                ),
               );
           }
         }
@@ -228,11 +233,7 @@ class TrackingService extends ChangeNotifier {
     await _posSub?.cancel();
     _posSub = Geolocator.getPositionStream(locationSettings: settings).listen(
       (pos) async {
-        _updateLocal(
-          lat: pos.latitude,
-          lng: pos.longitude,
-          source: 'local',
-        );
+        _updateLocal(lat: pos.latitude, lng: pos.longitude, source: 'local');
         await _save();
         notifyListeners();
       },
@@ -260,7 +261,9 @@ class TrackingService extends ChangeNotifier {
     lastLocal = point;
 
     // 同步進 history（用於 polyline）
-    history.add(TrackingPoint(lat: lat, lng: lng, time: now, source: 'history'));
+    history.add(
+      TrackingPoint(lat: lat, lng: lng, time: now, source: 'history'),
+    );
 
     // 控制 history 長度，避免爆
     if (history.length > 500) {
@@ -331,12 +334,14 @@ class TrackingService extends ChangeNotifier {
     );
 
     if (appendToHistory) {
-      history.add(TrackingPoint(
-        lat: lat,
-        lng: lng,
-        time: DateTime.now(),
-        source: 'history',
-      ));
+      history.add(
+        TrackingPoint(
+          lat: lat,
+          lng: lng,
+          time: DateTime.now(),
+          source: 'history',
+        ),
+      );
       if (history.length > 500) {
         history.removeRange(0, history.length - 500);
       }

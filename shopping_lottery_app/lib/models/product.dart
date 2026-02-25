@@ -1,141 +1,171 @@
 // lib/models/product.dart
+//
+// ✅ Product model（最終完整版｜可直接使用｜已移除 unused_import）
+// ------------------------------------------------------------
 
-import 'package:flutter/foundation.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// 商品資料模型：
-/// - 支援標籤 / 收藏 / 評分 / 評價數
-/// - 支援 quantity（購物車數量）
-/// - 支援 categoryId（分類）等欄位
-class ProductModel {
+class Product {
   final String id;
+
+  // 基本
   final String title;
-  final String subtitle;
-  final String brand;
-
-  /// 分類 ID（例如：smart_watch / kids_watch / band / social）
+  final String description;
   final String categoryId;
-
-  /// 價格
-  final int price;
-  final int? oldPrice; // 有折扣才顯示
-
-  /// 圖片列表
   final List<String> images;
 
-  /// 主要圖片（第一張）
-  String get image => images.isNotEmpty ? images.first : "";
+  // 價格
+  final int price; // 原價（單位：元）
+  final int salePrice; // 促銷價（0 表示無促銷）
+  final String currency; // 預設 TWD
 
-  /// 庫存
+  // 庫存 / 上架
   final int stock;
+  final bool isActive;
 
-  /// 商品描述
-  final String description;
+  // 供應商/廠商
+  final String vendorId;
+  final String vendorName;
 
-  /// 建立時間（用於排序：新品 / 熱銷）
-  final DateTime createdAt;
+  // 排序 / 權重
+  final int sort;
+  final int soldCount;
 
-  /// 熱度分數（熱銷程度）
-  final int hotScore;
+  // 時間
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
 
-  /// 標籤：新品 / 熱銷 / 特價 / 好友推薦...
-  final List<String> tags;
-
-  /// 篩選用：顏色 / 版本
-  final String color;
-  final String version;
-
-  /// 規格選項
-  final List<String> colorOptions;
-  final List<String> versionOptions;
-  final List<String> packageOptions;
-
-  /// 收藏狀態（商品列表裡會直接切換）
-  bool isFavorite;
-
-  /// 評分與評價數（商品詳情頁用）
-  final double rating;
-  final int reviewCount;
-
-  /// 購物車數量
-  final int quantity;
-
-  ProductModel({
+  const Product({
     required this.id,
     required this.title,
-    this.subtitle = "",
-    this.brand = "",
+    required this.description,
     required this.categoryId,
-    required this.price,
-    this.oldPrice,
     required this.images,
-    this.stock = 0,
-    this.description = "",
+    required this.price,
+    required this.salePrice,
+    required this.currency,
+    required this.stock,
+    required this.isActive,
+    required this.vendorId,
+    required this.vendorName,
+    required this.sort,
+    required this.soldCount,
     required this.createdAt,
-    this.hotScore = 0,
-    this.tags = const [],
-    this.color = "",
-    this.version = "",
-    this.colorOptions = const [],
-    this.versionOptions = const [],
-    this.packageOptions = const [],
-    this.isFavorite = false,
-    this.rating = 4.5,
-    this.reviewCount = 0,
-    this.quantity = 1,
+    required this.updatedAt,
   });
 
-  /// 方便在 Provider 裡做「+1 / -1 / 更新部分欄位」
-  ProductModel copyWith({
+  int get effectivePrice =>
+      (salePrice > 0 && salePrice < price) ? salePrice : price;
+
+  int get discountAmount =>
+      (salePrice > 0 && salePrice < price) ? (price - salePrice) : 0;
+
+  double get discountRate => (salePrice > 0 && salePrice < price && price > 0)
+      ? (price - salePrice) / price
+      : 0.0;
+
+  bool get hasDiscount => discountAmount > 0;
+
+  bool get inStock => stock > 0;
+
+  Product copyWith({
     String? id,
     String? title,
-    String? subtitle,
-    String? brand,
-    String? categoryId,
-    int? price,
-    int? oldPrice,
-    List<String>? images,
-    int? stock,
     String? description,
+    String? categoryId,
+    List<String>? images,
+    int? price,
+    int? salePrice,
+    String? currency,
+    int? stock,
+    bool? isActive,
+    String? vendorId,
+    String? vendorName,
+    int? sort,
+    int? soldCount,
     DateTime? createdAt,
-    int? hotScore,
-    List<String>? tags,
-    String? color,
-    String? version,
-    List<String>? colorOptions,
-    List<String>? versionOptions,
-    List<String>? packageOptions,
-    bool? isFavorite,
-    double? rating,
-    int? reviewCount,
-    int? quantity,
+    DateTime? updatedAt,
   }) {
-    return ProductModel(
+    return Product(
       id: id ?? this.id,
       title: title ?? this.title,
-      subtitle: subtitle ?? this.subtitle,
-      brand: brand ?? this.brand,
-      categoryId: categoryId ?? this.categoryId,
-      price: price ?? this.price,
-      oldPrice: oldPrice ?? this.oldPrice,
-      images: images ?? this.images,
-      stock: stock ?? this.stock,
       description: description ?? this.description,
+      categoryId: categoryId ?? this.categoryId,
+      images: images ?? this.images,
+      price: price ?? this.price,
+      salePrice: salePrice ?? this.salePrice,
+      currency: currency ?? this.currency,
+      stock: stock ?? this.stock,
+      isActive: isActive ?? this.isActive,
+      vendorId: vendorId ?? this.vendorId,
+      vendorName: vendorName ?? this.vendorName,
+      sort: sort ?? this.sort,
+      soldCount: soldCount ?? this.soldCount,
       createdAt: createdAt ?? this.createdAt,
-      hotScore: hotScore ?? this.hotScore,
-      tags: tags ?? this.tags,
-      color: color ?? this.color,
-      version: version ?? this.version,
-      colorOptions: colorOptions ?? this.colorOptions,
-      versionOptions: versionOptions ?? this.versionOptions,
-      packageOptions: packageOptions ?? this.packageOptions,
-      isFavorite: isFavorite ?? this.isFavorite,
-      rating: rating ?? this.rating,
-      reviewCount: reviewCount ?? this.reviewCount,
-      quantity: quantity ?? this.quantity,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
-}
 
-/// 讓原本使用 `Product` 的地方不用全部改，
-/// 直接當成別名使用即可。
-typedef Product = ProductModel;
+  Map<String, dynamic> toMap() {
+    return {
+      'title': title,
+      'description': description,
+      'categoryId': categoryId,
+      'images': images,
+      'price': price,
+      'salePrice': salePrice,
+      'currency': currency,
+      'stock': stock,
+      'isActive': isActive,
+      'vendorId': vendorId,
+      'vendorName': vendorName,
+      'sort': sort,
+      'soldCount': soldCount,
+      'createdAt': createdAt == null ? null : Timestamp.fromDate(createdAt!),
+      'updatedAt': updatedAt == null ? null : Timestamp.fromDate(updatedAt!),
+    };
+  }
+
+  static Product fromMap(String id, Map<String, dynamic> map) {
+    return Product(
+      id: id,
+      title: (map['title'] ?? '').toString(),
+      description: (map['description'] ?? '').toString(),
+      categoryId: (map['categoryId'] ?? '').toString(),
+      images: (map['images'] is List)
+          ? List<String>.from((map['images'] as List).map((e) => e.toString()))
+          : const <String>[],
+      price: _toInt(map['price'], fallback: 0),
+      salePrice: _toInt(map['salePrice'], fallback: 0),
+      currency: (map['currency'] ?? 'TWD').toString(),
+      stock: _toInt(map['stock'], fallback: 0),
+      isActive: (map['isActive'] ?? true) == true,
+      vendorId: (map['vendorId'] ?? '').toString(),
+      vendorName: (map['vendorName'] ?? '').toString(),
+      sort: _toInt(map['sort'], fallback: 0),
+      soldCount: _toInt(map['soldCount'], fallback: 0),
+      createdAt: _toDateTime(map['createdAt']),
+      updatedAt: _toDateTime(map['updatedAt']),
+    );
+  }
+
+  static Product fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data() ?? const <String, dynamic>{};
+    return fromMap(doc.id, data);
+  }
+
+  static int _toInt(dynamic v, {required int fallback}) {
+    if (v is int) return v;
+    if (v is double) return v.round();
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  static DateTime? _toDateTime(dynamic v) {
+    if (v == null) return null;
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    return null;
+  }
+}

@@ -1,7 +1,17 @@
-import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 
+/// ✅ ActivityPage（活動頁｜完整版｜已修正 GoogleFonts.notoSansTc）
+/// ------------------------------------------------------------
+/// - 修正：不再呼叫 GoogleFonts.notoSansTc（不存在）
+/// - 改用：GoogleFonts.getFont('Noto Sans TC')（相容性高）
+/// - 資料：Firestore 讀 campaigns；若空 fallback auto_campaigns
+/// - 顯示：標題/描述/活動期間/獎勵點數/啟用狀態
+/// - 會員點數：讀 users/{uid}.points（可選顯示）
+/// ------------------------------------------------------------
 class ActivityPage extends StatefulWidget {
   const ActivityPage({super.key});
 
@@ -10,363 +20,438 @@ class ActivityPage extends StatefulWidget {
 }
 
 class _ActivityPageState extends State<ActivityPage> {
-  int selectedCategory = 0;
-  int userPoints = 120;
-  late Timer _timer;
-  Duration remaining = const Duration(days: 2, hours: 8, minutes: 30);
+  final _fs = FirebaseFirestore.instance;
+  final _df = DateFormat('yyyy/MM/dd');
 
-  final List<String> categories = ['全部', '健康挑戰', '親子互動', 'Osmile 功能'];
+  bool _onlyActive = true;
+  String _typeFilter = 'all'; // all/coupon/lottery/checkin/referral/campaign
 
-  final List<Map<String, dynamic>> activities = [
-    {
-      'title': '親子互動日',
-      'subtitle': '完成 3 次親子任務，獲得「親子之星」徽章！',
-      'image':
-          'https://images.unsplash.com/photo-1558611848-73f7eb4001a1?auto=format&fit=crop&w=1200&q=80',
-      'progress': 0.75,
-      'points': 45,
-      'tag': '親子',
-    },
-    {
-      'title': 'Osmile 健走活動',
-      'subtitle': '12/20 - 12/31 完成每日 5,000 步可抽好禮！',
-      'image':
-          'https://images.unsplash.com/photo-1502767089025-6572583495b0?auto=format&fit=crop&w=1200&q=80',
-      'progress': 0.3,
-      'points': 30,
-      'tag': '健走',
-    },
-    {
-      'title': '健康挑戰賽',
-      'subtitle': '每天堅持心率紀錄滿 7 天可獲專屬徽章。',
-      'image':
-          'https://images.unsplash.com/photo-1594737625785-c1e6f0d8e2f5?auto=format&fit=crop&w=1200&q=80',
-      'progress': 0.5,
-      'points': 60,
-      'tag': '健康',
-    },
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  TextStyle _tc(TextStyle base) {
+    // ✅ 取代 GoogleFonts.notoSansTc / notoSansTC
+    // getFont 在 google_fonts 多數版本都可用，穩定
+    return GoogleFonts.getFont('Noto Sans TC', textStyle: base);
   }
 
-  void _tick() {
-    setState(() {
-      if (remaining.inSeconds > 0) {
-        remaining -= const Duration(seconds: 1);
+  int _asInt(dynamic v, {int fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  bool _asBool(dynamic v, {bool fallback = false}) {
+    if (v == null) return fallback;
+    if (v is bool) return v;
+    if (v is String) {
+      final t = v.toLowerCase().trim();
+      if (t == 'true') return true;
+      if (t == 'false') return false;
+    }
+    return fallback;
+  }
+
+  DateTime? _asDate(dynamic v) {
+    if (v == null) return null;
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    return null;
+  }
+
+  Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+  _activitiesStream() async* {
+    final q1 = _fs
+        .collection('campaigns')
+        .orderBy('createdAt', descending: true)
+        .limit(50);
+
+    await for (final snap1 in q1.snapshots()) {
+      if (snap1.docs.isNotEmpty) {
+        yield snap1.docs;
+      } else {
+        final q2 = _fs
+            .collection('auto_campaigns')
+            .orderBy('createdAt', descending: true)
+            .limit(50);
+        await for (final snap2 in q2.snapshots()) {
+          yield snap2.docs;
+        }
       }
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer.cancel();
-    super.dispose();
-  }
-
-  String _formatDuration(Duration d) {
-    String twoDigits(int n) => n.toString().padLeft(2, "0");
-    return "${d.inDays}天 ${twoDigits(d.inHours % 24)}:${twoDigits(d.inMinutes % 60)}:${twoDigits(d.inSeconds % 60)}";
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    final titleStyle = _tc(
+      const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+    );
+    final itemTitleStyle = _tc(
+      const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+    );
+    final itemSubStyle = _tc(const TextStyle(fontSize: 13, color: Colors.grey));
+
     return Scaffold(
-      backgroundColor: const Color(0xfff9fafb),
       appBar: AppBar(
-        title: const Text('活動'),
-        centerTitle: true,
-        backgroundColor: Colors.white,
-        elevation: 0.8,
-      ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: Colors.orangeAccent,
-        child: const Icon(Icons.casino),
-        onPressed: _showLuckyDraw,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildHeaderCard(),
-            const SizedBox(height: 16),
-            _buildCountdownCard(),
-            const SizedBox(height: 16),
-            _buildCategoryTabs(),
-            const SizedBox(height: 16),
-            ...activities.map((a) => _buildActivityCard(a)).toList(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ===========================================================
-  // 活動中心頭部卡
-  // ===========================================================
-  Widget _buildHeaderCard() {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFFFFA726), Color(0xFFFF7043)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      padding: const EdgeInsets.all(20),
-      child: Row(
-        children: [
-          const CircleAvatar(
-            backgroundColor: Colors.white,
-            radius: 28,
-            child: Icon(Icons.emoji_events, color: Colors.orange, size: 28),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              '活動中心\n任務挑戰 × 點數兌換 × 成就徽章',
-              style: GoogleFonts.notoSansTc(
-                fontWeight: FontWeight.bold,
-                fontSize: 15,
-                color: Colors.white,
-              ),
-            ),
-          ),
-          Column(
-            children: [
-              Text('$userPoints',
-                  style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white)),
-              const Text('點數',
-                  style: TextStyle(fontSize: 12, color: Colors.white70)),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ===========================================================
-  // 倒數計時卡
-  // ===========================================================
-  Widget _buildCountdownCard() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 8,
-              offset: const Offset(0, 4))
-        ],
-      ),
-      padding: const EdgeInsets.all(18),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
+        title: Text('活動', style: titleStyle),
+        actions: [
           Row(
             children: [
-              const Icon(Icons.timer_outlined,
-                  color: Colors.orangeAccent, size: 28),
-              const SizedBox(width: 10),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              Text('只看啟用', style: _tc(const TextStyle(fontSize: 12))),
+              Switch(
+                value: _onlyActive,
+                onChanged: (v) => setState(() => _onlyActive = v),
+              ),
+              const SizedBox(width: 6),
+            ],
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (user != null) _userPointsHeader(user.uid),
+          _filterBar(),
+          const Divider(height: 1),
+          Expanded(
+            child:
+                StreamBuilder<
+                  List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                >(
+                  stream: _activitiesStream(),
+                  builder: (context, snap) {
+                    if (snap.hasError) {
+                      return Center(
+                        child: Text('讀取失敗：${snap.error}', style: itemSubStyle),
+                      );
+                    }
+                    if (!snap.hasData) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    final docs = snap.data!;
+                    if (docs.isEmpty) {
+                      return Center(child: Text('目前沒有活動', style: itemSubStyle));
+                    }
+
+                    final items = docs
+                        .map(
+                          (d) => _ActivityItem.fromDoc(
+                            d,
+                            asInt: _asInt,
+                            asBool: _asBool,
+                            asDate: _asDate,
+                          ),
+                        )
+                        .where((a) => !_onlyActive || a.isActive)
+                        .where(
+                          (a) => _typeFilter == 'all' || a.type == _typeFilter,
+                        )
+                        .toList();
+
+                    if (items.isEmpty) {
+                      return Center(
+                        child: Text('沒有符合條件的活動', style: itemSubStyle),
+                      );
+                    }
+
+                    return ListView.separated(
+                      padding: const EdgeInsets.all(12),
+                      itemCount: items.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (context, i) {
+                        final a = items[i];
+                        return Card(
+                          elevation: 1,
+                          child: ListTile(
+                            leading: CircleAvatar(child: Icon(a.icon)),
+                            title: Text(
+                              a.title,
+                              style: itemTitleStyle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              [
+                                if (a.subtitle.isNotEmpty) a.subtitle,
+                                if (_formatRange(a.startAt, a.endAt).isNotEmpty)
+                                  _formatRange(a.startAt, a.endAt),
+                              ].join('  •  '),
+                              style: itemSubStyle,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                _pill(
+                                  a.isActive ? '啟用' : '停用',
+                                  a.isActive ? Colors.green : Colors.grey,
+                                ),
+                                if (a.rewardPoints > 0) ...[
+                                  const SizedBox(height: 6),
+                                  _pill('+${a.rewardPoints} 點', Colors.blue),
+                                ],
+                              ],
+                            ),
+                            onTap: () => _showDetail(a),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _userPointsHeader(String uid) {
+    final textStyle = _tc(
+      const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+    );
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _fs.collection('users').doc(uid).snapshots(),
+      builder: (context, snap) {
+        int points = 0;
+        String name = '會員';
+
+        if (snap.hasData && snap.data!.exists) {
+          final d = snap.data!.data() ?? {};
+          name = (d['displayName'] ?? d['name'] ?? d['email'] ?? '會員')
+              .toString();
+          points = _asInt(d['points'] ?? d['userPoints'] ?? d['rewardPoints']);
+        }
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
                 children: [
-                  const Text('限時活動倒數',
-                      style:
-                          TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                  const SizedBox(height: 4),
-                  Text(_formatDuration(remaining),
-                      style: TextStyle(
-                          color: Colors.grey.shade700, fontSize: 13)),
+                  const CircleAvatar(child: Icon(Icons.emoji_events)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '$name • 目前積分 $points',
+                      style: textStyle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  _pill('Points $points', Colors.black87),
                 ],
               ),
-            ],
-          ),
-          ElevatedButton(
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('活動詳情開發中...')),
-              );
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orangeAccent,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20)),
             ),
-            child: const Text('查看'),
-          )
-        ],
-      ),
+          ),
+        );
+      },
     );
   }
 
-  // ===========================================================
-  // 分類標籤
-  // ===========================================================
-  Widget _buildCategoryTabs() {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: List.generate(categories.length, (i) {
-          final selected = selectedCategory == i;
-          return Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: ChoiceChip(
-              label: Text(categories[i]),
-              selected: selected,
-              selectedColor: Colors.orangeAccent,
-              backgroundColor: Colors.white,
-              labelStyle: TextStyle(
-                color: selected ? Colors.white : Colors.black87,
-                fontWeight: FontWeight.w600,
-              ),
-              onSelected: (_) => setState(() => selectedCategory = i),
-            ),
-          );
-        }),
-      ),
+  Widget _filterBar() {
+    final chipStyle = _tc(
+      const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
     );
-  }
 
-  // ===========================================================
-  // 活動卡
-  // ===========================================================
-  Widget _buildActivityCard(Map<String, dynamic> a) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
         children: [
-          ClipRRect(
-            borderRadius:
-                const BorderRadius.vertical(top: Radius.circular(18)),
-            child: Image.network(a['image'],
-                height: 150, width: double.infinity, fit: BoxFit.cover),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(a['title'],
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(height: 4),
-                Text(a['subtitle'],
-                    style: TextStyle(color: Colors.grey.shade700, fontSize: 13)),
-                const SizedBox(height: 12),
-                LinearProgressIndicator(
-                  value: a['progress'],
-                  backgroundColor: Colors.grey.shade200,
-                  color: Colors.orangeAccent,
-                  minHeight: 6,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('完成 +${a['points']} 點',
-                        style: const TextStyle(
-                            color: Colors.orange, fontWeight: FontWeight.bold)),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orangeAccent,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(20)),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 6),
-                      ),
-                      icon: const Icon(Icons.check_circle_outline,
-                          size: 18, color: Colors.white),
-                      label: const Text('報名',
-                          style:
-                              TextStyle(color: Colors.white, fontSize: 13)),
-                      onPressed: () => _completeActivity(a),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
+          _chip('全部', 'all', chipStyle),
+          _chip('優惠券', 'coupon', chipStyle),
+          _chip('抽獎', 'lottery', chipStyle),
+          _chip('簽到', 'checkin', chipStyle),
+          _chip('邀請', 'referral', chipStyle),
+          _chip('活動', 'campaign', chipStyle),
         ],
       ),
     );
   }
 
-  // ===========================================================
-  // 完成活動邏輯 + 點數動畫
-  // ===========================================================
-  void _completeActivity(Map<String, dynamic> activity) {
-    setState(() {
-      userPoints += activity['points'];
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      backgroundColor: Colors.green,
-      content: Text('完成任務！+${activity['points']} 點'),
-      duration: const Duration(seconds: 2),
-    ));
+  Widget _chip(String label, String key, TextStyle style) {
+    final selected = _typeFilter == key;
+    return ChoiceChip(
+      selected: selected,
+      label: Text(label, style: style),
+      onSelected: (_) => setState(() => _typeFilter = key),
+    );
   }
 
-  // ===========================================================
-  // 幸運抽獎 (遊戲互動)
-  // ===========================================================
-  void _showLuckyDraw() {
-    showDialog(
-      context: context,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.card_giftcard,
-                  color: Colors.orangeAccent, size: 60),
-              const SizedBox(height: 12),
-              const Text('今日抽獎任務',
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 18)),
-              const SizedBox(height: 8),
-              const Text('完成今日任務即可抽取隨機好禮！'),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orangeAccent,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 40, vertical: 12)),
-                onPressed: () {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content: Text('恭喜獲得：「50 點數券」！')));
-                },
-                child: const Text('立即抽獎'),
-              )
-            ],
-          ),
+  Widget _pill(String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        // ✅ FIX: withOpacity -> withValues(alpha: ...)
+        color: color.withValues(alpha: 0.12),
+      ),
+      child: Text(
+        text,
+        style: _tc(
+          TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w800),
         ),
       ),
     );
+  }
+
+  String _formatRange(DateTime? start, DateTime? end) {
+    if (start == null && end == null) return '';
+    if (start != null && end != null) {
+      return '${_df.format(start)} ~ ${_df.format(end)}';
+    }
+    if (start != null) return '開始：${_df.format(start)}';
+    return '結束：${_df.format(end!)}';
+  }
+
+  Future<void> _showDetail(_ActivityItem a) async {
+    final titleStyle = _tc(
+      const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+    );
+    final bodyStyle = _tc(const TextStyle(fontSize: 13));
+
+    await showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(a.title, style: titleStyle),
+        content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+            child: DefaultTextStyle(
+              style: bodyStyle,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (a.subtitle.isNotEmpty) Text(a.subtitle),
+                  const SizedBox(height: 10),
+                  Text('類型：${a.type}'),
+                  Text('狀態：${a.isActive ? '啟用' : '停用'}'),
+                  if (a.rewardPoints > 0) Text('獎勵：+${a.rewardPoints} 點'),
+                  if (a.startAt != null || a.endAt != null)
+                    Text('期間：${_formatRange(a.startAt, a.endAt)}'),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '原始資料',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    a.rawDebug,
+                    style: _tc(
+                      const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('關閉'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActivityItem {
+  final String id;
+  final String title;
+  final String subtitle;
+  final String type; // coupon/lottery/checkin/referral/campaign/unknown
+  final bool isActive;
+  final int rewardPoints;
+  final DateTime? startAt;
+  final DateTime? endAt;
+  final IconData icon;
+  final String rawDebug;
+
+  _ActivityItem({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.type,
+    required this.isActive,
+    required this.rewardPoints,
+    required this.startAt,
+    required this.endAt,
+    required this.icon,
+    required this.rawDebug,
+  });
+
+  static _ActivityItem fromDoc(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc, {
+    required int Function(dynamic v, {int fallback}) asInt,
+    required bool Function(dynamic v, {bool fallback}) asBool,
+    required DateTime? Function(dynamic v) asDate,
+  }) {
+    final d = doc.data();
+
+    final title = (d['title'] ?? d['name'] ?? d['campaignName'] ?? '未命名活動')
+        .toString();
+    final subtitle = (d['subtitle'] ?? d['description'] ?? d['desc'] ?? '')
+        .toString();
+
+    final typeRaw = (d['type'] ?? d['campaignType'] ?? '')
+        .toString()
+        .toLowerCase()
+        .trim();
+    final type = typeRaw.isEmpty ? 'campaign' : typeRaw;
+
+    final isActive = asBool(
+      d['isActive'] ?? d['enabled'] ?? d['active'],
+      fallback: true,
+    );
+    final rewardPoints = asInt(
+      d['rewardPoints'] ?? d['points'] ?? d['bonusPoints'],
+      fallback: 0,
+    );
+
+    final startAt = asDate(d['startAt'] ?? d['startDate'] ?? d['startsAt']);
+    final endAt = asDate(d['endAt'] ?? d['endDate'] ?? d['endsAt']);
+
+    return _ActivityItem(
+      id: doc.id,
+      title: title,
+      subtitle: subtitle,
+      type: type,
+      isActive: isActive,
+      rewardPoints: rewardPoints,
+      startAt: startAt,
+      endAt: endAt,
+      icon: _iconByType(type),
+      rawDebug: d.toString(),
+    );
+  }
+
+  static IconData _iconByType(String type) {
+    switch (type) {
+      case 'coupon':
+        return Icons.card_giftcard;
+      case 'lottery':
+        return Icons.casino;
+      case 'checkin':
+        return Icons.event_available;
+      case 'referral':
+        return Icons.person_add_alt_1;
+      case 'campaign':
+        return Icons.campaign;
+      default:
+        return Icons.local_activity;
+    }
   }
 }

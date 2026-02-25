@@ -1,6 +1,6 @@
 // lib/services/report_service.dart
 //
-// ✅ ReportService（V9 修正版最終完整版）
+// ✅ ReportService（V9 修正版最終完整版｜已修正 curly_braces_in_flow_control_structures）
 // ------------------------------------------------------------
 // 目標：徹底避免報表頁一直跳：
 // [cloud_firestore/failed-precondition] The query requires an index
@@ -41,8 +41,8 @@ class ReportService {
     final now = DateTime.now();
 
     final start = range?.start ?? DateTime(now.year, now.month, 1);
-    final end = range?.end ??
-        DateTime(now.year, now.month + 1, 0, 23, 59, 59, 999);
+    final end =
+        range?.end ?? DateTime(now.year, now.month + 1, 0, 23, 59, 59, 999);
 
     // ✅ 拉指定區間訂單（先只用 createdAt，避免 composite index 爆炸）
     final docs = await _fetchOrdersByCreatedAtRange(
@@ -61,15 +61,21 @@ class ReportService {
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
       final data = doc.data();
       final createdAt = _toDateTime(data['createdAt']);
-      if (createdAt == null) continue;
+      if (createdAt == null) {
+        continue;
+      }
 
       // ✅ 前端過濾 status（避免 whereIn(status) + createdAt range）
       final status = (data['status'] ?? '').toString();
-      if (!_isRevenueStatus(status)) continue;
+      if (!_isRevenueStatus(status)) {
+        continue;
+      }
 
       // ✅ 若有 vendorId（廠商報表），再做一次保險過濾（fallback 模式時需要）
       if (vendorId != null && vendorId.isNotEmpty) {
-        if (!_orderBelongsToVendor(data, vendorId)) continue;
+        if (!_orderBelongsToVendor(data, vendorId)) {
+          continue;
+        }
       }
 
       final amount = _numToDouble(data['finalAmount'] ?? data['amount'] ?? 0);
@@ -91,9 +97,13 @@ class ReportService {
       // 商品銷售統計
       final items = (data['items'] as List?) ?? [];
       for (final item in items) {
-        if (item is! Map) continue;
+        if (item is! Map) {
+          continue;
+        }
         final name = (item['name'] ?? item['productName'] ?? '').toString();
-        if (name.trim().isEmpty) continue;
+        if (name.trim().isEmpty) {
+          continue;
+        }
 
         final qty = _numToDouble(item['quantity'] ?? item['qty'] ?? 1);
         productSales[name] = (productSales[name] ?? 0) + qty;
@@ -102,8 +112,7 @@ class ReportService {
 
     // ✅ 計算本月營收（用於總覽卡片）
     final thisMonthStart = DateTime(now.year, now.month, 1);
-    final thisMonthEnd =
-        DateTime(now.year, now.month + 1, 0, 23, 59, 59, 999);
+    final thisMonthEnd = DateTime(now.year, now.month + 1, 0, 23, 59, 59, 999);
 
     final monthDocs = await _fetchOrdersByCreatedAtRange(
       start: thisMonthStart,
@@ -115,10 +124,14 @@ class ReportService {
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in monthDocs) {
       final data = doc.data();
       final status = (data['status'] ?? '').toString();
-      if (!_isRevenueStatus(status)) continue;
+      if (!_isRevenueStatus(status)) {
+        continue;
+      }
 
       if (vendorId != null && vendorId.isNotEmpty) {
-        if (!_orderBelongsToVendor(data, vendorId)) continue;
+        if (!_orderBelongsToVendor(data, vendorId)) {
+          continue;
+        }
       }
 
       monthRevenue += _numToDouble(data['finalAmount'] ?? data['amount'] ?? 0);
@@ -143,8 +156,11 @@ class ReportService {
     String? vendorId,
   }) async {
     final now = DateTime.now();
-    final start = DateTime(now.year, now.month, now.day)
-        .subtract(Duration(days: days - 1));
+    final start = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(Duration(days: days - 1));
     final end = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
 
     final docs = await _fetchOrdersByCreatedAtRange(
@@ -158,13 +174,19 @@ class ReportService {
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
       final data = doc.data();
       final createdAt = _toDateTime(data['createdAt']);
-      if (createdAt == null) continue;
+      if (createdAt == null) {
+        continue;
+      }
 
       final status = (data['status'] ?? '').toString();
-      if (!_isRevenueStatus(status)) continue;
+      if (!_isRevenueStatus(status)) {
+        continue;
+      }
 
       if (vendorId != null && vendorId.isNotEmpty) {
-        if (!_orderBelongsToVendor(data, vendorId)) continue;
+        if (!_orderBelongsToVendor(data, vendorId)) {
+          continue;
+        }
       }
 
       final amount = _numToDouble(data['finalAmount'] ?? data['amount'] ?? 0);
@@ -180,8 +202,9 @@ class ReportService {
       result.putIfAbsent(dayKey, () => 0);
     }
 
-    return Map.fromEntries(result.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key)));
+    final entries = result.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    return Map<String, num>.fromEntries(entries);
   }
 
   // ===========================================================
@@ -215,10 +238,14 @@ class ReportService {
       final createdAt = _toDateTime(data['createdAt']);
 
       final status = (data['status'] ?? '').toString();
-      if (!_isRevenueStatus(status)) continue;
+      if (!_isRevenueStatus(status)) {
+        continue;
+      }
 
       if (vendorId != null && vendorId.isNotEmpty) {
-        if (!_orderBelongsToVendor(data, vendorId)) continue;
+        if (!_orderBelongsToVendor(data, vendorId)) {
+          continue;
+        }
       }
 
       orders.add({
@@ -230,7 +257,9 @@ class ReportService {
         'status': status,
         'paymentMethod': data['paymentMethod'] ?? data['payment'] ?? '',
         'couponCode': data['couponCode'] ?? data['coupon'] ?? '',
-        'discount': _numToDouble(data['discount'] ?? data['discountAmount'] ?? 0),
+        'discount': _numToDouble(
+          data['discount'] ?? data['discountAmount'] ?? 0,
+        ),
         'vendorIds': _extractVendorIds(data),
         'items': (data['items'] as List?) ?? [],
         'shippingFee': _numToDouble(data['shippingFee'] ?? 0),
@@ -252,7 +281,7 @@ class ReportService {
   // Firestore Fetch (with fallback)
   // ===========================================================
   Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
-      _fetchOrdersByCreatedAtRange({
+  _fetchOrdersByCreatedAtRange({
     required DateTime start,
     required DateTime end,
     String? vendorId,
@@ -273,7 +302,9 @@ class ReportService {
             .get();
         return snap.docs;
       } on FirebaseException catch (e) {
-        if (e.code != 'failed-precondition') rethrow;
+        if (e.code != 'failed-precondition') {
+          rethrow;
+        }
         // fallthrough to try arrayContains or createdAt-only
       } catch (_) {
         // fallthrough
@@ -289,7 +320,9 @@ class ReportService {
             .get();
         return snap.docs;
       } on FirebaseException catch (e) {
-        if (e.code != 'failed-precondition') rethrow;
+        if (e.code != 'failed-precondition') {
+          rethrow;
+        }
         // fallback below
       } catch (_) {
         // fallback below
@@ -317,18 +350,23 @@ class ReportService {
   bool _orderBelongsToVendor(Map<String, dynamic> data, String vendorId) {
     // 1) 單一 vendorId
     final v1 = data['vendorId'];
-    if (v1 is String && v1 == vendorId) return true;
+    if (v1 is String && v1 == vendorId) {
+      return true;
+    }
 
     // 2) vendorIds list
     final v2 = data['vendorIds'];
-    if (v2 is List &&
-        v2.map((e) => e.toString()).contains(vendorId)) return true;
+    if (v2 is List && v2.map((e) => e.toString()).contains(vendorId)) {
+      return true;
+    }
 
     // 3) items 裡若有 vendorId（少數資料結構會這樣）
     final items = data['items'];
     if (items is List) {
       for (final it in items) {
-        if (it is Map && (it['vendorId']?.toString() == vendorId)) return true;
+        if (it is Map && (it['vendorId']?.toString() == vendorId)) {
+          return true;
+        }
       }
     }
 
@@ -339,7 +377,9 @@ class ReportService {
     final List<String> ids = [];
 
     final v1 = data['vendorId'];
-    if (v1 is String && v1.isNotEmpty) ids.add(v1);
+    if (v1 is String && v1.isNotEmpty) {
+      ids.add(v1);
+    }
 
     final v2 = data['vendorIds'];
     if (v2 is List) {
@@ -351,9 +391,15 @@ class ReportService {
   }
 
   DateTime? _toDateTime(dynamic v) {
-    if (v == null) return null;
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
+    if (v == null) {
+      return null;
+    }
+    if (v is Timestamp) {
+      return v.toDate();
+    }
+    if (v is DateTime) {
+      return v;
+    }
 
     // 兼容：毫秒 / 秒（某些資料會用 int）
     if (v is int) {
@@ -373,15 +419,21 @@ class ReportService {
     // 兼容：Firebase 常見 toDate() 物件
     try {
       final t = (v as dynamic).toDate();
-      if (t is DateTime) return t;
+      if (t is DateTime) {
+        return t;
+      }
     } catch (_) {}
 
     return null;
   }
 
   double _numToDouble(dynamic v) {
-    if (v == null) return 0;
-    if (v is num) return v.toDouble();
+    if (v == null) {
+      return 0;
+    }
+    if (v is num) {
+      return v.toDouble();
+    }
     try {
       return double.parse(v.toString());
     } catch (_) {

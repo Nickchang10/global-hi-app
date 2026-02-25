@@ -1,6 +1,6 @@
 // lib/pages/admin/app_center/admin_banners_page.dart
 //
-// ✅ AdminBannersPage（A. 基礎專業版｜完整版｜可編譯＋可用）
+// ✅ AdminBannersPage（A. 基礎專業版｜完整版｜可編譯＋可用｜修正 use_build_context_synchronously）
 // ------------------------------------------------------------
 // Firestore 結構：banners
 // {
@@ -56,52 +56,74 @@ class _AdminBannersPageState extends State<AdminBannersPage> {
       });
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已新增 Banner')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已新增 Banner')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('新增失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('新增失敗：$e')));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _updateField(
-      String id, String key, dynamic value, BuildContext context) async {
+  /// ✅ 修正點：
+  /// - 不要把 BuildContext 當參數傳入 async function
+  /// - await 後要用 mounted guard，再使用 context
+  Future<void> _updateField(String id, String key, dynamic value) async {
     try {
       await _db.collection('banners').doc(id).set({
         key: value,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('更新失敗：$e')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
+  /// ✅ 修正點：
+  /// - showDialog await 後、以及 async 操作後再用 context 前都加 mounted guard
   Future<void> _deleteBanner(String id, String imageUrl) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogCtx) => AlertDialog(
         title: const Text('刪除 Banner'),
         content: const Text('確定要刪除此 Banner？此動作無法復原。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
     if (ok != true) return;
 
+    // ✅ await showDialog 後先 guard
+    if (!mounted) return;
+
     try {
       await _db.collection('banners').doc(id).delete();
       await _storage.refFromURL(imageUrl).delete();
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已刪除 Banner')));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已刪除 Banner')));
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
     }
   }
 
@@ -111,7 +133,10 @@ class _AdminBannersPageState extends State<AdminBannersPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Banner 管理', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          'Banner 管理',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.add_photo_alternate_outlined),
@@ -129,7 +154,7 @@ class _AdminBannersPageState extends State<AdminBannersPage> {
           if (snap.hasError) {
             return Center(child: Text('載入失敗：${snap.error}'));
           }
-          final docs = snap.data?.docs ?? [];
+          final docs = (snap.data?.docs ?? []).toList();
           if (docs.isEmpty) {
             return const Center(child: Text('目前尚無 Banner'));
           }
@@ -139,25 +164,27 @@ class _AdminBannersPageState extends State<AdminBannersPage> {
             itemCount: docs.length,
             onReorder: (oldIndex, newIndex) async {
               if (newIndex > oldIndex) newIndex--;
+
               final moved = docs.removeAt(oldIndex);
               docs.insert(newIndex, moved);
+
               for (int i = 0; i < docs.length; i++) {
-                await _db
-                    .collection('banners')
-                    .doc(docs[i].id)
-                    .update({'order': i});
+                await _db.collection('banners').doc(docs[i].id).update({
+                  'order': i,
+                });
               }
             },
             itemBuilder: (context, i) {
               final d = docs[i].data();
               final id = docs[i].id;
-              final imageUrl = d['imageUrl'] ?? '';
+              final imageUrl = (d['imageUrl'] ?? '') as String;
               final enabled = d['enabled'] == true;
-              final title = d['title'] ?? '';
-              final link = d['link'] ?? '';
+              final title = (d['title'] ?? '') as String;
+              final link = (d['link'] ?? '') as String;
               final updatedAt = d['updatedAt'] is Timestamp
-                  ? DateFormat('MM/dd HH:mm')
-                      .format((d['updatedAt'] as Timestamp).toDate())
+                  ? DateFormat(
+                      'MM/dd HH:mm',
+                    ).format((d['updatedAt'] as Timestamp).toDate())
                   : '—';
 
               return Card(
@@ -189,28 +216,30 @@ class _AdminBannersPageState extends State<AdminBannersPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             TextField(
-                              controller:
-                                  TextEditingController(text: title),
+                              controller: TextEditingController(text: title),
                               decoration: const InputDecoration(
                                 labelText: '標題',
                                 border: InputBorder.none,
                                 isDense: true,
                               ),
-                              onSubmitted: (v) => _updateField(id, 'title', v, context),
+                              onSubmitted: (v) => _updateField(id, 'title', v),
                             ),
                             TextField(
-                              controller:
-                                  TextEditingController(text: link),
+                              controller: TextEditingController(text: link),
                               decoration: const InputDecoration(
                                 labelText: '連結（可空白）',
                                 border: InputBorder.none,
                                 isDense: true,
                               ),
-                              onSubmitted: (v) => _updateField(id, 'link', v, context),
+                              onSubmitted: (v) => _updateField(id, 'link', v),
                             ),
-                            Text('更新於 $updatedAt',
-                                style: TextStyle(
-                                    color: cs.onSurfaceVariant, fontSize: 12)),
+                            Text(
+                              '更新於 $updatedAt',
+                              style: TextStyle(
+                                color: cs.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -219,17 +248,18 @@ class _AdminBannersPageState extends State<AdminBannersPage> {
                         children: [
                           Switch(
                             value: enabled,
-                            onChanged: (v) =>
-                                _updateField(id, 'enabled', v, context),
+                            onChanged: (v) => _updateField(id, 'enabled', v),
                           ),
                           IconButton(
                             tooltip: '刪除',
-                            icon: Icon(Icons.delete_outline,
-                                color: Colors.red.shade400),
+                            icon: Icon(
+                              Icons.delete_outline,
+                              color: Colors.red.shade400,
+                            ),
                             onPressed: () => _deleteBanner(id, imageUrl),
                           ),
                         ],
-                      )
+                      ),
                     ],
                   ),
                 ),

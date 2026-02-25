@@ -1,57 +1,36 @@
 // lib/pages/dashboard_page.dart
 //
-// ✅ DashboardPage v9.2 Final（最終完整版｜統計卡｜近況訂單｜快速入口｜支援簡潔/完整模式｜新增抽獎/購物車）
-// ------------------------------------------------------------
-// 相容：
-// - AdminModeController: isSimpleMode / isFull / toggle()
-// - AdminGate: ensureAndGetRole(user, forceRefresh: false), cachedRoleInfo / cachedVendorId
+// ✅ DashboardPage（完整版｜修正 streamUnreadCount 參數錯誤｜Admin/Vendor 共用｜Web/Chrome OK｜可編譯）
 //
-// 統計範圍：
-// - Admin：全站統計
-// - Vendor：僅 vendorId 範圍（products / orders / campaigns / coupons / lotteries / carts）
-// - categories 多數情境可給 vendor 看（不範圍）
+// 修正點：
+// - NotificationService.streamUnreadCount() ✅ 你的版本是「0 參數」
+//   所以把原本的 streamUnreadCount(user.uid) 全部改成 streamUnreadCount()
 //
-// Firestore 參考：
-// - products/{id} (vendorId?)
-// - orders/{id} (vendorId? / orderNo / userName / total / status / createdAt)
-// - campaigns/{id} (vendorId?)
-// - coupons/{id} (vendorId?)
-// - lotteries/{id} (vendorId?)   ✅新增
-// - carts/{id} (vendorId?)       ✅新增（若你的 carts 結構不同，告訴我我幫你改成可計數）
-// - categories/{id}
-// - vendors/{id}
-// - users/{uid}
-// - notifications/{uid}/items/{nid} (isRead)
-// ------------------------------------------------------------
-
-import 'dart:async';
+// ✅ 本次再修：Flutter 3.18+ deprecated
+// - colorScheme.surfaceVariant -> surfaceContainerHighest
+// - Color.withOpacity(x) -> withValues(alpha: x)
+//
+// 特色：
+// - 使用 Firestore AggregateQuery.count() 統計：全部做 int 兼容轉換（解決 int? 問題）
+// - 支援 Admin / Vendor：Vendor 使用 orders.vendorIds arrayContains vendorId
+// - 顯示：今日訂單、待付款、上架商品、未讀通知（stream）
+// - 額外：近 10 筆訂單列表（含狀態/金額/時間）
+// - 提供快捷入口：訂單 / 商品 / 通知 / 報表 等
+//
+// 依賴：
+// - firebase_auth
+// - cloud_firestore
+// - provider
+// - services/admin_gate.dart（RoleInfo, AdminGate）
+// - services/notification_service.dart（你的 NotificationService 版本 streamUnreadCount() 為 0 參數）
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
-import '../controllers/admin_mode_controller.dart';
 import '../services/admin_gate.dart';
-
-// 你專案已存在的簡潔儀表板
-import 'admin_simple_dashboard_page.dart';
-
-// 快速入口（請確認檔案存在）
-import 'admin_products_page.dart';
-import 'admin_campaigns_page.dart';
-import 'admin_categories_page.dart';
-import 'admin_vendors_page.dart';
-import 'admin_notifications_page.dart';
-import 'admin_reports_page.dart';
-import 'admin_coupons_page.dart';
-import 'admin_users_page.dart';
-import 'admin_orders_page.dart';
-
-// ✅ 新增：抽獎管理 / 購物車管理（請確認檔案存在）
-import 'admin_lottery_page.dart';
-import 'admin_cart_page.dart';
+import '../services/notification_service.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
@@ -61,740 +40,819 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  final _db = FirebaseFirestore.instance;
-
   Future<RoleInfo>? _roleFuture;
   String? _lastUid;
 
-  // 每隔一段時間刷新一次統計（避免 count 無法 stream）
-  static const Duration _refreshInterval = Duration(seconds: 12);
+  final _db = FirebaseFirestore.instance;
 
-  Future<RoleInfo> _ensureRole(AdminGate gate, User user) {
-    return gate.ensureAndGetRole(user, forceRefresh: false);
+  bool _loading = false;
+  DateTime? _updatedAt;
+
+  int _todayOrders = 0;
+  int _pendingPayment = 0;
+  int _activeProducts = 0;
+
+  // Admin only extra KPIs (optional)
+  int _totalUsers = 0;
+  int _totalVendors = 0;
+
+  // ---------------------------
+  // Utils
+  // ---------------------------
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  DateTime _startOfToday() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
   }
 
-  // ----------------------------
-  // Count helpers (Aggregation + fallback)
-  // ----------------------------
-  Future<int> _countOnce(Query<Map<String, dynamic>> q) async {
-    try {
-      final agg = await q.count().get();
-      final dynamic c = agg.count;
-      return (c is int) ? c : int.tryParse('$c') ?? 0;
-    } catch (_) {
-      // fallback
-      try {
-        final snap = await q.get();
-        return snap.size;
-      } catch (_) {
-        return 0;
-      }
-    }
+  DateTime _endOfToday() => _startOfToday().add(const Duration(days: 1));
+
+  DateTime? _toDate(dynamic ts) {
+    if (ts is Timestamp) return ts.toDate();
+    if (ts is DateTime) return ts;
+    return null;
   }
 
-  Stream<int> _countStream(
-    Query<Map<String, dynamic>> q, {
-    Duration interval = _refreshInterval,
-  }) async* {
-    yield await _countOnce(q);
-    yield* Stream.periodic(interval).asyncMap((_) => _countOnce(q));
-  }
-
-  // ----------------------------
-  // UI helpers
-  // ----------------------------
-  String _fmtMoney(dynamic v) {
-    final n = (v is num) ? v.toDouble() : double.tryParse('$v') ?? 0.0;
-    final f = NumberFormat('#,##0', 'zh_TW');
-    return 'NT\$${f.format(n)}';
-  }
-
-  String _fmtDate(dynamic v) {
-    DateTime? d;
-    if (v is Timestamp) d = v.toDate();
-    if (v is DateTime) d = v;
+  String _fmt(DateTime? d) {
     if (d == null) return '-';
-    return DateFormat('yyyy/MM/dd HH:mm').format(d);
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
   }
 
-  Color _statusColor(String status, BuildContext context) {
-    final s = status.toLowerCase().trim();
-    if (s == 'paid') return Colors.green;
-    if (s == 'shipped') return Colors.blue;
-    if (s == 'completed') return Colors.teal;
-    if (s == 'cancelled') return Colors.red;
-    return Theme.of(context).colorScheme.primary;
+  num _toNum(dynamic v) {
+    if (v is num) return v;
+    return num.tryParse((v ?? '').toString()) ?? 0;
   }
 
-  String _statusLabel(String status) {
-    final s = status.toLowerCase().trim();
-    switch (s) {
-      case 'pending':
-        return '待付款';
-      case 'paid':
-        return '已付款';
-      case 'shipped':
-        return '已出貨';
-      case 'completed':
-        return '已完成';
-      case 'cancelled':
-        return '已取消';
-      default:
-        return status;
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  Future<int> _countQuery(Query<Map<String, dynamic>> q) async {
+    // ✅ 兼容不同 cloud_firestore 版本：agg.count 可能是 int 或 int? 或 dynamic
+    final agg = await q.count().get();
+    final dynamic c = agg.count;
+    if (c == null) return 0;
+    if (c is int) return c;
+    return int.tryParse('$c') ?? 0;
+  }
+
+  // ---------------------------
+  // KPI Refresh
+  // ---------------------------
+  Future<void> _refresh({
+    required bool isAdmin,
+    required bool isVendor,
+    required String vendorId,
+  }) async {
+    if (_loading) return;
+    setState(() => _loading = true);
+
+    try {
+      final vid = vendorId.trim();
+      if (isVendor && vid.isEmpty) {
+        // Vendor 沒 vendorId → 全部 0
+        if (!mounted) return;
+        setState(() {
+          _todayOrders = 0;
+          _pendingPayment = 0;
+          _activeProducts = 0;
+          _totalUsers = 0;
+          _totalVendors = 0;
+          _updatedAt = DateTime.now();
+        });
+        return;
+      }
+
+      final start = Timestamp.fromDate(_startOfToday());
+      final end = Timestamp.fromDate(_endOfToday());
+
+      Query<Map<String, dynamic>> todayQ = _db
+          .collection('orders')
+          .where('createdAt', isGreaterThanOrEqualTo: start)
+          .where('createdAt', isLessThan: end);
+
+      Query<Map<String, dynamic>> pendingQ = _db
+          .collection('orders')
+          .where('status', isEqualTo: 'pending_payment');
+
+      Query<Map<String, dynamic>> activeProdQ = _db
+          .collection('products')
+          .where('isActive', isEqualTo: true);
+
+      if (isVendor) {
+        // ✅ 依你前面規則：orders.vendorIds arrayContains vendorId
+        todayQ = todayQ.where('vendorIds', arrayContains: vid);
+        pendingQ = pendingQ.where('vendorIds', arrayContains: vid);
+
+        // 商品通常用 vendorId
+        activeProdQ = activeProdQ.where('vendorId', isEqualTo: vid);
+      }
+
+      final futures = <Future<int>>[
+        _countQuery(todayQ),
+        _countQuery(pendingQ),
+        _countQuery(activeProdQ),
+      ];
+
+      // Admin extra
+      if (isAdmin) {
+        futures.add(_countQuery(_db.collection('users')));
+        futures.add(
+          _countQuery(
+            _db.collection('users').where('role', isEqualTo: 'vendor'),
+          ),
+        );
+      }
+
+      final results = await Future.wait(futures);
+
+      if (!mounted) return;
+      setState(() {
+        _todayOrders = results[0];
+        _pendingPayment = results[1];
+        _activeProducts = results[2];
+
+        if (isAdmin) {
+          _totalUsers = results.length > 3 ? results[3] : 0;
+          _totalVendors = results.length > 4 ? results[4] : 0;
+        } else {
+          _totalUsers = 0;
+          _totalVendors = 0;
+        }
+
+        _updatedAt = DateTime.now();
+      });
+    } catch (e) {
+      _snack('KPI 更新失敗：$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  // ----------------------------
-  // Scoped queries
-  // ----------------------------
-  Query<Map<String, dynamic>> _productsQ({
+  Stream<QuerySnapshot<Map<String, dynamic>>> _recentOrdersStream({
     required bool isVendor,
     required String vendorId,
   }) {
-    Query<Map<String, dynamic>> q = _db.collection('products');
-    if (isVendor && vendorId.isNotEmpty) {
-      q = q.where('vendorId', isEqualTo: vendorId);
+    Query<Map<String, dynamic>> q = _db
+        .collection('orders')
+        .orderBy('createdAt', descending: true)
+        .limit(10);
+
+    final vid = vendorId.trim();
+    if (isVendor && vid.isNotEmpty) {
+      q = q.where('vendorIds', arrayContains: vid);
     }
-    return q;
+    return q.snapshots();
   }
 
-  Query<Map<String, dynamic>> _ordersQ({
-    required bool isVendor,
-    required String vendorId,
-  }) {
-    Query<Map<String, dynamic>> q = _db.collection('orders');
-    if (isVendor && vendorId.isNotEmpty) {
-      q = q.where('vendorId', isEqualTo: vendorId);
-    }
-    return q;
-  }
-
-  Query<Map<String, dynamic>> _campaignsQ({
-    required bool isVendor,
-    required String vendorId,
-  }) {
-    Query<Map<String, dynamic>> q = _db.collection('campaigns');
-    if (isVendor && vendorId.isNotEmpty) {
-      q = q.where('vendorId', isEqualTo: vendorId);
-    }
-    return q;
-  }
-
-  Query<Map<String, dynamic>> _couponsQ({
-    required bool isVendor,
-    required String vendorId,
-  }) {
-    Query<Map<String, dynamic>> q = _db.collection('coupons');
-    if (isVendor && vendorId.isNotEmpty) {
-      q = q.where('vendorId', isEqualTo: vendorId);
-    }
-    return q;
-  }
-
-  // ✅ 新增：抽獎
-  Query<Map<String, dynamic>> _lotteriesQ({
-    required bool isVendor,
-    required String vendorId,
-  }) {
-    Query<Map<String, dynamic>> q = _db.collection('lotteries');
-    if (isVendor && vendorId.isNotEmpty) {
-      q = q.where('vendorId', isEqualTo: vendorId);
-    }
-    return q;
-  }
-
-  // ✅ 新增：購物車
-  // 若你的 carts 結構不是 top-level carts/{id}，告訴我你的結構（例如 carts/{uid}/items/{itemId}）
-  // 我會改成可正確 count 的版本（collectionGroup/items 等）。
-  Query<Map<String, dynamic>> _cartsQ({
-    required bool isVendor,
-    required String vendorId,
-  }) {
-    Query<Map<String, dynamic>> q = _db.collection('carts');
-    if (isVendor && vendorId.isNotEmpty) {
-      q = q.where('vendorId', isEqualTo: vendorId);
-    }
-    return q;
-  }
-
-  Query<Map<String, dynamic>> _categoriesQ() => _db.collection('categories');
-  Query<Map<String, dynamic>> _vendorsQ() => _db.collection('vendors');
-  Query<Map<String, dynamic>> _usersQ() => _db.collection('users');
-
-  Query<Map<String, dynamic>> _unreadNotifQ(String uid) {
-    return _db
-        .collection('notifications')
-        .doc(uid)
-        .collection('items')
-        .where('isRead', isEqualTo: false);
-  }
-
-  // ----------------------------
-  // Quick nav
-  // ----------------------------
-  Future<void> _push(BuildContext context, Widget page) async {
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => page));
-  }
-
+  // ---------------------------
+  // UI
+  // ---------------------------
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      return const Scaffold(body: Center(child: Text('請先登入')));
-    }
-
     final gate = context.read<AdminGate>();
-    if (_roleFuture == null || _lastUid != user.uid) {
-      _lastUid = user.uid;
-      _roleFuture = _ensureRole(gate, user);
-    }
+    final notifSvc = context.read<NotificationService>();
+    final cs = Theme.of(context).colorScheme;
 
-    final modeCtrl = context.watch<AdminModeController>();
-    if (modeCtrl.isSimpleMode) {
-      // ✅ 簡潔模式：沿用你現有的 AdminSimpleDashboardPage
-      return const AdminSimpleDashboardPage();
-    }
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, authSnap) {
+        final user = authSnap.data;
 
-    return FutureBuilder<RoleInfo>(
-      future: _roleFuture,
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-
-        final info = snap.data ?? gate.cachedRoleInfo;
-        final role = (info?.role ?? '').toLowerCase().trim();
-        final isAdmin = role == 'admin';
-        final isVendor = role == 'vendor';
-
-        final vendorIdRaw =
-            (info?.vendorId ?? gate.cachedVendorId ?? '').toString().trim();
-        final vendorId = (isVendor && vendorIdRaw.isNotEmpty) ? vendorIdRaw : '';
-
-        // Vendor 若缺 vendorId，避免後續混亂
-        if (isVendor && vendorId.isEmpty) {
+        if (authSnap.connectionState == ConnectionState.waiting) {
           return const Scaffold(
-            body: Center(
-              child: Text('Vendor 帳號缺少 vendorId，請在 users/{uid} 補上 vendorId'),
-            ),
+            body: Center(child: CircularProgressIndicator()),
           );
         }
+        if (user == null) {
+          return const Scaffold(body: Center(child: Text('請先登入')));
+        }
 
-        // 主要統計 streams
-        final productsCount$ =
-            _countStream(_productsQ(isVendor: isVendor, vendorId: vendorId));
-        final ordersCount$ =
-            _countStream(_ordersQ(isVendor: isVendor, vendorId: vendorId));
-        final campaignsCount$ =
-            _countStream(_campaignsQ(isVendor: isVendor, vendorId: vendorId));
-        final couponsCount$ =
-            _countStream(_couponsQ(isVendor: isVendor, vendorId: vendorId));
+        if (_roleFuture == null || _lastUid != user.uid) {
+          _lastUid = user.uid;
+          _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
+        }
 
-        // ✅ 新增：抽獎 / 購物車 streams
-        final lotteriesCount$ =
-            _countStream(_lotteriesQ(isVendor: isVendor, vendorId: vendorId));
-        final cartsCount$ =
-            _countStream(_cartsQ(isVendor: isVendor, vendorId: vendorId));
+        return FutureBuilder<RoleInfo>(
+          future: _roleFuture,
+          builder: (context, roleSnap) {
+            if (roleSnap.connectionState == ConnectionState.waiting) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (roleSnap.hasError) {
+              return _ErrorCard(
+                title: '讀取角色失敗',
+                message: '${roleSnap.error}',
+                onRetry: () => setState(() {
+                  _roleFuture = gate.ensureAndGetRole(user, forceRefresh: true);
+                }),
+              );
+            }
 
-        final categoriesCount$ = _countStream(_categoriesQ());
-        final vendorsCount$ =
-            isAdmin ? _countStream(_vendorsQ()) : Stream<int>.value(0);
-        final usersCount$ =
-            isAdmin ? _countStream(_usersQ()) : Stream<int>.value(0);
+            final info = roleSnap.data;
+            final role = _s(info?.role).toLowerCase();
+            final isAdmin = role == 'admin';
+            final isVendor = role == 'vendor';
+            final vendorId = _s(info?.vendorId);
 
-        final unreadNotifs$ = _countStream(
-          _unreadNotifQ(user.uid),
-          interval: const Duration(seconds: 8),
-        );
+            if (!isAdmin && !isVendor) {
+              return const Scaffold(
+                body: Center(child: Text('此帳號無後台權限，請聯繫管理員')),
+              );
+            }
 
-        // 近況訂單（最近 10 筆）
-        final recentOrdersQ = _ordersQ(isVendor: isVendor, vendorId: vendorId)
-            .orderBy('createdAt', descending: true)
-            .limit(10);
+            // 初次進來自動刷新一次
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              if (_updatedAt == null && !_loading) {
+                _refresh(
+                  isAdmin: isAdmin,
+                  isVendor: isVendor,
+                  vendorId: vendorId,
+                );
+              }
+            });
 
-        return Scaffold(
-          body: RefreshIndicator(
-            onRefresh: () async {
-              _roleFuture = _ensureRole(gate, user);
-              setState(() {});
-            },
-            child: ListView(
-              padding: const EdgeInsets.all(14),
-              children: [
-                _buildHeader(
-                  context,
+            Widget kpiCard({
+              required IconData icon,
+              required String label,
+              required Widget value,
+              required VoidCallback onTap,
+            }) {
+              return InkWell(
+                onTap: onTap,
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    // ✅ surfaceVariant -> surfaceContainerHighest
+                    color: cs.surfaceContainerHighest.withValues(alpha: 0.25),
+                    borderRadius: BorderRadius.circular(16),
+                    // ✅ withOpacity -> withValues
+                    border: Border.all(
+                      color: cs.outline.withValues(alpha: 0.14),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(icon, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              label,
+                              style: TextStyle(
+                                color: cs.onSurfaceVariant,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            DefaultTextStyle(
+                              style: const TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w900,
+                              ),
+                              child: value,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            return Scaffold(
+              appBar: AppBar(
+                title: Text(isAdmin ? 'Dashboard（Admin）' : 'Dashboard（Vendor）'),
+                centerTitle: true,
+                actions: [
+                  // ✅ 未讀通知（你的 NotificationService 版本：streamUnreadCount() 0 參數）
+                  StreamBuilder<int>(
+                    stream: notifSvc.streamUnreadCount(),
+                    builder: (_, s) {
+                      final unread = s.data ?? 0;
+                      return Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          IconButton(
+                            tooltip: '通知中心',
+                            onPressed: () =>
+                                Navigator.pushNamed(context, '/notifications'),
+                            icon: const Icon(Icons.notifications_outlined),
+                          ),
+                          if (unread > 0)
+                            Positioned(
+                              top: 10,
+                              right: 10,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: cs.error,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  unread > 99 ? '99+' : '$unread',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      );
+                    },
+                  ),
+                  IconButton(
+                    tooltip: '刷新',
+                    onPressed: () => _refresh(
+                      isAdmin: isAdmin,
+                      isVendor: isVendor,
+                      vendorId: vendorId,
+                    ),
+                    icon: const Icon(Icons.refresh),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+              ),
+              body: RefreshIndicator(
+                onRefresh: () => _refresh(
                   isAdmin: isAdmin,
                   isVendor: isVendor,
                   vendorId: vendorId,
                 ),
-                const SizedBox(height: 12),
-
-                _SectionTitle(
-                  title: '即時統計',
-                  subtitle: isVendor ? '僅顯示你的廠商範圍' : '全站概覽',
-                ),
-                const SizedBox(height: 10),
-
-                LayoutBuilder(
-                  builder: (context, c) {
-                    final w = c.maxWidth;
-                    final crossAxisCount = w >= 1100 ? 4 : (w >= 700 ? 3 : 2);
-
-                    return GridView.count(
-                      crossAxisCount: crossAxisCount,
-                      crossAxisSpacing: 10,
-                      mainAxisSpacing: 10,
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      childAspectRatio: 2.05,
-                      children: [
-                        _StatCard.stream(
-                          icon: Icons.shopping_bag_outlined,
-                          title: '商品數',
-                          stream: productsCount$,
-                          onTap: () => _push(context, const AdminProductsPage()),
-                        ),
-                        _StatCard.stream(
-                          icon: Icons.receipt_long_outlined,
-                          title: '訂單數',
-                          stream: ordersCount$,
-                          onTap: () => _push(context, const AdminOrdersPage()),
-                        ),
-                        _StatCard.stream(
-                          icon: Icons.campaign_outlined,
-                          title: '活動數',
-                          stream: campaignsCount$,
-                          onTap: () => _push(context, const AdminCampaignsPage()),
-                        ),
-                        _StatCard.stream(
-                          icon: Icons.card_giftcard_outlined,
-                          title: '優惠券數',
-                          stream: couponsCount$,
-                          onTap: () => _push(context, const AdminCouponsPage()),
-                        ),
-
-                        // ✅ 新增：抽獎 / 購物車統計卡
-                        _StatCard.stream(
-                          icon: Icons.celebration_outlined,
-                          title: '抽獎數',
-                          stream: lotteriesCount$,
-                          onTap: () => _push(context, const AdminLotteryPage()),
-                        ),
-                        _StatCard.stream(
-                          icon: Icons.shopping_cart_outlined,
-                          title: '購物車數',
-                          stream: cartsCount$,
-                          onTap: () => _push(context, const AdminCartPage()),
-                        ),
-
-                        _StatCard.stream(
-                          icon: Icons.category_outlined,
-                          title: '分類數',
-                          stream: categoriesCount$,
-                          onTap: () => _push(context, const AdminCategoriesPage()),
-                        ),
-                        if (isAdmin)
-                          _StatCard.stream(
-                            icon: Icons.store_mall_directory_outlined,
-                            title: '廠商數',
-                            stream: vendorsCount$,
-                            onTap: () => _push(context, const AdminVendorsPage()),
-                          ),
-                        if (isAdmin)
-                          _StatCard.stream(
-                            icon: Icons.people_alt_outlined,
-                            title: '顧客數',
-                            stream: usersCount$,
-                            onTap: () => _push(context, const AdminUsersPage()),
-                          ),
-                        _StatCard.stream(
-                          icon: Icons.notifications_outlined,
-                          title: '未讀通知',
-                          stream: unreadNotifs$,
-                          onTap: () => _push(context, const AdminNotificationsPage()),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-
-                const SizedBox(height: 16),
-
-                const _SectionTitle(title: '快速入口', subtitle: '常用後台功能快捷操作'),
-                const SizedBox(height: 10),
-
-                _QuickActions(
-                  isAdmin: isAdmin,
-                  onProducts: () => _push(context, const AdminProductsPage()),
-                  onOrders: () => _push(context, const AdminOrdersPage()),
-                  onCampaigns: () => _push(context, const AdminCampaignsPage()),
-                  onCoupons: () => _push(context, const AdminCouponsPage()),
-                  onLottery: () => _push(context, const AdminLotteryPage()), // ✅新增
-                  onCart: () => _push(context, const AdminCartPage()),       // ✅新增
-                  onCategories: () => _push(context, const AdminCategoriesPage()),
-                  onVendors: isAdmin
-                      ? () => _push(context, const AdminVendorsPage())
-                      : null,
-                  onUsers: isAdmin
-                      ? () => _push(context, const AdminUsersPage())
-                      : null,
-                  onReports: () => _push(context, const AdminReportsPage()),
-                  onNotifications: () => _push(context, const AdminNotificationsPage()),
-                ),
-
-                const SizedBox(height: 16),
-
-                const _SectionTitle(title: '近況訂單', subtitle: '最近 10 筆'),
-                const SizedBox(height: 10),
-
-                Card(
-                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: recentOrdersQ.snapshots(),
-                    builder: (context, s) {
-                      if (!s.hasData) {
-                        return const Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Center(child: CircularProgressIndicator()),
-                        );
-                      }
-
-                      final docs = s.data!.docs;
-                      if (docs.isEmpty) {
-                        return const Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Text('目前沒有訂單資料'),
-                        );
-                      }
-
-                      return ListView.separated(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        itemCount: docs.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1),
-                        itemBuilder: (_, i) {
-                          final d = docs[i].data();
-                          final orderNo =
-                              (d['orderNo'] ?? docs[i].id).toString();
-                          final userName =
-                              (d['userName'] ?? d['buyerName'] ?? d['name'] ?? '')
-                                  .toString();
-                          final status = (d['status'] ?? 'pending').toString();
-                          final total = d['total'] ?? d['amount'] ?? 0;
-                          final createdAt = d['createdAt'];
-
-                          return ListTile(
-                            leading: Icon(Icons.receipt_long_outlined,
-                                color: _statusColor(status, context)),
-                            title: Text('訂單：$orderNo',
-                                style: const TextStyle(fontWeight: FontWeight.w900)),
-                            subtitle: Text(
-                              [
-                                if (userName.trim().isNotEmpty) '顧客：$userName',
-                                '狀態：${_statusLabel(status)}',
-                                '金額：${_fmtMoney(total)}',
-                                '時間：${_fmtDate(createdAt)}',
-                              ].join('｜'),
-                            ),
-                            trailing: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: _statusColor(status, context)
-                                    .withOpacity(0.10),
-                                borderRadius: BorderRadius.circular(999),
-                                border: Border.all(
-                                  color: _statusColor(status, context)
-                                      .withOpacity(0.35),
-                                ),
-                              ),
-                              child: Text(
-                                _statusLabel(status),
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  color: _statusColor(status, context),
-                                ),
-                              ),
-                            ),
-                            onTap: () async {
-                              await _push(context, const AdminOrdersPage());
-                            },
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-
-                const SizedBox(height: 18),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildHeader(
-    BuildContext context, {
-    required bool isAdmin,
-    required bool isVendor,
-    required String vendorId,
-  }) {
-    final title =
-        isAdmin ? '管理員儀表板' : (isVendor ? '廠商儀表板' : '儀表板');
-
-    final subtitle = isVendor ? 'vendorId：$vendorId' : '快速掌握後台運作狀態';
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: [
-            const Icon(Icons.dashboard_outlined, size: 28),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 4),
-                  Text(subtitle, style: const TextStyle(color: Colors.black54)),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: () => setState(() {}),
-              icon: const Icon(Icons.refresh),
-              label: const Text('刷新'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// Widgets
-// ------------------------------------------------------------
-
-class _SectionTitle extends StatelessWidget {
-  final String title;
-  final String? subtitle;
-
-  const _SectionTitle({required this.title, this.subtitle});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Text(title,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
-        const SizedBox(width: 10),
-        if (subtitle != null)
-          Expanded(
-            child: Text(
-              subtitle!,
-              style: const TextStyle(color: Colors.black54),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _StatCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final Widget valueWidget;
-  final VoidCallback? onTap;
-
-  const _StatCard({
-    required this.icon,
-    required this.title,
-    required this.valueWidget,
-    this.onTap,
-  });
-
-  factory _StatCard.stream({
-    required IconData icon,
-    required String title,
-    required Stream<int> stream,
-    VoidCallback? onTap,
-  }) {
-    return _StatCard(
-      icon: icon,
-      title: title,
-      onTap: onTap,
-      valueWidget: StreamBuilder<int>(
-        stream: stream,
-        builder: (context, s) {
-          final v = s.data ?? 0;
-          return Text(
-            NumberFormat('#,##0', 'zh_TW').format(v),
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
-          );
-        },
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final card = Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            Icon(icon, size: 26),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 6),
-                  valueWidget,
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right),
-          ],
-        ),
-      ),
-    );
-
-    if (onTap == null) return card;
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: card,
-    );
-  }
-}
-
-class _QuickActions extends StatelessWidget {
-  final bool isAdmin;
-
-  final VoidCallback onProducts;
-  final VoidCallback onOrders;
-  final VoidCallback onCampaigns;
-  final VoidCallback onCoupons;
-
-  // ✅ 新增
-  final VoidCallback onLottery;
-  final VoidCallback onCart;
-
-  final VoidCallback onCategories;
-  final VoidCallback? onVendors;
-  final VoidCallback? onUsers;
-  final VoidCallback onReports;
-  final VoidCallback onNotifications;
-
-  const _QuickActions({
-    required this.isAdmin,
-    required this.onProducts,
-    required this.onOrders,
-    required this.onCampaigns,
-    required this.onCoupons,
-    required this.onLottery,
-    required this.onCart,
-    required this.onCategories,
-    required this.onVendors,
-    required this.onUsers,
-    required this.onReports,
-    required this.onNotifications,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final actions = <_ActionItem>[
-      _ActionItem(icon: Icons.shopping_bag_outlined, label: '商品', onTap: onProducts),
-      _ActionItem(icon: Icons.receipt_long_outlined, label: '訂單', onTap: onOrders),
-      _ActionItem(icon: Icons.campaign_outlined, label: '活動', onTap: onCampaigns),
-      _ActionItem(icon: Icons.card_giftcard_outlined, label: '優惠券', onTap: onCoupons),
-
-      // ✅ 新增：抽獎 / 購物車
-      _ActionItem(icon: Icons.celebration_outlined, label: '抽獎', onTap: onLottery),
-      _ActionItem(icon: Icons.shopping_cart_outlined, label: '購物車', onTap: onCart),
-
-      _ActionItem(icon: Icons.category_outlined, label: '分類', onTap: onCategories),
-      _ActionItem(icon: Icons.notifications_outlined, label: '通知', onTap: onNotifications),
-      _ActionItem(icon: Icons.bar_chart_outlined, label: '報表', onTap: onReports),
-    ];
-
-    if (isAdmin && onVendors != null) {
-      actions.add(_ActionItem(
-          icon: Icons.store_mall_directory_outlined, label: '廠商', onTap: onVendors!));
-    }
-    if (isAdmin && onUsers != null) {
-      actions.add(_ActionItem(
-          icon: Icons.people_alt_outlined, label: '顧客', onTap: onUsers!));
-    }
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: LayoutBuilder(
-          builder: (context, c) {
-            final w = c.maxWidth;
-            final cross = w >= 900 ? 8 : (w >= 650 ? 6 : 4);
-
-            return GridView.count(
-              crossAxisCount: cross,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 10,
-              crossAxisSpacing: 10,
-              childAspectRatio: 1.2,
-              children: actions
-                  .map(
-                    (a) => InkWell(
-                      onTap: a.onTap,
-                      borderRadius: BorderRadius.circular(12),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Theme.of(context).dividerColor,
-                          ),
-                        ),
-                        padding: const EdgeInsets.all(10),
+                child: ListView(
+                  padding: const EdgeInsets.all(12),
+                  children: [
+                    // Header Card
+                    Card(
+                      elevation: 0,
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
                         child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(a.icon, size: 26),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    isAdmin ? '系統概覽' : '商家概覽',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                                if (isVendor && vendorId.isNotEmpty)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      // ✅ surfaceVariant -> surfaceContainerHighest
+                                      color: cs.surfaceContainerHighest
+                                          .withValues(alpha: 0.35),
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(
+                                        // ✅ withOpacity -> withValues
+                                        color: cs.outline.withValues(
+                                          alpha: 0.18,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Text(
+                                      'vendorId: $vendorId',
+                                      style: TextStyle(
+                                        color: cs.onSurfaceVariant,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                              ],
+                            ),
                             const SizedBox(height: 8),
-                            Text(a.label,
-                                style: const TextStyle(fontWeight: FontWeight.w900)),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.info_outline,
+                                  size: 16,
+                                  color: cs.onSurfaceVariant,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    '更新：${_fmt(_updatedAt)}${_loading ? '（計算中）' : ''}',
+                                    style: TextStyle(
+                                      color: cs.onSurfaceVariant,
+                                      fontSize: 12,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ],
                         ),
                       ),
                     ),
-                  )
-                  .toList(),
+
+                    const SizedBox(height: 12),
+
+                    // KPI Grid
+                    LayoutBuilder(
+                      builder: (_, c) {
+                        final cols = c.maxWidth < 520 ? 2 : 4;
+                        return GridView.count(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          crossAxisCount: cols,
+                          crossAxisSpacing: 10,
+                          mainAxisSpacing: 10,
+                          childAspectRatio: cols == 2 ? 2.7 : 3.1,
+                          children: [
+                            kpiCard(
+                              icon: Icons.receipt_long_outlined,
+                              label: '今日訂單',
+                              value: Text('$_todayOrders'),
+                              onTap: () =>
+                                  Navigator.pushNamed(context, '/orders'),
+                            ),
+                            kpiCard(
+                              icon: Icons.pending_actions_outlined,
+                              label: '待付款',
+                              value: Text('$_pendingPayment'),
+                              onTap: () =>
+                                  Navigator.pushNamed(context, '/orders'),
+                            ),
+                            kpiCard(
+                              icon: Icons.inventory_2_outlined,
+                              label: '上架商品',
+                              value: Text('$_activeProducts'),
+                              onTap: () => Navigator.pushNamed(
+                                context,
+                                isVendor ? '/vendor_products' : '/products',
+                              ),
+                            ),
+                            kpiCard(
+                              icon: Icons.notifications_outlined,
+                              label: '未讀通知',
+                              value: StreamBuilder<int>(
+                                stream: notifSvc.streamUnreadCount(),
+                                builder: (_, s) => Text('${s.data ?? 0}'),
+                              ),
+                              onTap: () => Navigator.pushNamed(
+                                context,
+                                '/notifications',
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+
+                    if (isAdmin) ...[
+                      const SizedBox(height: 10),
+                      LayoutBuilder(
+                        builder: (_, c) {
+                          final cols = c.maxWidth < 520 ? 2 : 4;
+                          return GridView.count(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            crossAxisCount: cols,
+                            crossAxisSpacing: 10,
+                            mainAxisSpacing: 10,
+                            childAspectRatio: cols == 2 ? 2.7 : 3.1,
+                            children: [
+                              kpiCard(
+                                icon: Icons.people_alt_outlined,
+                                label: '使用者數',
+                                value: Text('$_totalUsers'),
+                                onTap: () =>
+                                    Navigator.pushNamed(context, '/users'),
+                              ),
+                              kpiCard(
+                                icon: Icons.store_outlined,
+                                label: 'Vendor 數',
+                                value: Text('$_totalVendors'),
+                                onTap: () =>
+                                    Navigator.pushNamed(context, '/vendors'),
+                              ),
+                              kpiCard(
+                                icon: Icons.bar_chart_outlined,
+                                label: '報表',
+                                value: const Text('開啟'),
+                                onTap: () =>
+                                    Navigator.pushNamed(context, '/reports'),
+                              ),
+                              kpiCard(
+                                icon: Icons.settings_outlined,
+                                label: 'App 設定',
+                                value: const Text('開啟'),
+                                onTap: () =>
+                                    Navigator.pushNamed(context, '/app_config'),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+
+                    const SizedBox(height: 12),
+
+                    // Quick actions
+                    Card(
+                      elevation: 0,
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            _QuickBtn(
+                              icon: Icons.receipt_long_outlined,
+                              label: '訂單',
+                              onTap: () =>
+                                  Navigator.pushNamed(context, '/orders'),
+                            ),
+                            _QuickBtn(
+                              icon: isVendor
+                                  ? Icons.storefront_outlined
+                                  : Icons.inventory_2_outlined,
+                              label: isVendor ? '我的商品' : '商品',
+                              onTap: () => Navigator.pushNamed(
+                                context,
+                                isVendor ? '/vendor_products' : '/products',
+                              ),
+                            ),
+                            if (isAdmin)
+                              _QuickBtn(
+                                icon: Icons.category_outlined,
+                                label: '分類',
+                                onTap: () =>
+                                    Navigator.pushNamed(context, '/categories'),
+                              ),
+                            if (isAdmin)
+                              _QuickBtn(
+                                icon: Icons.store_outlined,
+                                label: '廠商',
+                                onTap: () =>
+                                    Navigator.pushNamed(context, '/vendors'),
+                              ),
+                            _QuickBtn(
+                              icon: Icons.notifications_outlined,
+                              label: '通知',
+                              onTap: () => Navigator.pushNamed(
+                                context,
+                                '/notifications',
+                              ),
+                            ),
+                            _QuickBtn(
+                              icon: Icons.bar_chart_outlined,
+                              label: '報表',
+                              onTap: () =>
+                                  Navigator.pushNamed(context, '/reports'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    // Recent Orders
+                    Card(
+                      elevation: 0,
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Expanded(
+                                  child: Text(
+                                    '近 10 筆訂單',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                                TextButton.icon(
+                                  onPressed: () =>
+                                      Navigator.pushNamed(context, '/orders'),
+                                  icon: const Icon(Icons.open_in_new, size: 18),
+                                  label: const Text('訂單管理'),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                              stream: _recentOrdersStream(
+                                isVendor: isVendor,
+                                vendorId: vendorId,
+                              ),
+                              builder: (context, snap) {
+                                if (snap.hasError) {
+                                  return Text(
+                                    '讀取失敗：${snap.error}',
+                                    style: TextStyle(color: cs.error),
+                                  );
+                                }
+                                if (!snap.hasData) {
+                                  return const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 18),
+                                    child: Center(
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                  );
+                                }
+
+                                final docs = snap.data!.docs;
+                                if (docs.isEmpty) {
+                                  return const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 10),
+                                    child: Text('目前沒有訂單'),
+                                  );
+                                }
+
+                                return ListView.separated(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: docs.length,
+                                  separatorBuilder: (_, __) =>
+                                      const Divider(height: 1),
+                                  itemBuilder: (_, i) {
+                                    final d = docs[i];
+                                    final data = d.data();
+
+                                    final status = _s(data['status']);
+                                    final total = _toNum(
+                                      data['total'] ?? data['amount'] ?? 0,
+                                    );
+                                    final createdAt = _toDate(
+                                      data['createdAt'],
+                                    );
+
+                                    return ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      title: Text(
+                                        '訂單 ${d.id}',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                      subtitle: Text(
+                                        '${status.isEmpty ? '-' : status} ・ NT\$${total.toStringAsFixed(0)} ・ ${_fmt(createdAt)}',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      onTap: () {
+                                        try {
+                                          Navigator.pushNamed(
+                                            context,
+                                            '/payment_status',
+                                            arguments: d.id,
+                                          );
+                                        } catch (_) {
+                                          Navigator.pushNamed(
+                                            context,
+                                            '/orders',
+                                          );
+                                        }
+                                      },
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             );
           },
+        );
+      },
+    );
+  }
+}
+
+class _QuickBtn extends StatelessWidget {
+  const _QuickBtn({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          // ✅ surfaceVariant -> surfaceContainerHighest
+          color: cs.surfaceContainerHighest.withValues(alpha: 0.22),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            // ✅ withOpacity -> withValues
+            color: cs.outline.withValues(alpha: 0.14),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18),
+            const SizedBox(width: 8),
+            Text(label, style: const TextStyle(fontWeight: FontWeight.w900)),
+          ],
         ),
       ),
     );
   }
 }
 
-class _ActionItem {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  _ActionItem({
-    required this.icon,
-    required this.label,
-    required this.onTap,
+class _ErrorCard extends StatelessWidget {
+  const _ErrorCard({
+    required this.title,
+    required this.message,
+    required this.onRetry,
   });
+
+  final String title;
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: cs.error),
+                  ),
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重試'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

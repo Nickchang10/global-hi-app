@@ -1,516 +1,629 @@
 // lib/pages/vendor_campaigns_page.dart
 //
-// ✅ VendorCampaignsPage（完整版｜可編譯）
-// 功能：
-// - 顯示 vendorId 自己的 campaigns
-// - 搜尋、啟用/停用、CRUD
-// - 與主後台 campaign 集合連動（同資料集）
+// ✅ VendorCampaignsPage（廠商活動/行銷活動列表｜可編譯完整版｜已修正 surfaceVariant deprecated）
+// ------------------------------------------------------------
+// ✅ 修正：避免把欄位命名為 num 造成 Dart 解析「num isn't a type」
+// - 將 _CampaignCard 的 num helper 改名為 numOf
 //
-// Firestore 結構：campaigns/{campaignId}
-//   - vendorId: String
+// ✅ 修正（本次）
+// - surfaceVariant deprecated → surfaceContainerHighest
+// - withOpacity deprecated → withValues(alpha: ...)
+// -（同時避免 curly_braces_in_flow_control_structures）所有 if 都加上區塊 {}
+//
+// Firestore（容錯讀取，不強制）：
+// campaigns/{id}:
 //   - title: String
 //   - description: String
-//   - startDate: Timestamp
-//   - endDate: Timestamp
-//   - isActive: bool
-//   - createdAt: Timestamp
+//   - coverUrl: String
+//   - vendorId: String
+//   - enabled: bool
+//   - startAt: Timestamp
+//   - endAt: Timestamp
 //   - updatedAt: Timestamp
+//   - createdAt: Timestamp
+//   - budget/spent/impressions/clicks/conversions: num
 //
-// 依賴：cloud_firestore, flutter/material, flutter/services
+// 依賴：cloud_firestore, firebase_auth, flutter/services
 
-import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class VendorCampaignsPage extends StatefulWidget {
-  const VendorCampaignsPage({super.key, required this.vendorId});
+  final String? vendorId;
 
-  final String vendorId;
+  const VendorCampaignsPage({super.key, this.vendorId});
 
   @override
   State<VendorCampaignsPage> createState() => _VendorCampaignsPageState();
 }
 
-class _VendorCampaignsPageState extends State<VendorCampaignsPage> {
-  final _db = FirebaseFirestore.instance;
-  final _searchCtrl = TextEditingController();
-  String _q = '';
-  bool? _isActive;
-  bool _busy = false;
-  String _busyLabel = '';
+enum _CampaignFilter { all, active, upcoming, ended }
 
-  String get _vid => widget.vendorId.trim();
+class _VendorCampaignsPageState extends State<VendorCampaignsPage> {
+  String _vendorId = '';
+  _CampaignFilter _filter = _CampaignFilter.all;
 
   @override
-  void dispose() {
-    _searchCtrl.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _vendorId = (widget.vendorId ?? '').trim();
   }
 
-  // utils
-  String _s(dynamic v) => (v ?? '').toString().trim();
-  bool _isTrue(dynamic v) => v == true;
-  DateTime? _toDate(dynamic v) {
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
-    return null;
-  }
-
-  String _fmt(DateTime? d) {
-    if (d == null) return '-';
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)}';
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  Future<void> _copy(String text) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    _snack('已複製');
-  }
-
-  Future<void> _setBusy(bool v, {String label = ''}) async {
-    if (!mounted) return;
-    setState(() {
-      _busy = v;
-      _busyLabel = label;
-    });
-  }
-
-  Stream<QuerySnapshot<Map<String, dynamic>>> _streamCampaigns() {
-    Query<Map<String, dynamic>> q = _db
-        .collection('campaigns')
-        .where('vendorId', isEqualTo: _vid)
-        .orderBy('createdAt', descending: true);
-    if (_isActive != null) {
-      q = q.where('isActive', isEqualTo: _isActive);
-    }
-    return q.snapshots();
-  }
-
-  bool _match(Map<String, dynamic> d, String id) {
-    final q = _q.trim().toLowerCase();
-    if (q.isEmpty) return true;
-    final title = _s(d['title']).toLowerCase();
-    final desc = _s(d['description']).toLowerCase();
-    return id.toLowerCase().contains(q) || title.contains(q) || desc.contains(q);
-  }
-
-  // CRUD
-  Future<void> _toggleActive(String id, bool active) async {
-    await _setBusy(true, label: active ? '啟用中...' : '停用中...');
-    try {
-      await _db.collection('campaigns').doc(id).set({
-        'isActive': active,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      _snack(active ? '已啟用' : '已停用');
-    } catch (e) {
-      _snack('錯誤：$e');
-    } finally {
-      await _setBusy(false);
-    }
-  }
-
-  Future<void> _delete(String id) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除活動'),
-        content: Text('確定要刪除 $id？'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    await _setBusy(true, label: '刪除中...');
-    try {
-      await _db.collection('campaigns').doc(id).delete();
-      _snack('已刪除');
-    } catch (e) {
-      _snack('刪除失敗：$e');
-    } finally {
-      await _setBusy(false);
-    }
-  }
-
-  Future<void> _openEditor({String? id, Map<String, dynamic>? data}) async {
-    final isCreate = id == null;
-    final titleCtrl = TextEditingController(text: _s(data?['title']));
-    final descCtrl = TextEditingController(text: _s(data?['description']));
-    final startCtrl = TextEditingController(
-        text: data != null && data['startDate'] != null ? _fmt(_toDate(data['startDate'])) : '');
-    final endCtrl = TextEditingController(
-        text: data != null && data['endDate'] != null ? _fmt(_toDate(data['endDate'])) : '');
-    bool active = data == null ? true : _isTrue(data['isActive']);
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => StatefulBuilder(
-        builder: (context, setInner) => AlertDialog(
-          title: Text(isCreate ? '新增活動' : '編輯活動'),
-          content: SizedBox(
-            width: 600,
-            child: SingleChildScrollView(
-              child: Column(
-                children: [
-                  TextField(
-                    controller: titleCtrl,
-                    decoration: const InputDecoration(
-                      labelText: '標題',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: descCtrl,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: '描述',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: startCtrl,
-                          decoration: const InputDecoration(labelText: '開始日 (YYYY-MM-DD)'),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: endCtrl,
-                          decoration: const InputDecoration(labelText: '結束日 (YYYY-MM-DD)'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  SwitchListTile(
-                    title: const Text('啟用'),
-                    value: active,
-                    onChanged: (v) => setInner(() => active = v),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('儲存')),
-          ],
-        ),
-      ),
-    );
-
-    if (ok != true) return;
-    if (titleCtrl.text.trim().isEmpty) {
-      _snack('標題不可為空');
+  // -------------------------
+  // VendorId hydration
+  // -------------------------
+  void _hydrateVendorIdIfNeeded() {
+    if (_vendorId.isNotEmpty) {
       return;
     }
 
-    await _setBusy(true, label: '儲存中...');
-    try {
-      final startDate = DateTime.tryParse(startCtrl.text.trim());
-      final endDate = DateTime.tryParse(endCtrl.text.trim());
+    final route = ModalRoute.of(context);
+    final args = route?.settings.arguments;
 
-      final dataToSave = {
-        'title': titleCtrl.text.trim(),
-        'description': descCtrl.text.trim(),
-        'startDate': startDate == null ? null : Timestamp.fromDate(startDate),
-        'endDate': endDate == null ? null : Timestamp.fromDate(endDate),
-        'isActive': active,
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
+    String vid = '';
 
-      if (isCreate) {
-        await _db.collection('campaigns').add({
-          ...dataToSave,
-          'vendorId': _vid,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-        _snack('已新增活動');
-      } else {
-        await _db.collection('campaigns').doc(id!).set(dataToSave, SetOptions(merge: true));
-        _snack('已更新活動');
+    if (args is String) {
+      vid = args.trim();
+    } else if (args is Map) {
+      final v = args['vendorId'] ?? args['vendor_id'] ?? args['uid'];
+      if (v != null) {
+        vid = v.toString().trim();
       }
-    } catch (e) {
-      _snack('儲存失敗：$e');
-    } finally {
-      await _setBusy(false);
+    }
+
+    if (vid.isEmpty) {
+      vid = (FirebaseAuth.instance.currentUser?.uid ?? '').trim();
+    }
+
+    if (vid.isEmpty) {
+      return;
+    }
+
+    setState(() => _vendorId = vid);
+  }
+
+  // -------------------------
+  // Helpers
+  // -------------------------
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  num _num(dynamic v) {
+    if (v is num) {
+      return v;
+    }
+    return num.tryParse((v ?? '').toString()) ?? 0;
+  }
+
+  DateTime? _toDate(dynamic v) {
+    if (v is Timestamp) {
+      return v.toDate();
+    }
+    if (v is DateTime) {
+      return v;
+    }
+    return null;
+  }
+
+  Future<void> _copy(String text, {String done = '已複製'}) async {
+    final t = text.trim();
+    if (t.isEmpty) {
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: t));
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(done), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  String _fmtDate(DateTime? dt) {
+    if (dt == null) {
+      return '—';
+    }
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $hh:$mm';
+  }
+
+  // -------------------------
+  // Query
+  // -------------------------
+  Query<Map<String, dynamic>> _query() {
+    final db = FirebaseFirestore.instance;
+    final base = db
+        .collection('campaigns')
+        .withConverter<Map<String, dynamic>>(
+          fromFirestore: (snap, _) => snap.data() ?? <String, dynamic>{},
+          toFirestore: (data, _) => data,
+        );
+
+    return base
+        .where('vendorId', isEqualTo: _vendorId)
+        .orderBy('updatedAt', descending: true);
+  }
+
+  // -------------------------
+  // Filter logic
+  // -------------------------
+  _CampaignStatus _statusOf(Map<String, dynamic> data) {
+    final enabled = (data['enabled'] is bool)
+        ? (data['enabled'] as bool)
+        : true;
+    final start = _toDate(data['startAt']);
+    final end = _toDate(data['endAt']);
+    final now = DateTime.now();
+
+    if (!enabled) {
+      return _CampaignStatus.disabled;
+    }
+
+    if (start != null && now.isBefore(start)) {
+      return _CampaignStatus.upcoming;
+    }
+    if (end != null && now.isAfter(end)) {
+      return _CampaignStatus.ended;
+    }
+
+    return _CampaignStatus.active;
+  }
+
+  bool _matchFilter(_CampaignStatus s) {
+    switch (_filter) {
+      case _CampaignFilter.all:
+        return true;
+      case _CampaignFilter.active:
+        return s == _CampaignStatus.active;
+      case _CampaignFilter.upcoming:
+        return s == _CampaignStatus.upcoming;
+      case _CampaignFilter.ended:
+        return s == _CampaignStatus.ended;
     }
   }
 
+  // -------------------------
   // UI
+  // -------------------------
+  @override
+  Widget build(BuildContext context) {
+    _hydrateVendorIdIfNeeded();
+
+    if (_vendorId.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('活動管理')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.lock_outline, size: 44, color: Colors.grey),
+                const SizedBox(height: 10),
+                const Text('尚未取得 vendorId（請先登入）'),
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: () => Navigator.pushNamedAndRemoveUntil(
+                    context,
+                    '/login',
+                    (_) => false,
+                  ),
+                  child: const Text('前往登入'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final cs = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('活動/行銷活動'),
+        actions: [
+          IconButton(
+            tooltip: '複製 VendorId',
+            onPressed: () => _copy(_vendorId, done: '已複製 VendorId'),
+            icon: const Icon(Icons.copy),
+          ),
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: Column(
+        children: [
+          _FilterBar(
+            current: _filter,
+            onChanged: (v) => setState(() => _filter = v),
+          ),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _query().snapshots(),
+              builder: (context, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snap.hasError) {
+                  return Center(child: Text('讀取失敗：${snap.error}'));
+                }
+
+                final docs = snap.data?.docs ?? [];
+                if (docs.isEmpty) {
+                  return const Center(child: Text('尚無活動資料'));
+                }
+
+                final items = <_CampaignItem>[];
+                for (final d in docs) {
+                  final data = d.data();
+                  final s = _statusOf(data);
+                  if (_matchFilter(s)) {
+                    items.add(_CampaignItem(id: d.id, data: data, status: s));
+                  }
+                }
+
+                if (items.isEmpty) {
+                  return Center(
+                    child: Text(
+                      '此篩選下無資料',
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 16),
+                  itemCount: items.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (_, i) {
+                    final item = items[i];
+                    return _CampaignCard(
+                      item: item,
+                      fmtDate: _fmtDate,
+                      toDate: _toDate,
+                      numOf: _num, // ✅ 改名：numOf
+                      s: _s,
+                      onOpen: () => _openDetail(item),
+                      onCopyId: () => _copy(item.id, done: '已複製活動ID'),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openDetail(_CampaignItem item) {
+    final data = item.data;
+    final title = _s(data['title']).isNotEmpty ? _s(data['title']) : item.id;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        final start = _toDate(data['startAt']);
+        final end = _toDate(data['endAt']);
+        final cover = _s(data['coverUrl']);
+        final desc = _s(data['description']);
+
+        final budget = _num(data['budget']);
+        final spent = _num(data['spent']);
+        final impressions = _num(data['impressions']);
+        final clicks = _num(data['clicks']);
+        final conversions = _num(data['conversions']);
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    _StatusPill(status: item.status),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Icon(Icons.tag, size: 18),
+                    const SizedBox(width: 6),
+                    Expanded(child: Text('活動ID：${item.id}')),
+                    TextButton.icon(
+                      onPressed: () => _copy(item.id, done: '已複製活動ID'),
+                      icon: const Icon(Icons.copy, size: 16),
+                      label: const Text('複製'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                if (cover.isNotEmpty)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: AspectRatio(
+                      aspectRatio: 16 / 9,
+                      child: Image.network(
+                        cover,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const Center(
+                          child: Icon(Icons.broken_image_outlined, size: 36),
+                        ),
+                        loadingBuilder: (_, child, ev) {
+                          if (ev == null) {
+                            return child;
+                          }
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                _InfoRow(label: '開始時間', value: _fmtDate(start)),
+                _InfoRow(label: '結束時間', value: _fmtDate(end)),
+                _InfoRow(
+                  label: '預算',
+                  value: budget == 0 ? '—' : budget.toStringAsFixed(0),
+                ),
+                _InfoRow(
+                  label: '花費',
+                  value: spent == 0 ? '—' : spent.toStringAsFixed(0),
+                ),
+                const SizedBox(height: 10),
+                Card(
+                  elevation: 0,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '成效指標',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        _MetricGrid(
+                          impressions: impressions,
+                          clicks: clicks,
+                          conversions: conversions,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  '活動說明',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 6),
+                Text(desc.isEmpty ? '（無說明）' : desc),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: () => Navigator.pop(ctx),
+                  icon: const Icon(Icons.check),
+                  label: const Text('關閉'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ============================================================
+// UI Components
+// ============================================================
+
+class _FilterBar extends StatelessWidget {
+  final _CampaignFilter current;
+  final ValueChanged<_CampaignFilter> onChanged;
+
+  const _FilterBar({required this.current, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          ChoiceChip(
+            label: const Text('全部'),
+            selected: current == _CampaignFilter.all,
+            onSelected: (_) => onChanged(_CampaignFilter.all),
+          ),
+          ChoiceChip(
+            label: const Text('進行中'),
+            selected: current == _CampaignFilter.active,
+            onSelected: (_) => onChanged(_CampaignFilter.active),
+          ),
+          ChoiceChip(
+            label: const Text('即將開始'),
+            selected: current == _CampaignFilter.upcoming,
+            onSelected: (_) => onChanged(_CampaignFilter.upcoming),
+          ),
+          ChoiceChip(
+            label: const Text('已結束'),
+            selected: current == _CampaignFilter.ended,
+            onSelected: (_) => onChanged(_CampaignFilter.ended),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CampaignCard extends StatelessWidget {
+  final _CampaignItem item;
+  final String Function(DateTime?) fmtDate;
+  final DateTime? Function(dynamic) toDate;
+  final num Function(dynamic) numOf; // ✅ 改名：numOf
+  final String Function(dynamic) s;
+  final VoidCallback onOpen;
+  final VoidCallback onCopyId;
+
+  const _CampaignCard({
+    required this.item,
+    required this.fmtDate,
+    required this.toDate,
+    required this.numOf,
+    required this.s,
+    required this.onOpen,
+    required this.onCopyId,
+  });
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return Stack(
-      children: [
-        Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 3,
-                    child: TextField(
-                      controller: _searchCtrl,
-                      decoration: InputDecoration(
-                        isDense: true,
-                        prefixIcon: const Icon(Icons.search),
-                        hintText: '搜尋標題 / 描述',
-                        border: const OutlineInputBorder(),
-                        suffixIcon: _searchCtrl.text.trim().isEmpty
-                            ? null
-                            : IconButton(
-                                icon: const Icon(Icons.clear),
-                                onPressed: () {
-                                  _searchCtrl.clear();
-                                  setState(() => _q = '');
-                                },
-                              ),
+    final data = item.data;
+    final title = s(data['title']).isNotEmpty ? s(data['title']) : item.id;
+    final desc = s(data['description']);
+    final cover = s(data['coverUrl']);
+
+    final start = toDate(data['startAt']);
+    final end = toDate(data['endAt']);
+
+    final budget = numOf(data['budget']);
+    final spent = numOf(data['spent']);
+
+    return InkWell(
+      onTap: onOpen,
+      borderRadius: BorderRadius.circular(14),
+      child: Card(
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(color: cs.outlineVariant),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (cover.isNotEmpty)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 92,
+                    height: 70,
+                    child: Image.network(
+                      cover,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => const Center(
+                        child: Icon(Icons.broken_image_outlined, size: 26),
                       ),
-                      onChanged: (v) => setState(() => _q = v),
+                      loadingBuilder: (_, child, ev) {
+                        if (ev == null) {
+                          return child;
+                        }
+                        return const Center(child: CircularProgressIndicator());
+                      },
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  SizedBox(
-                    width: 180,
-                    child: DropdownButtonFormField<bool?>(
-                      value: _isActive,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        border: OutlineInputBorder(),
-                        labelText: '狀態',
-                      ),
-                      items: const [
-                        DropdownMenuItem(value: null, child: Text('全部')),
-                        DropdownMenuItem(value: true, child: Text('啟用')),
-                        DropdownMenuItem(value: false, child: Text('停用')),
-                      ],
-                      onChanged: (v) => setState(() => _isActive = v),
-                    ),
+                )
+              else
+                Container(
+                  width: 92,
+                  height: 70,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    // ✅ surfaceVariant deprecated → surfaceContainerHighest
+                    // ✅ withOpacity deprecated → withValues(alpha: ...)
+                    color: cs.surfaceContainerHighest.withValues(alpha: 0.30),
+                    border: Border.all(color: cs.outlineVariant),
                   ),
-                  const SizedBox(width: 10),
-                  FilledButton.icon(
-                    onPressed: _busy ? null : () => _openEditor(),
-                    icon: const Icon(Icons.add),
-                    label: const Text('新增活動'),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: _streamCampaigns(),
-                builder: (context, snap) {
-                  if (snap.hasError) {
-                    return Center(child: Text('錯誤：${snap.error}'));
-                  }
-                  if (!snap.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  final docs = snap.data!.docs.where((d) => _match(d.data(), d.id)).toList();
-                  if (docs.isEmpty) {
-                    return Center(child: Text('目前沒有資料', style: TextStyle(color: cs.onSurfaceVariant)));
-                  }
-
-                  return ListView.separated(
-                    itemCount: docs.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final d = docs[i].data();
-                      final id = docs[i].id;
-                      final title = _s(d['title']).isEmpty ? '(未命名)' : _s(d['title']);
-                      final desc = _s(d['description']);
-                      final active = _isTrue(d['isActive']);
-                      final start = _toDate(d['startDate']);
-                      final end = _toDate(d['endDate']);
-
-                      return ListTile(
-                        title: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                title,
-                                style: const TextStyle(fontWeight: FontWeight.w900),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                  child: const Icon(Icons.campaign_outlined),
+                ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w900,
                             ),
-                            const SizedBox(width: 8),
-                            _Pill(
-                              label: active ? '啟用' : '停用',
-                              color: active ? cs.primary : cs.error,
-                            ),
-                          ],
-                        ),
-                        subtitle: Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(desc, maxLines: 2, overflow: TextOverflow.ellipsis),
-                              Text('期間：${_fmt(start)} ~ ${_fmt(end)}',
-                                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                            ],
                           ),
                         ),
-                        trailing: PopupMenuButton<String>(
-                          onSelected: _busy
-                              ? null
-                              : (v) async {
-                                  if (v == 'edit') {
-                                    await _openEditor(id: id, data: d);
-                                  } else if (v == 'toggle') {
-                                    await _toggleActive(id, !active);
-                                  } else if (v == 'copy') {
-                                    await _copy(id);
-                                  } else if (v == 'delete') {
-                                    await _delete(id);
-                                  } else if (v == 'json') {
-                                    await _viewJson('活動 JSON', d);
-                                  }
-                                },
-                          itemBuilder: (_) => [
-                            const PopupMenuItem(value: 'edit', child: Text('編輯')),
-                            PopupMenuItem(value: 'toggle', child: Text(active ? '停用' : '啟用')),
-                            const PopupMenuItem(value: 'copy', child: Text('複製 ID')),
-                            const PopupMenuItem(value: 'json', child: Text('查看 JSON')),
-                            const PopupMenuDivider(),
-                            const PopupMenuItem(value: 'delete', child: Text('刪除')),
-                          ],
+                        const SizedBox(width: 8),
+                        _StatusPill(status: item.status),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    if (desc.isNotEmpty)
+                      Text(
+                        desc,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: cs.onSurfaceVariant),
+                      )
+                    else
+                      Text(
+                        '（無說明）',
+                        style: TextStyle(color: cs.onSurfaceVariant),
+                      ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '時間：${fmtDate(start)} → ${fmtDate(end)}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '預算/花費：${budget == 0 ? '—' : budget.toStringAsFixed(0)} / ${spent == 0 ? '—' : spent.toStringAsFixed(0)}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        TextButton.icon(
+                          onPressed: onCopyId,
+                          icon: const Icon(Icons.copy, size: 16),
+                          label: const Text('複製ID'),
                         ),
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-        if (_busy)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _BusyBar(label: _busyLabel),
-          ),
-      ],
-    );
-  }
-
-  Future<void> _viewJson(String title, Map<String, dynamic> data) async {
-    await showDialog(
-      context: context,
-      builder: (_) => _JsonDialog(
-        title: title,
-        jsonText: const JsonEncoder.withIndent('  ').convert(data),
-      ),
-    );
-  }
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.color});
-  final String label;
-  final Color color;
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.25)),
-      ),
-      child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w900, fontSize: 12)),
-    );
-  }
-}
-
-class _BusyBar extends StatelessWidget {
-  const _BusyBar({required this.label});
-  final String label;
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Material(
-      elevation: 8,
-      color: cs.surface,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Row(
-          children: [
-            const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-            const SizedBox(width: 10),
-            Expanded(child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800))),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _JsonDialog extends StatelessWidget {
-  const _JsonDialog({required this.title, required this.jsonText});
-  final String title;
-  final String jsonText;
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      insetPadding: const EdgeInsets.all(18),
-      child: SizedBox(
-        width: 700,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w900))),
-                  IconButton(
-                    tooltip: '複製 JSON',
-                    onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: jsonText));
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context)
-                            .showSnackBar(const SnackBar(content: Text('已複製 JSON')));
-                      }
-                    },
-                    icon: const Icon(Icons.copy),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Flexible(
-                child: SingleChildScrollView(
-                  child: SelectableText(jsonText, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                        const Spacer(),
+                        Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
+                      ],
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 10),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton(onPressed: () => Navigator.pop(context), child: const Text('關閉')),
               ),
             ],
           ),
@@ -518,4 +631,152 @@ class _JsonDialog extends StatelessWidget {
       ),
     );
   }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+  const _InfoRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 84,
+            child: Text(label, style: TextStyle(color: cs.onSurfaceVariant)),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetricGrid extends StatelessWidget {
+  final num impressions;
+  final num clicks;
+  final num conversions;
+
+  const _MetricGrid({
+    required this.impressions,
+    required this.clicks,
+    required this.conversions,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Widget tile(String name, num val, IconData icon) {
+      return Expanded(
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+          ),
+          child: Column(
+            children: [
+              Icon(icon, size: 18),
+              const SizedBox(height: 6),
+              Text(
+                val == 0 ? '—' : val.toStringAsFixed(0),
+                style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 4),
+              Text(name, style: const TextStyle(fontSize: 12)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        tile('曝光', impressions, Icons.visibility_outlined),
+        const SizedBox(width: 10),
+        tile('點擊', clicks, Icons.ads_click),
+        const SizedBox(width: 10),
+        tile('轉換', conversions, Icons.task_alt),
+      ],
+    );
+  }
+}
+
+enum _CampaignStatus { active, upcoming, ended, disabled }
+
+class _StatusPill extends StatelessWidget {
+  final _CampaignStatus status;
+  const _StatusPill({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    String text;
+    Color bg;
+    Color fg;
+
+    switch (status) {
+      case _CampaignStatus.active:
+        text = '進行中';
+        bg = cs.primary.withValues(alpha: 0.10);
+        fg = cs.primary;
+        break;
+      case _CampaignStatus.upcoming:
+        text = '即將開始';
+        bg = Colors.orange.withValues(alpha: 0.12);
+        fg = Colors.orange.shade800;
+        break;
+      case _CampaignStatus.ended:
+        text = '已結束';
+        // ✅ surfaceVariant deprecated → surfaceContainerHighest
+        bg = cs.surfaceContainerHighest.withValues(alpha: 0.35);
+        fg = cs.onSurfaceVariant;
+        break;
+      case _CampaignStatus.disabled:
+        text = '停用';
+        bg = Colors.red.withValues(alpha: 0.10);
+        fg = Colors.red.shade800;
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: fg.withValues(alpha: 0.25)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: fg),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Data holder
+// ============================================================
+
+class _CampaignItem {
+  final String id;
+  final Map<String, dynamic> data;
+  final _CampaignStatus status;
+
+  const _CampaignItem({
+    required this.id,
+    required this.data,
+    required this.status,
+  });
 }

@@ -1,32 +1,24 @@
 // lib/pages/admin_contacts_page.dart
 //
-// ✅ AdminContactsPage（最終完整版｜聯絡我們紀錄管理）
+// ✅ AdminContactsPage（聯絡人/會員名單｜可編譯完整版）
 // ------------------------------------------------------------
-// Firestore 結構：contacts/{id}
-//   - name: String
-//   - email: String
-//   - phone: String
-//   - subject: String
-//   - message: String
-//   - status: String ('new' / 'in_progress' / 'resolved')
-//   - handler: String? （處理人）
-//   - reply: String?
-//   - createdAt: Timestamp
-//   - updatedAt: Timestamp
-//   - isActive: bool
-// ------------------------------------------------------------
-// 功能：
-// - 即時 Firestore 監聽（新聯絡表單）
-// - 狀態更新：未處理 / 處理中 / 已完成
-// - 回覆備註功能
-// - 搜尋 + 篩選
-// - 通知系統整合 (sendToUsers)
+// - 讀取 users 集合（最多 500）
+// - 搜尋：name / email / phone / uid
+// - 勾選多位用戶，批次發送通知
+// - 呼叫 NotificationService.sendToUsers(uids:, title:, body:, type:, route:)
+//   ✅ 修正：參數改用 route（你的 NotificationService 沒有 deepLink）
+// - ✅ 修正：use_build_context_synchronously（徹底避免跨 async gap 再用 context）
+//    1) await 前先取 messenger / notifier
+//    2) showDialog actions 內 pop 一律使用 dialogCtx
+//    3) await 後若需操作 UI，使用 if (!mounted) return;（符合 State.context 規則）
+// - ✅ 修正：withOpacity deprecated（若你的 SDK 有提示）-> withValues(alpha: ...)
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import '../services/notification_service.dart'; // ✅ 整合通知服務
 import 'package:provider/provider.dart';
+
+import '../services/notification_service.dart';
 
 class AdminContactsPage extends StatefulWidget {
   const AdminContactsPage({super.key});
@@ -37,284 +29,377 @@ class AdminContactsPage extends StatefulWidget {
 
 class _AdminContactsPageState extends State<AdminContactsPage> {
   final _db = FirebaseFirestore.instance;
-  final _searchCtrl = TextEditingController();
-  String _query = '';
-  String _filterStatus = 'all';
-  bool _showOnlyActive = true;
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _streamContacts() {
-    Query<Map<String, dynamic>> q = _db.collection('contacts');
+  final _search = TextEditingController();
 
-    if (_showOnlyActive) q = q.where('isActive', isEqualTo: true);
-    if (_filterStatus != 'all') q = q.where('status', isEqualTo: _filterStatus);
+  // send form
+  final _title = TextEditingController();
+  final _body = TextEditingController();
+  final _route = TextEditingController(); // UI 可叫 deepLink，但 service 用 route
 
-    q = q.orderBy('createdAt', descending: true).limit(200);
-    return q.snapshots();
-  }
+  String _type = 'general';
 
-  Future<void> _updateStatus(
-      DocumentSnapshot<Map<String, dynamic>> doc, String newStatus) async {
-    await _db.collection('contacts').doc(doc.id).set(
-      {
-        'status': newStatus,
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      SetOptions(merge: true),
-    );
+  bool _loading = true;
+  String? _error;
 
-    if (!mounted) return;
-    final notif = context.read<NotificationService>();
-    await notif.sendToUsers(
-      uids: ['admin'], // 可替換成管理員群組UID列表
-      title: '聯絡我們狀態更新',
-      body:
-          '聯絡單「${doc['subject'] ?? ''}」狀態已更新為 ${_statusLabel(newStatus)}。',
-      type: 'contact_update',
-      route: '/admin_contacts',
-    );
-  }
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs = [];
+  final Set<String> _selected = <String>{};
 
-  Future<void> _deleteContact(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除紀錄'),
-        content: Text('確定要刪除「${doc['subject'] ?? ''}」嗎？'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    await _db.collection('contacts').doc(doc.id).delete();
-  }
-
-  Future<void> _replyContact(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final data = doc.data() ?? {};
-    final replyCtrl = TextEditingController(text: data['reply'] ?? '');
-
-    final reply = await showDialog<String>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('回覆聯絡單：${data['name'] ?? ''}'),
-        content: TextField(
-          controller: replyCtrl,
-          minLines: 3,
-          maxLines: 8,
-          decoration: const InputDecoration(
-            labelText: '回覆內容（僅內部備註）',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, replyCtrl.text.trim()),
-            child: const Text('儲存回覆'),
-          ),
-        ],
-      ),
-    );
-
-    if (reply == null || reply.isEmpty) return;
-
-    await _db.collection('contacts').doc(doc.id).set(
-      {
-        'reply': reply,
-        'status': 'in_progress',
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      SetOptions(merge: true),
-    );
-  }
-
-  String _statusLabel(String status) {
-    switch (status) {
-      case 'new':
-        return '未處理';
-      case 'in_progress':
-        return '處理中';
-      case 'resolved':
-        return '已完成';
-      default:
-        return '未知';
-    }
-  }
-
-  Color _statusColor(String status) {
-    switch (status) {
-      case 'new':
-        return Colors.orange;
-      case 'in_progress':
-        return Colors.blueAccent;
-      case 'resolved':
-        return Colors.green;
-      default:
-        return Colors.grey;
-    }
+  @override
+  void initState() {
+    super.initState();
+    _load();
   }
 
   @override
   void dispose() {
-    _searchCtrl.dispose();
+    _search.dispose();
+    _title.dispose();
+    _body.dispose();
+    _route.dispose();
     super.dispose();
+  }
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      Query<Map<String, dynamic>> q = _db.collection('users');
+
+      try {
+        final snap = await q
+            .orderBy('createdAt', descending: true)
+            .limit(500)
+            .get();
+        _docs = snap.docs;
+      } catch (_) {
+        final snap = await q
+            .orderBy(FieldPath.documentId, descending: true)
+            .limit(500)
+            .get();
+        _docs = snap.docs;
+      }
+
+      if (!mounted) return;
+      setState(() => _loading = false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> get _filtered {
+    final q = _search.text.trim().toLowerCase();
+    if (q.isEmpty) return _docs;
+
+    return _docs.where((doc) {
+      final d = doc.data();
+      final uid = doc.id.toLowerCase();
+      final name = _s(d['displayName'] ?? d['name']).toLowerCase();
+      final email = _s(d['email']).toLowerCase();
+      final phone = _s(d['phone']).toLowerCase();
+      return uid.contains(q) ||
+          name.contains(q) ||
+          email.contains(q) ||
+          phone.contains(q);
+    }).toList();
+  }
+
+  bool get _allVisibleSelected {
+    final visible = _filtered;
+    if (visible.isEmpty) return false;
+    return visible.every((d) => _selected.contains(d.id));
+  }
+
+  void _toggleSelectAllVisible() {
+    final visible = _filtered;
+    if (visible.isEmpty) return;
+
+    final all = _allVisibleSelected;
+    setState(() {
+      if (all) {
+        for (final d in visible) {
+          _selected.remove(d.id);
+        }
+      } else {
+        for (final d in visible) {
+          _selected.add(d.id);
+        }
+      }
+    });
+  }
+
+  Future<void> _sendToSelected() async {
+    // ✅ await 前先取出（避免跨 async gap 再用 context）
+    final notifier = context.read<NotificationService>();
+    final messenger = ScaffoldMessenger.of(context);
+
+    final title = _title.text.trim();
+    final body = _body.text.trim();
+    final route = _route.text.trim();
+
+    if (_selected.isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('請先勾選至少 1 位會員')));
+      return;
+    }
+    if (title.isEmpty || body.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('title / body 不可為空')),
+      );
+      return;
+    }
+
+    // ✅ Dialog 內 pop 一律用 dialogCtx
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) {
+        return AlertDialog(
+          title: const Text(
+            '確認發送',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+          content: Text(
+            '將發送通知給 ${_selected.length} 位會員。\n\n標題：$title\n類型：$_type',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(true),
+              child: const Text('確認送出'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (ok != true) return;
+
+    try {
+      await notifier.sendToUsers(
+        uids: _selected.toList(),
+        title: title,
+        body: body,
+        type: _type,
+        route: route.isEmpty ? null : route,
+      );
+
+      // ✅ await 後若要更新 UI：用 State 的 mounted（符合 lint）
+      if (!mounted) return;
+      messenger.showSnackBar(const SnackBar(content: Text('已送出通知')));
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('送出失敗：$e')));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('聯絡我們紀錄管理'),
+        title: const Text(
+          '聯絡人 / 會員',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
-          PopupMenuButton<String>(
-            onSelected: (v) => setState(() => _filterStatus = v),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'all', child: Text('全部')),
-              PopupMenuItem(value: 'new', child: Text('未處理')),
-              PopupMenuItem(value: 'in_progress', child: Text('處理中')),
-              PopupMenuItem(value: 'resolved', child: Text('已完成')),
-            ],
-            icon: const Icon(Icons.filter_alt),
+          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : (_error != null && _docs.isEmpty)
+          ? Center(child: Text('載入失敗：$_error'))
+          : Column(
+              children: [
+                _topBar(cs),
+                const Divider(height: 1),
+                Expanded(child: _list()),
+                const Divider(height: 1),
+                _sendPanel(cs),
+              ],
+            ),
+    );
+  }
+
+  Widget _topBar(ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _search,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: '搜尋 name / email / phone / uid',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
           ),
-          IconButton(
-            tooltip: _showOnlyActive ? '顯示全部' : '僅顯示啟用',
-            icon: Icon(_showOnlyActive ? Icons.visibility : Icons.visibility_off),
-            onPressed: () => setState(() => _showOnlyActive = !_showOnlyActive),
+          const SizedBox(width: 10),
+          OutlinedButton.icon(
+            onPressed: _toggleSelectAllVisible,
+            icon: Icon(
+              _allVisibleSelected
+                  ? Icons.check_box
+                  : Icons.check_box_outline_blank,
+            ),
+            label: Text(_allVisibleSelected ? '取消全選(可見)' : '全選(可見)'),
+          ),
+          const SizedBox(width: 10),
+          Chip(
+            label: Text('已選 ${_selected.length}'),
+            backgroundColor: cs.surfaceContainerHighest.withValues(alpha: 0.35),
           ),
         ],
       ),
-      body: Column(
+    );
+  }
+
+  Widget _list() {
+    final list = _filtered;
+    if (list.isEmpty) return const Center(child: Text('無符合條件的會員'));
+
+    return ListView.separated(
+      itemCount: list.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (context, i) {
+        final doc = list[i];
+        final d = doc.data();
+
+        final uid = doc.id;
+        final name = _s(d['displayName'] ?? d['name']);
+        final email = _s(d['email']);
+        final phone = _s(d['phone']);
+        final role = _s(d['role']).isEmpty ? 'user' : _s(d['role']);
+
+        final checked = _selected.contains(uid);
+
+        return ListTile(
+          leading: Checkbox(
+            value: checked,
+            onChanged: (v) => setState(() {
+              if (v == true) {
+                _selected.add(uid);
+              } else {
+                _selected.remove(uid);
+              }
+            }),
+          ),
+          title: Text(
+            name.isNotEmpty ? name : uid,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          subtitle: Text(
+            [
+              'uid: $uid',
+              if (email.isNotEmpty) 'email: $email',
+              if (phone.isNotEmpty) 'phone: $phone',
+              'role: $role',
+            ].join('  •  '),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          onTap: () => setState(() {
+            if (checked) {
+              _selected.remove(uid);
+            } else {
+              _selected.add(uid);
+            }
+          }),
+        );
+      },
+    );
+  }
+
+  Widget _sendPanel(ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      child: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: TextField(
-              controller: _searchCtrl,
-              decoration: InputDecoration(
-                prefixIcon: const Icon(Icons.search),
-                hintText: '搜尋聯絡人姓名 / 主題',
-                suffixIcon: _query.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          _searchCtrl.clear();
-                          setState(() => _query = '');
-                        },
-                      )
-                    : null,
-                border: const OutlineInputBorder(),
-                isDense: true,
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _title,
+                  decoration: const InputDecoration(
+                    labelText: '通知標題 title',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
               ),
-              onChanged: (v) => setState(() => _query = v),
+              const SizedBox(width: 10),
+              DropdownButton<String>(
+                value: _type,
+                items: const [
+                  DropdownMenuItem(value: 'general', child: Text('general')),
+                  DropdownMenuItem(value: 'promo', child: Text('promo')),
+                  DropdownMenuItem(value: 'system', child: Text('system')),
+                  DropdownMenuItem(value: 'order', child: Text('order')),
+                  DropdownMenuItem(value: 'sos', child: Text('sos')),
+                ],
+                onChanged: (v) => setState(() => _type = v ?? 'general'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _body,
+            minLines: 2,
+            maxLines: 6,
+            decoration: const InputDecoration(
+              labelText: '通知內容 body',
+              border: OutlineInputBorder(),
             ),
           ),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _streamContacts(),
-              builder: (context, snap) {
-                if (snap.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snap.hasError) {
-                  return Center(child: Text('載入錯誤：${snap.error}'));
-                }
-
-                final docs = snap.data?.docs ?? [];
-                final filtered = _query.isEmpty
-                    ? docs
-                    : docs.where((d) {
-                        final data = d.data();
-                        final name = (data['name'] ?? '').toString().toLowerCase();
-                        final subject = (data['subject'] ?? '').toString().toLowerCase();
-                        return name.contains(_query.toLowerCase()) ||
-                            subject.contains(_query.toLowerCase());
-                      }).toList();
-
-                if (filtered.isEmpty) {
-                  return const Center(child: Text('目前沒有聯絡紀錄'));
-                }
-
-                return ListView.builder(
-                  itemCount: filtered.length,
-                  itemBuilder: (_, i) {
-                    final doc = filtered[i];
-                    final d = doc.data();
-                    final name = d['name'] ?? '';
-                    final email = d['email'] ?? '';
-                    final phone = d['phone'] ?? '';
-                    final subject = d['subject'] ?? '';
-                    final message = d['message'] ?? '';
-                    final reply = d['reply'] ?? '';
-                    final status = (d['status'] ?? 'new').toString();
-                    final isActive = d['isActive'] == true;
-
-                    return Card(
-                      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                      child: ExpansionTile(
-                        leading: Icon(Icons.person, color: _statusColor(status)),
-                        title: Text(subject,
-                            style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text('$name · ${_statusLabel(status)}',
-                            style: const TextStyle(color: Colors.black54)),
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('姓名：$name'),
-                                Text('Email：$email'),
-                                Text('電話：$phone'),
-                                const Divider(),
-                                const Text('留言內容：',
-                                    style: TextStyle(fontWeight: FontWeight.bold)),
-                                Text(message.isEmpty ? '(無內容)' : message),
-                                const Divider(),
-                                const Text('回覆備註：',
-                                    style: TextStyle(fontWeight: FontWeight.bold)),
-                                Text(reply.isEmpty ? '(尚未備註)' : reply),
-                                const SizedBox(height: 8),
-                                Wrap(
-                                  spacing: 10,
-                                  runSpacing: 6,
-                                  children: [
-                                    FilledButton.icon(
-                                      icon: const Icon(Icons.reply),
-                                      label: const Text('回覆/備註'),
-                                      onPressed: () => _replyContact(doc),
-                                    ),
-                                    OutlinedButton.icon(
-                                      icon: const Icon(Icons.task_alt),
-                                      label: const Text('設為完成'),
-                                      onPressed: status == 'resolved'
-                                          ? null
-                                          : () => _updateStatus(doc, 'resolved'),
-                                    ),
-                                    OutlinedButton.icon(
-                                      icon: const Icon(Icons.playlist_add_check),
-                                      label: const Text('處理中'),
-                                      onPressed: status == 'in_progress'
-                                          ? null
-                                          : () => _updateStatus(doc, 'in_progress'),
-                                    ),
-                                    TextButton.icon(
-                                      icon: const Icon(Icons.delete, color: Colors.red),
-                                      label: const Text('刪除',
-                                          style: TextStyle(color: Colors.red)),
-                                      onPressed: () => _deleteContact(doc),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                );
-              },
+          const SizedBox(height: 10),
+          TextField(
+            controller: _route,
+            decoration: const InputDecoration(
+              labelText: 'route（可留空）',
+              hintText: '/orders/xxx 或 /notifications',
+              border: OutlineInputBorder(),
+              isDense: true,
             ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _selected.isEmpty ? null : _sendToSelected,
+                  icon: const Icon(Icons.send),
+                  label: Text(
+                    _selected.isEmpty
+                        ? '請先勾選會員'
+                        : '發送給已選會員（${_selected.length}）',
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '✅ 已修正：通知服務使用 route 參數（不是 deepLink）。',
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
           ),
         ],
       ),

@@ -1,295 +1,357 @@
 // lib/models/order_model.dart
-import 'dart:math';
+//
+// ✅ OrderModel / OrderItemModel（最終完整版｜可直接使用｜修正 avoid_types_as_parameter_names）
+// ------------------------------------------------------------
+// 金額一律用 int（元）避免 double 精度與 fold 型別錯誤。
+// 百分比折扣請用整數：amount * rate ~/ 100
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'cart_item.dart';
 
-/// 訂單狀態（可搭配 UI 顯示）
-/// 你也可以只用 String，不用 enum；這裡同時保留 status 字串欄位做兼容。
 enum OrderStatus {
-  pending,   // 待處理
-  shipped,   // 已出貨
-  delivered, // 已送達
+  pending, // 已建立待付款
+  paid, // 已付款
+  shipped, // 已出貨
+  completed, // 已完成
   cancelled, // 已取消
-  refund,    // 退款/退貨
+  refunded, // 已退款
 }
 
-extension OrderStatusExt on OrderStatus {
-  String get code {
-    switch (this) {
-      case OrderStatus.pending:
-        return 'pending';
-      case OrderStatus.shipped:
-        return 'shipped';
-      case OrderStatus.delivered:
-        return 'delivered';
-      case OrderStatus.cancelled:
-        return 'cancelled';
-      case OrderStatus.refund:
-        return 'refund';
-    }
-  }
-
-  String get label {
-    switch (this) {
-      case OrderStatus.pending:
-        return '待處理';
-      case OrderStatus.shipped:
-        return '已出貨';
-      case OrderStatus.delivered:
-        return '已送達';
-      case OrderStatus.cancelled:
-        return '已取消';
-      case OrderStatus.refund:
-        return '退款/退貨';
-    }
+OrderStatus _statusFromString(String s) {
+  switch (s) {
+    case 'paid':
+      return OrderStatus.paid;
+    case 'shipped':
+      return OrderStatus.shipped;
+    case 'completed':
+      return OrderStatus.completed;
+    case 'cancelled':
+      return OrderStatus.cancelled;
+    case 'refunded':
+      return OrderStatus.refunded;
+    case 'pending':
+    default:
+      return OrderStatus.pending;
   }
 }
 
-/// 訂單時間軸節點（搭配訂單詳情頁上的 timeline 使用）
-class OrderTimelineStep {
-  final String label;
-  final DateTime? time;
-  final bool done;
+String _statusToString(OrderStatus s) => s.name;
 
-  const OrderTimelineStep({
-    required this.label,
-    this.time,
-    this.done = false,
+class OrderItemModel {
+  final String productId;
+  final String title;
+  final String image;
+
+  /// 單價（元）
+  final int unitPrice;
+
+  final int qty;
+  final String currency;
+
+  final String vendorId;
+  final String vendorName;
+
+  const OrderItemModel({
+    required this.productId,
+    required this.title,
+    required this.image,
+    required this.unitPrice,
+    required this.qty,
+    required this.currency,
+    required this.vendorId,
+    required this.vendorName,
   });
 
-  Map<String, dynamic> toMap() {
-    return {
-      'label': label,
-      'time': time,
-      'done': done,
-    };
-  }
+  int get lineTotal => unitPrice * qty;
 
-  factory OrderTimelineStep.fromMap(Map<String, dynamic> map) {
-    return OrderTimelineStep(
-      label: map['label'] as String? ?? '',
-      time: map['time'] is DateTime ? map['time'] as DateTime : null,
-      done: map['done'] == true,
+  Map<String, dynamic> toMap() => {
+    'productId': productId,
+    'title': title,
+    'image': image,
+    'unitPrice': unitPrice,
+    'qty': qty,
+    'currency': currency,
+    'vendorId': vendorId,
+    'vendorName': vendorName,
+  };
+
+  static OrderItemModel fromMap(Map<String, dynamic> map) {
+    return OrderItemModel(
+      productId: (map['productId'] ?? '').toString(),
+      title: (map['title'] ?? '').toString(),
+      image: (map['image'] ?? '').toString(),
+      unitPrice: _toInt(map['unitPrice'], fallback: 0),
+      qty: _toInt(map['qty'], fallback: 1).clamp(1, 999999),
+      currency: (map['currency'] ?? 'TWD').toString(),
+      vendorId: (map['vendorId'] ?? '').toString(),
+      vendorName: (map['vendorName'] ?? '').toString(),
     );
   }
 }
 
-/// 訂單資料模型
-///
-/// - [id]           訂單編號（例：ORD-123456）
-/// - [items]        購物車項目列表
-/// - [total]        總金額
-/// - [createdAt]    建立時間
-/// - [status]       當前狀態（搭配 [statusCode] / [statusLabel] 使用）
-/// - [shippingAddress] 配送地址
-/// - [paymentMethod]   付款方式描述（例：信用卡 VISA **** 4242）
-/// - [trackingNumber]  物流單號
-/// - [carrier]         配送業者
-/// - [invoiceUrl]      發票連結（示範用）
-/// - [canCancel]       是否可以取消
-/// - [timeline]        時間軸節點（配合 UI 顯示）
 class OrderModel {
   final String id;
-  final List<CartItem> items;
+  final String userId;
+
+  final List<OrderItemModel> items;
+
+  final String currency;
+
+  /// 小計（元）
+  final int subtotal;
+
+  /// 運費（元）
+  final int shippingFee;
+
+  /// 折扣（元）
+  final int discountAmount;
+
+  /// 點數折抵（元）
+  final int pointsDiscount;
+
+  /// 應付總額（元）
   final int total;
-  final DateTime createdAt;
 
   final OrderStatus status;
-  final String? shippingAddress;
-  final String? paymentMethod;
-  final String? trackingNumber;
-  final String? carrier;
-  final String? invoiceUrl;
-  final bool canCancel;
-  final List<OrderTimelineStep> timeline;
 
-  OrderModel({
+  // 支付資訊（可選）
+  final String paymentMethod;
+  final String transactionId;
+
+  // 收件資訊（可選）
+  final String receiverName;
+  final String receiverPhone;
+  final String shippingAddress;
+
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  const OrderModel({
     required this.id,
+    required this.userId,
     required this.items,
+    required this.currency,
+    required this.subtotal,
+    required this.shippingFee,
+    required this.discountAmount,
+    required this.pointsDiscount,
     required this.total,
+    required this.status,
+    required this.paymentMethod,
+    required this.transactionId,
+    required this.receiverName,
+    required this.receiverPhone,
+    required this.shippingAddress,
     required this.createdAt,
-    this.status = OrderStatus.pending,
-    this.shippingAddress,
-    this.paymentMethod,
-    this.trackingNumber,
-    this.carrier,
-    this.invoiceUrl,
-    this.canCancel = true,
-    this.timeline = const [],
+    required this.updatedAt,
   });
 
-  /// 產生一筆訂單（從購物車項目轉成訂單）
-  factory OrderModel.fromCartItems(
-    List<CartItem> items, {
+  factory OrderModel.fromCart({
+    required String id,
+    required String userId,
+    required List<CartItem> cartItems,
+    int shippingFee = 0,
+    int discountAmount = 0,
+    int pointsDiscount = 0,
+    String currency = 'TWD',
     OrderStatus status = OrderStatus.pending,
-    String? shippingAddress,
-    String? paymentMethod,
-    String? trackingNumber,
-    String? carrier,
-    String? invoiceUrl,
+    String paymentMethod = '',
+    String transactionId = '',
+    String receiverName = '',
+    String receiverPhone = '',
+    String shippingAddress = '',
   }) {
-    final total = items.fold<int>(
-      0,
-      (sum, e) => sum + e.product.price * e.qty,
+    final items = cartItems
+        .map(
+          (c) => OrderItemModel(
+            productId: c.productId,
+            title: c.title,
+            image: c.image,
+            unitPrice: c.unitPrice,
+            qty: c.qty,
+            currency: c.currency,
+            vendorId: c.vendorId,
+            vendorName: c.vendorName,
+          ),
+        )
+        .toList();
+
+    // ✅ FIX: sum -> acc
+    final subtotalCalc = items.fold<int>(0, (acc, e) => acc + e.lineTotal);
+
+    final totalCalc = _calcTotalInt(
+      subtotal: subtotalCalc,
+      shippingFee: shippingFee,
+      discountAmount: discountAmount,
+      pointsDiscount: pointsDiscount,
     );
 
     final now = DateTime.now();
-    final baseTimeline = _buildDefaultTimeline(now, status);
-
     return OrderModel(
-      id: 'ORD-${Random().nextInt(999999).toString().padLeft(6, '0')}',
-      items: List<CartItem>.from(items),
-      total: total,
-      createdAt: now,
+      id: id,
+      userId: userId,
+      items: items,
+      currency: currency,
+      subtotal: subtotalCalc,
+      shippingFee: shippingFee,
+      discountAmount: discountAmount,
+      pointsDiscount: pointsDiscount,
+      total: totalCalc,
       status: status,
-      shippingAddress: shippingAddress,
       paymentMethod: paymentMethod,
-      trackingNumber: trackingNumber,
-      carrier: carrier,
-      invoiceUrl: invoiceUrl,
-      canCancel: status == OrderStatus.pending,
-      timeline: baseTimeline,
+      transactionId: transactionId,
+      receiverName: receiverName,
+      receiverPhone: receiverPhone,
+      shippingAddress: shippingAddress,
+      createdAt: now,
+      updatedAt: now,
     );
   }
 
-  /// 內部使用：根據狀態建立一組預設時間軸
-  static List<OrderTimelineStep> _buildDefaultTimeline(
-    DateTime now,
-    OrderStatus status,
-  ) {
-    final created = now;
-    final paid = created.add(const Duration(hours: 1));
-    final shipped = paid.add(const Duration(days: 1));
-    final delivered = shipped.add(const Duration(days: 2));
-
-    final steps = <OrderTimelineStep>[
-      OrderTimelineStep(label: '下單', time: created, done: true),
-      OrderTimelineStep(label: '付款', time: paid, done: true),
-      OrderTimelineStep(
-        label: '出貨',
-        time: shipped,
-        done: status == OrderStatus.shipped ||
-            status == OrderStatus.delivered ||
-            status == OrderStatus.cancelled ||
-            status == OrderStatus.refund,
-      ),
-      OrderTimelineStep(
-        label: '送達',
-        time: delivered,
-        done: status == OrderStatus.delivered,
-      ),
-    ];
-
-    if (status == OrderStatus.cancelled) {
-      steps.add(OrderTimelineStep(
-        label: '已取消',
-        time: now,
-        done: true,
-      ));
-    } else if (status == OrderStatus.refund) {
-      steps.add(OrderTimelineStep(
-        label: '退款/退貨',
-        time: now,
-        done: true,
-      ));
-    }
-
-    return steps;
+  /// 百分比折扣（整數）
+  static int percentDiscountAmount({
+    required int amount,
+    required int percentOff,
+  }) {
+    if (amount <= 0) return 0;
+    final p = percentOff.clamp(0, 100);
+    return amount * p ~/ 100;
   }
 
-  /// 狀態字串（提供給舊版需要使用 String 的地方）
-  String get statusCode => status.code;
+  static int _calcTotalInt({
+    required int subtotal,
+    required int shippingFee,
+    required int discountAmount,
+    required int pointsDiscount,
+  }) {
+    final raw = subtotal + shippingFee - discountAmount - pointsDiscount;
+    return raw < 0 ? 0 : raw;
+  }
 
-  /// 狀態中文（UI 顯示）
-  String get statusLabel => status.label;
-
-  /// 方便在 Provider 裡 immutable 更新
   OrderModel copyWith({
     String? id,
-    List<CartItem>? items,
+    String? userId,
+    List<OrderItemModel>? items,
+    String? currency,
+    int? subtotal,
+    int? shippingFee,
+    int? discountAmount,
+    int? pointsDiscount,
     int? total,
-    DateTime? createdAt,
     OrderStatus? status,
-    String? shippingAddress,
     String? paymentMethod,
-    String? trackingNumber,
-    String? carrier,
-    String? invoiceUrl,
-    bool? canCancel,
-    List<OrderTimelineStep>? timeline,
+    String? transactionId,
+    String? receiverName,
+    String? receiverPhone,
+    String? shippingAddress,
+    DateTime? createdAt,
+    DateTime? updatedAt,
   }) {
     return OrderModel(
       id: id ?? this.id,
+      userId: userId ?? this.userId,
       items: items ?? this.items,
+      currency: currency ?? this.currency,
+      subtotal: subtotal ?? this.subtotal,
+      shippingFee: shippingFee ?? this.shippingFee,
+      discountAmount: discountAmount ?? this.discountAmount,
+      pointsDiscount: pointsDiscount ?? this.pointsDiscount,
       total: total ?? this.total,
-      createdAt: createdAt ?? this.createdAt,
       status: status ?? this.status,
-      shippingAddress: shippingAddress ?? this.shippingAddress,
       paymentMethod: paymentMethod ?? this.paymentMethod,
-      trackingNumber: trackingNumber ?? this.trackingNumber,
-      carrier: carrier ?? this.carrier,
-      invoiceUrl: invoiceUrl ?? this.invoiceUrl,
-      canCancel: canCancel ?? this.canCancel,
-      timeline: timeline ?? this.timeline,
+      transactionId: transactionId ?? this.transactionId,
+      receiverName: receiverName ?? this.receiverName,
+      receiverPhone: receiverPhone ?? this.receiverPhone,
+      shippingAddress: shippingAddress ?? this.shippingAddress,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 
-  /// 給現在的 OrdersPage 用的 map 格式
-  ///
-  /// 你可以這樣用：
-  /// final list = orders.map((o) => o.toMapForOrdersPage()).toList();
-  /// Navigator.push(context, MaterialPageRoute(
-  ///   builder: (_) => OrdersPage(initialOrders: list),
-  /// ));
-  Map<String, dynamic> toMapForOrdersPage() {
-    return {
-      'id': id,
-      'date': createdAt,
-      'status': statusCode,
-      'items': items
-          .map((c) => {
-                'name': c.product.title,
-                'qty': c.qty,
-                'price': c.product.price,
-                'image': c.product.image,
-              })
-          .toList(),
-      'total': total,
-      'shippingAddress': shippingAddress ?? '',
-      'paymentMethod': paymentMethod ?? '',
-      'trackingNumber': trackingNumber,
-      'carrier': carrier,
-      'invoiceUrl': invoiceUrl,
-      'canCancel': canCancel,
-      'timeline': timeline.map((t) => t.toMap()).toList(),
-    };
-  }
+  Map<String, dynamic> toMap() => {
+    'userId': userId,
+    'items': items.map((e) => e.toMap()).toList(),
+    'currency': currency,
+    'subtotal': subtotal,
+    'shippingFee': shippingFee,
+    'discountAmount': discountAmount,
+    'pointsDiscount': pointsDiscount,
+    'total': total,
+    'status': _statusToString(status),
+    'paymentMethod': paymentMethod,
+    'transactionId': transactionId,
+    'receiverName': receiverName,
+    'receiverPhone': receiverPhone,
+    'shippingAddress': shippingAddress,
+    'createdAt': createdAt == null ? null : Timestamp.fromDate(createdAt!),
+    'updatedAt': updatedAt == null ? null : Timestamp.fromDate(updatedAt!),
+  };
 
-  /// 如果之後你有把 Map 存到本機 / 雲端，也可以用這個還原
-  factory OrderModel.fromMap(Map<String, dynamic> map) {
-    final statusCode = map['status'] as String? ?? 'pending';
-    final status = OrderStatus.values.firstWhere(
-      (e) => e.code == statusCode,
-      orElse: () => OrderStatus.pending,
+  static OrderModel fromMap(String id, Map<String, dynamic> map) {
+    final itemsRaw = map['items'];
+    final items = (itemsRaw is List)
+        ? itemsRaw
+              .whereType<Map>()
+              .map((e) => OrderItemModel.fromMap(Map<String, dynamic>.from(e)))
+              .toList()
+        : <OrderItemModel>[];
+
+    // ✅ FIX: sum -> acc
+    final subtotalCalc = items.fold<int>(0, (acc, e) => acc + e.lineTotal);
+
+    final shippingFee = _toInt(map['shippingFee'], fallback: 0);
+    final discountAmount = _toInt(map['discountAmount'], fallback: 0);
+    final pointsDiscount = _toInt(map['pointsDiscount'], fallback: 0);
+
+    final subtotal = _toInt(map['subtotal'], fallback: subtotalCalc);
+    final total = _toInt(
+      map['total'],
+      fallback: _calcTotalInt(
+        subtotal: subtotal,
+        shippingFee: shippingFee,
+        discountAmount: discountAmount,
+        pointsDiscount: pointsDiscount,
+      ),
     );
 
     return OrderModel(
-      id: map['id'] as String? ?? '',
-      items: (map['items'] as List<dynamic>? ?? [])
-          .map((e) => e as CartItem)
-          .toList(),
-      total: map['total'] as int? ?? 0,
-      createdAt: map['date'] as DateTime? ?? DateTime.now(),
-      status: status,
-      shippingAddress: map['shippingAddress'] as String?,
-      paymentMethod: map['paymentMethod'] as String?,
-      trackingNumber: map['trackingNumber'] as String?,
-      carrier: map['carrier'] as String?,
-      invoiceUrl: map['invoiceUrl'] as String?,
-      canCancel: map['canCancel'] as bool? ?? false,
-      timeline: (map['timeline'] as List<dynamic>? ?? [])
-          .map((e) => OrderTimelineStep.fromMap(e as Map<String, dynamic>))
-          .toList(),
+      id: id,
+      userId: (map['userId'] ?? '').toString(),
+      items: items,
+      currency: (map['currency'] ?? 'TWD').toString(),
+      subtotal: subtotal,
+      shippingFee: shippingFee,
+      discountAmount: discountAmount,
+      pointsDiscount: pointsDiscount,
+      total: total,
+      status: _statusFromString((map['status'] ?? 'pending').toString()),
+      paymentMethod: (map['paymentMethod'] ?? '').toString(),
+      transactionId: (map['transactionId'] ?? '').toString(),
+      receiverName: (map['receiverName'] ?? '').toString(),
+      receiverPhone: (map['receiverPhone'] ?? '').toString(),
+      shippingAddress: (map['shippingAddress'] ?? '').toString(),
+      createdAt: _toDateTime(map['createdAt']),
+      updatedAt: _toDateTime(map['updatedAt']),
     );
   }
+
+  static OrderModel fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data() ?? const <String, dynamic>{};
+    return fromMap(doc.id, data);
+  }
+}
+
+int _toInt(dynamic v, {required int fallback}) {
+  if (v is int) return v;
+  if (v is double) return v.round();
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v) ?? fallback;
+  return fallback;
+}
+
+DateTime? _toDateTime(dynamic v) {
+  if (v == null) return null;
+  if (v is Timestamp) return v.toDate();
+  if (v is DateTime) return v;
+  return null;
 }

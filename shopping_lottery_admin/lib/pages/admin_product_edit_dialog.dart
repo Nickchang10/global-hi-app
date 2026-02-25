@@ -1,290 +1,531 @@
-// lib/pages/admin_product_edit_page.dart
+// lib/pages/admin_product_edit_dialog.dart
 //
-// ✅ AdminProductEditPage（最終完整版｜可新增 / 編輯 / 上傳圖片 / 分類 / 即時預覽）
+// ✅ AdminProductEditDialog（單檔完整版｜可編譯可用｜修正 unused_local_variable: data）
 // ------------------------------------------------------------
-// 功能：
-// - 新增或編輯商品（根據 productId 判斷）
-// - 圖片上傳（支援 Web + App）
-// - Firestore 寫入 / 更新（含 imageUrl）
-// - 分類下拉（從 Firestore 載入）
-// - 即時預覽（商品圖、名稱、價格）
-// - 自動刷新預覽（Controller listener）
+// - Firestore: products/{productId}
+// - 支援：新增/編輯商品、上傳圖片（Storage）、刪除圖片、狀態/庫存/價格等常用欄位
+//
+// 依賴：cloud_firestore, firebase_storage, file_picker
 // ------------------------------------------------------------
 
-import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:mime/mime.dart'; // ✅ 自動推測 contentType
 
-class AdminProductEditPage extends StatefulWidget {
-  final String? productId; // null → 新增模式
+class AdminProductEditDialog extends StatefulWidget {
+  final String? productId; // null => create
+  final Map<String, dynamic>? initialData;
 
-  const AdminProductEditPage({super.key, this.productId});
+  const AdminProductEditDialog({super.key, this.productId, this.initialData});
+
+  static Future<bool?> open(
+    BuildContext context, {
+    String? productId,
+    Map<String, dynamic>? initialData,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AdminProductEditDialog(
+        productId: productId,
+        initialData: initialData,
+      ),
+    );
+  }
 
   @override
-  State<AdminProductEditPage> createState() => _AdminProductEditPageState();
+  State<AdminProductEditDialog> createState() => _AdminProductEditDialogState();
 }
 
-class _AdminProductEditPageState extends State<AdminProductEditPage> {
+class _AdminProductEditDialogState extends State<AdminProductEditDialog> {
   final _db = FirebaseFirestore.instance;
   final _storage = FirebaseStorage.instance;
 
-  final _formKey = GlobalKey<FormState>();
+  final _idCtrl = TextEditingController();
   final _titleCtrl = TextEditingController();
-  final _priceCtrl = TextEditingController();
-  String _category = '全部';
-  bool _isActive = true;
-  String? _imageUrl;
-  bool _saving = false;
+  final _subtitleCtrl = TextEditingController();
+  final _skuCtrl = TextEditingController();
+  final _vendorIdCtrl = TextEditingController();
+  final _categoryIdCtrl = TextEditingController();
 
-  List<String> _categories = ['全部'];
+  final _priceCtrl = TextEditingController();
+  final _stockCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+
+  bool _active = true;
+  bool _saving = false;
+  bool _loading = true;
+
+  // 圖片：url list
+  final List<String> _images = [];
+
+  bool get _isCreate =>
+      (widget.productId == null || widget.productId!.trim().isEmpty);
+
+  DocumentReference<Map<String, dynamic>> _doc(String id) =>
+      _db.collection('products').doc(id);
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  int _toInt(dynamic v, {int def = 0}) {
+    if (v == null) return def;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString()) ?? def;
+  }
 
   @override
   void initState() {
     super.initState();
-    _loadCategories();
-    _titleCtrl.addListener(() => setState(() {}));
-    _priceCtrl.addListener(() => setState(() {}));
-    if (widget.productId != null) {
-      _loadProduct(widget.productId!);
-    }
+    _load();
   }
 
   @override
   void dispose() {
+    _idCtrl.dispose();
     _titleCtrl.dispose();
+    _subtitleCtrl.dispose();
+    _skuCtrl.dispose();
+    _vendorIdCtrl.dispose();
+    _categoryIdCtrl.dispose();
     _priceCtrl.dispose();
+    _stockCtrl.dispose();
+    _descCtrl.dispose();
     super.dispose();
   }
 
-  // ----------------------------
-  // Firestore：分類與商品載入
-  // ----------------------------
-  Future<void> _loadCategories() async {
+  Future<void> _load() async {
+    setState(() => _loading = true);
+
     try {
-      final snap = await _db.collection('categories').orderBy('sort').get();
-      final names = snap.docs.map((e) => (e.data()['name'] ?? '').toString()).toSet();
-      setState(() {
-        _categories = ['全部', ...names];
-      });
-    } catch (e) {
-      debugPrint('分類載入失敗：$e');
-    }
-  }
+      if (_isCreate) {
+        final m = widget.initialData ?? <String, dynamic>{};
+        _idCtrl.text = _s(m['id']);
+        _titleCtrl.text = _s(m['title']);
+        _subtitleCtrl.text = _s(m['subtitle']);
+        _skuCtrl.text = _s(m['sku']);
+        _vendorIdCtrl.text = _s(m['vendorId']);
+        _categoryIdCtrl.text = _s(m['categoryId']);
+        _priceCtrl.text = _toInt(m['price']).toString();
+        _stockCtrl.text = _toInt(m['stock']).toString();
+        _descCtrl.text = _s(m['description']);
+        _active = (m['isActive'] ?? true) == true;
 
-  Future<void> _loadProduct(String id) async {
-    try {
-      final doc = await _db.collection('products').doc(id).get();
-      if (!doc.exists) return;
-      final data = doc.data()!;
-      setState(() {
-        _titleCtrl.text = data['title'] ?? '';
-        _priceCtrl.text = (data['price'] ?? '').toString();
-        _category = data['categoryId'] ?? '全部';
-        _isActive = data['isActive'] ?? true;
-        _imageUrl = data['imageUrl'];
-      });
-    } catch (e) {
-      debugPrint('載入商品失敗：$e');
-    }
-  }
+        final imgs = m['images'];
+        if (imgs is List) {
+          _images
+            ..clear()
+            ..addAll(imgs.map((e) => _s(e)).where((e) => e.isNotEmpty));
+        }
+      } else {
+        final id = widget.productId!.trim();
+        final snap = await _doc(id).get();
+        final m = snap.data() ?? widget.initialData ?? <String, dynamic>{};
 
-  // ----------------------------
-  // 圖片上傳
-  // ----------------------------
-  Future<void> _pickImage() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        withData: true,
-      );
-      if (result == null) return;
+        _idCtrl.text = id;
+        _titleCtrl.text = _s(m['title']);
+        _subtitleCtrl.text = _s(m['subtitle']);
+        _skuCtrl.text = _s(m['sku']);
+        _vendorIdCtrl.text = _s(m['vendorId']);
+        _categoryIdCtrl.text = _s(m['categoryId']);
+        _priceCtrl.text = _toInt(m['price']).toString();
+        _stockCtrl.text = _toInt(m['stock']).toString();
+        _descCtrl.text = _s(m['description']);
+        _active = (m['isActive'] ?? true) == true;
 
-      final file = result.files.first;
-      final bytes = file.bytes;
-      if (bytes == null) return;
-
-      final mimeType = lookupMimeType(file.name) ?? 'image/jpeg';
-      final fileName = 'product_${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-      final ref = _storage.ref('products/$fileName');
-
-      await ref.putData(
-        bytes,
-        SettableMetadata(contentType: mimeType),
-      );
-
-      final url = await ref.getDownloadURL();
-      setState(() => _imageUrl = url);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('圖片已上傳成功')));
+        final imgs = m['images'];
+        if (imgs is List) {
+          _images
+            ..clear()
+            ..addAll(imgs.map((e) => _s(e)).where((e) => e.isNotEmpty));
+        } else {
+          _images.clear();
+        }
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('圖片上傳失敗：$e')),
-      );
+      _snack('載入失敗：$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  // ----------------------------
-  // Firestore 儲存商品
-  // ----------------------------
-  Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+  Future<void> _pickAndUploadImage() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      withData: true,
+    );
+    if (result == null) return;
+
+    final file = result.files.first;
+    final bytes = file.bytes;
+    if (bytes == null) {
+      _snack('圖片讀取失敗：bytes 為空');
+      return;
+    }
+
+    final productId = _idCtrl.text.trim().isNotEmpty
+        ? _idCtrl.text.trim()
+        : (widget.productId ?? '').trim();
+
+    if (productId.isEmpty) {
+      _snack('請先填 productId（或先儲存建立商品）再上傳圖片');
+      return;
+    }
 
     setState(() => _saving = true);
     try {
-      final data = {
-        'title': _titleCtrl.text.trim(),
-        'price': num.tryParse(_priceCtrl.text.trim()) ?? 0,
-        'categoryId': _category,
-        'isActive': _isActive,
-        'imageUrl': _imageUrl,
+      final safeName = file.name.replaceAll(RegExp(r'[^\w\.\-]+'), '_');
+      final path =
+          'products/$productId/${DateTime.now().millisecondsSinceEpoch}_$safeName';
+      final ref = _storage.ref().child(path);
+
+      // ✅ 修正：移除未使用的 data 變數，直接使用 bytes 上傳
+      await ref.putData(
+        bytes,
+        SettableMetadata(
+          contentType: 'image/${(file.extension ?? 'png').toLowerCase()}',
+        ),
+      );
+
+      final url = await ref.getDownloadURL();
+      _images.add(url);
+
+      await _doc(productId).set({
+        'images': _images,
         'updatedAt': FieldValue.serverTimestamp(),
-      };
+      }, SetOptions(merge: true));
 
-      if (widget.productId == null) {
-        await _db.collection('products').add({
-          ...data,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-      } else {
-        await _db.collection('products').doc(widget.productId).update(data);
-      }
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('商品已儲存成功')));
-      Navigator.pop(context, true);
+      _snack('圖片已上傳');
+      if (mounted) setState(() {});
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+      _snack('上傳失敗：$e');
     } finally {
-      setState(() => _saving = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 
-  // ----------------------------
-  // UI
-  // ----------------------------
-  @override
-  Widget build(BuildContext context) {
-    final isEdit = widget.productId != null;
-    final title = isEdit ? '編輯商品' : '新增商品';
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(title),
+  Future<void> _removeImage(String url) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('移除圖片'),
+        content: const Text('確定移除這張圖片？\n（會嘗試刪除 Storage 檔案）'),
         actions: [
-          if (_saving)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 12),
-              child: Center(
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-          if (!_saving)
-            IconButton(
-              icon: const Icon(Icons.save),
-              tooltip: '儲存',
-              onPressed: _save,
-            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('移除'),
+          ),
         ],
       ),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            // 預覽圖片
-            if (_imageUrl != null)
-              Column(
+    );
+    if (ok != true) return;
+
+    final productId = _idCtrl.text.trim().isNotEmpty
+        ? _idCtrl.text.trim()
+        : (widget.productId ?? '').trim();
+
+    setState(() => _saving = true);
+    try {
+      try {
+        await _storage.refFromURL(url).delete();
+      } catch (_) {}
+
+      _images.remove(url);
+
+      if (productId.isNotEmpty) {
+        await _doc(productId).set({
+          'images': _images,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+
+      _snack('已移除圖片');
+      if (mounted) setState(() {});
+    } catch (e) {
+      _snack('移除失敗：$e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+
+    final id = _idCtrl.text.trim();
+    if (id.isEmpty) {
+      _snack('productId 不可為空');
+      return;
+    }
+
+    final price = int.tryParse(_priceCtrl.text.trim()) ?? 0;
+    final stock = int.tryParse(_stockCtrl.text.trim()) ?? 0;
+
+    setState(() => _saving = true);
+    try {
+      final now = FieldValue.serverTimestamp();
+      final payload = <String, dynamic>{
+        'title': _titleCtrl.text.trim(),
+        'subtitle': _subtitleCtrl.text.trim(),
+        'sku': _skuCtrl.text.trim(),
+        'vendorId': _vendorIdCtrl.text.trim(),
+        'categoryId': _categoryIdCtrl.text.trim(),
+        'price': price,
+        'stock': stock,
+        'description': _descCtrl.text.trim(),
+        'isActive': _active,
+        'images': _images,
+        'updatedAt': now,
+        if (_isCreate) 'createdAt': now,
+      };
+
+      await _doc(id).set(payload, SetOptions(merge: true));
+      if (!mounted) return;
+      Navigator.pop(context, true);
+    } catch (e) {
+      _snack('儲存失敗：$e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const AlertDialog(
+        title: Text('商品編輯'),
+        content: SizedBox(
+          height: 120,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+
+    return AlertDialog(
+      title: Text(_isCreate ? '新增商品' : '編輯商品：${widget.productId}'),
+      content: SizedBox(
+        width: 720,
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              TextField(
+                controller: _idCtrl,
+                enabled: _isCreate,
+                decoration: const InputDecoration(
+                  labelText: 'productId（docId）',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 10),
+
+              Row(
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: Image.network(
-                      _imageUrl!,
-                      height: 180,
-                      width: double.infinity,
-                      fit: BoxFit.cover,
+                  Expanded(
+                    child: TextField(
+                      controller: _titleCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '標題',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _subtitleCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '副標題（可空）',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
                 ],
               ),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.image_outlined),
-              label: const Text('選擇圖片'),
-              onPressed: _saving ? null : _pickImage,
-            ),
-            const SizedBox(height: 20),
+              const SizedBox(height: 10),
 
-            // 商品名稱
-            TextFormField(
-              controller: _titleCtrl,
-              decoration: const InputDecoration(
-                labelText: '商品名稱',
-                border: OutlineInputBorder(),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _skuCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'SKU（可空）',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _vendorIdCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'vendorId（可空）',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              validator: (v) => v!.trim().isEmpty ? '請輸入商品名稱' : null,
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 10),
 
-            // 價格
-            TextFormField(
-              controller: _priceCtrl,
-              decoration: const InputDecoration(
-                labelText: '價格 (NT\$)',
-                border: OutlineInputBorder(),
+              TextField(
+                controller: _categoryIdCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'categoryId（可空）',
+                  border: OutlineInputBorder(),
+                ),
               ),
-              keyboardType: TextInputType.number,
-              validator: (v) {
-                final n = num.tryParse(v ?? '');
-                if (n == null || n < 0) return '請輸入有效價格';
-                return null;
-              },
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 10),
 
-            // 分類
-            DropdownButtonFormField<String>(
-              value: _categories.contains(_category) ? _category : '全部',
-              items: _categories
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                  .toList(),
-              onChanged: (v) => setState(() => _category = v ?? '全部'),
-              decoration: const InputDecoration(
-                labelText: '分類',
-                border: OutlineInputBorder(),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _priceCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: '價格（int）',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _stockCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: '庫存（int）',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 10),
 
-            // 狀態切換
-            SwitchListTile(
-              title: const Text('上架狀態'),
-              value: _isActive,
-              onChanged: (v) => setState(() => _isActive = v),
-              activeColor: Colors.green,
-            ),
-            const Divider(height: 32),
-
-            // 即時預覽
-            ListTile(
-              leading: const Icon(Icons.visibility_outlined),
-              title: const Text('即時預覽'),
-              subtitle: Text(
-                '${_titleCtrl.text.isEmpty ? '(未命名)' : _titleCtrl.text} - '
-                'NT\$${_priceCtrl.text.isEmpty ? 0 : _priceCtrl.text}',
-                style: const TextStyle(color: Colors.black87),
+              TextField(
+                controller: _descCtrl,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: '描述（可空）',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 10),
+
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('上架（isActive）'),
+                value: _active,
+                onChanged: (v) => setState(() => _active = v),
+              ),
+
+              const Divider(height: 22),
+
+              Row(
+                children: [
+                  const Text(
+                    '圖片',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const Spacer(),
+                  FilledButton.icon(
+                    onPressed: _saving ? null : _pickAndUploadImage,
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.upload_outlined),
+                    label: Text(_saving ? '處理中...' : '上傳圖片'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+
+              if (_images.isEmpty)
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('尚無圖片'),
+                )
+              else
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: _images.map((url) {
+                    return Stack(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.network(
+                            url,
+                            width: 120,
+                            height: 120,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(
+                              width: 120,
+                              height: 120,
+                              alignment: Alignment.center,
+                              color: Colors.black12,
+                              child: const Text('載入失敗'),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          right: 4,
+                          top: 4,
+                          child: InkWell(
+                            onTap: _saving ? null : () => _removeImage(url),
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                size: 16,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  }).toList(),
+                ),
+            ],
+          ),
         ),
       ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: _saving ? null : _save,
+          icon: _saving
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.save_outlined),
+          label: Text(_saving ? '儲存中...' : '儲存'),
+        ),
+      ],
     );
   }
 }

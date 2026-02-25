@@ -1,37 +1,37 @@
 // lib/utils/report_file_saver_web.dart
-// Web implementation: download via Blob + Anchor
 import 'dart:typed_data';
-import 'package:universal_html/html.dart' as html;
+import 'dart:js_interop';
 
-/// Save bytes and trigger browser download.
-/// Returns the filename (String) on success.
-Future<String> saveReportBytes(
-  Uint8List bytes,
-  String filename, {
-  String? mimeType,
-  bool openFile = true, // ignored on web
+import 'package:web/web.dart' as web;
+
+Future<String?> saveReportBytes({
+  String? filename,
+  String? fileName,
+  String? name,
+  required List<int> bytes,
+  String mimeType = 'application/octet-stream',
 }) async {
-  mimeType ??= 'application/octet-stream';
-  try {
-    final blob = html.Blob([bytes], mimeType);
-    final url = html.Url.createObjectUrlFromBlob(blob);
-    final anchor = html.AnchorElement(href: url)
-      ..setAttribute('download', filename)
-      ..style.display = 'none';
+  final finalName = filename ?? fileName ?? name ?? 'report.bin';
 
-    html.document.body?.append(anchor);
-    anchor.click();
+  final u8 = Uint8List.fromList(bytes);
 
-    // Small delay then remove and revoke URL
-    Future.delayed(const Duration(milliseconds: 500), () {
-      anchor.remove();
-      try {
-        html.Url.revokeObjectUrl(url);
-      } catch (_) {}
-    });
+  // ✅ 這裡關鍵：JSArray<BlobPart>
+  final parts = <web.BlobPart>[(u8.toJS as web.BlobPart)].toJS;
 
-    return filename;
-  } catch (e) {
-    throw Exception('Web: 無法下載檔案：$e');
-  }
+  final blob = web.Blob(parts, web.BlobPropertyBag(type: mimeType));
+
+  final url = web.URL.createObjectURL(blob);
+
+  final anchor = web.HTMLAnchorElement()
+    ..href = url
+    ..download = finalName
+    ..style.display = 'none';
+
+  web.document.body?.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+
+  web.URL.revokeObjectURL(url);
+
+  return '已下載：$finalName';
 }

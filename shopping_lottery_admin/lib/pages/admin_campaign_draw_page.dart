@@ -1,755 +1,459 @@
-// lib/pages/admin_campaign_draw_page.dart
-//
-// ✅ AdminCampaignDrawPage（最終穩定完整版｜抽獎/得獎名單｜依獎項 quantity 抽出｜避免重複｜Admin/Vendor 權限）
-// ------------------------------------------------------------
-// Firestore：
-// campaigns/{cid}
-//  - title, vendorId, isActive, startAt, endAt, participantsCount, winnersCount, updatedAt...
-//
-// campaigns/{cid}/prizes/{pid}
-//  - title, description, isActive, quantity(int), weight(double), sortOrder(int), updatedAt...
-//
-// campaigns/{cid}/participants/{entryId}
-//  - uid/userId/buyerUid (任一), name/userName, email, phone, createdAt...
-//
-// campaigns/{cid}/winners/{wid}
-//  - prizeId, prizeTitle
-//  - entryId
-//  - participantUid, participantName
-//  - createdAt, createdByUid
-// ------------------------------------------------------------
-
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
-
-import '../services/admin_gate.dart';
 
 class AdminCampaignDrawPage extends StatefulWidget {
-  final String campaignId;
   const AdminCampaignDrawPage({super.key, required this.campaignId});
+
+  final String campaignId;
 
   @override
   State<AdminCampaignDrawPage> createState() => _AdminCampaignDrawPageState();
 }
 
-class _AdminCampaignDrawPageState extends State<AdminCampaignDrawPage>
-    with SingleTickerProviderStateMixin {
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
-
-  late final TabController _tabCtrl;
-
-  bool _loading = true;
-  bool _accessDenied = false;
-  bool _drawing = false;
-
-  String _role = '';
-  String _myVendorId = '';
-  String _campaignVendorId = '';
-  String _campaignTitle = '';
-
-  String _winnerPrizeFilter = '全部';
-
-  @override
-  void initState() {
-    super.initState();
-    _tabCtrl = TabController(length: 2, vsync: this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
-  }
-
-  @override
-  void dispose() {
-    _tabCtrl.dispose();
-    super.dispose();
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
+class _AdminCampaignDrawPageState extends State<AdminCampaignDrawPage> {
   DocumentReference<Map<String, dynamic>> get _campaignRef =>
-      _db.collection('campaigns').doc(widget.campaignId);
+      FirebaseFirestore.instance.collection('campaigns').doc(widget.campaignId);
 
-  CollectionReference<Map<String, dynamic>> get _prizesCol =>
-      _campaignRef.collection('prizes');
-
-  CollectionReference<Map<String, dynamic>> get _participantsCol =>
+  CollectionReference<Map<String, dynamic>> get _participantsRef =>
       _campaignRef.collection('participants');
 
-  CollectionReference<Map<String, dynamic>> get _winnersCol =>
+  CollectionReference<Map<String, dynamic>> get _winnersRef =>
       _campaignRef.collection('winners');
 
-  Future<void> _bootstrap() async {
-    final gate = context.read<AdminGate>();
-    _role = (gate.cachedRoleInfo?.role ?? '').toLowerCase().trim();
-    _myVendorId = (gate.cachedVendorId ?? '').trim();
+  bool _busy = false;
 
-    await _loadCampaignMetaAndCheckAccess();
-
-    if (mounted) setState(() => _loading = false);
+  Future<int> _countDocs(CollectionReference<Map<String, dynamic>> ref) async {
+    final snap = await ref.get();
+    return snap.size;
   }
 
-  Future<void> _loadCampaignMetaAndCheckAccess() async {
+  Future<void> _drawWinners({
+    required int count,
+    bool allowRepeatAcrossRuns = false,
+  }) async {
+    if (count <= 0) return;
+
+    setState(() => _busy = true);
     try {
-      final snap = await _campaignRef.get();
-      final data = snap.data();
-      if (data == null) {
-        _accessDenied = true;
+      // 1) 取所有參加者
+      final participantsSnap = await _participantsRef.get();
+      final participants = participantsSnap.docs;
+
+      if (participants.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('目前沒有參加者')));
         return;
       }
 
-      _campaignTitle = (data['title'] ?? '').toString().trim();
-      _campaignVendorId = (data['vendorId'] ?? '').toString().trim();
+      // 2) 取現有得獎者（避免重複）
+      final winnersSnap = await _winnersRef.get();
+      final winnerIds = winnersSnap.docs.map((d) => d.id).toSet();
 
-      // ✅ Admin 放行
-      if (_role == 'admin') {
-        _accessDenied = false;
-        return;
-      }
-
-      // ✅ Vendor：必須 vendorId 存在且相符
-      if (_role == 'vendor') {
-        if (_myVendorId.isEmpty || _campaignVendorId.isEmpty) {
-          _accessDenied = true;
-          return;
+      final pool = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+      for (final p in participants) {
+        if (allowRepeatAcrossRuns || !winnerIds.contains(p.id)) {
+          pool.add(p);
         }
-        if (_campaignVendorId != _myVendorId) {
-          _accessDenied = true;
-          return;
-        }
-        _accessDenied = false;
-        return;
       }
-
-      _accessDenied = true;
-    } catch (_) {
-      _accessDenied = true;
-    }
-  }
-
-  // ------------------------------------------------------------
-  // Queries / streams
-  // ------------------------------------------------------------
-
-  Stream<QuerySnapshot<Map<String, dynamic>>> _prizes$() {
-    return _prizesCol
-        .orderBy('sortOrder')
-        .orderBy('updatedAt', descending: true)
-        .snapshots();
-  }
-
-  Stream<QuerySnapshot<Map<String, dynamic>>> _winners$({String? prizeId}) {
-    Query<Map<String, dynamic>> q = _winnersCol.orderBy('createdAt', descending: true);
-    if (prizeId != null && prizeId.isNotEmpty) {
-      q = q.where('prizeId', isEqualTo: prizeId);
-    }
-    return q.limit(500).snapshots();
-  }
-
-  Future<int> _countOnce(Query<Map<String, dynamic>> q) async {
-    try {
-      final agg = await q.count().get();
-      final c = agg.count;
-      return (c is int) ? c : int.tryParse('$c') ?? 0;
-    } catch (_) {
-      final snap = await q.get();
-      return snap.size;
-    }
-  }
-
-  // ------------------------------------------------------------
-  // Draw logic
-  // ------------------------------------------------------------
-
-  Future<void> _drawAllPrizes() async {
-    if (_drawing) return;
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      _snack('請先登入');
-      return;
-    }
-
-    setState(() => _drawing = true);
-    try {
-      // 1) 讀取所有「啟用」獎項
-      final prizesSnap = await _prizesCol
-          .where('isActive', isEqualTo: true)
-          .orderBy('sortOrder')
-          .get();
-
-      if (prizesSnap.docs.isEmpty) {
-        _snack('沒有啟用中的獎項');
-        return;
-      }
-
-      // 2) 讀取所有參加者
-      final participantsSnap = await _participantsCol.get();
-      if (participantsSnap.docs.isEmpty) {
-        _snack('沒有參加者');
-        return;
-      }
-
-      // 3) 讀取現有 winners，用 entryId 去重
-      final winnersSnap = await _winnersCol.get();
-      final alreadyWonEntryIds = <String>{};
-      for (final d in winnersSnap.docs) {
-        final entryId = (d.data()['entryId'] ?? '').toString().trim();
-        if (entryId.isNotEmpty) alreadyWonEntryIds.add(entryId);
-      }
-
-      // 4) 建立可抽名單（排除已得獎 entryId）
-      final pool = participantsSnap.docs
-          .where((p) => !alreadyWonEntryIds.contains(p.id))
-          .toList();
 
       if (pool.isEmpty) {
-        _snack('所有參加者都已得獎（可用「清空得獎名單」重抽）');
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('沒有可抽選的名單（可能都已得獎）')));
         return;
       }
 
-      // 5) 抽獎：依每個 prize.quantity 抽出不重複 entry
-      final rng = Random();
-      final remaining = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(pool);
-      remaining.shuffle(rng);
+      final drawCount = min(count, pool.length);
 
-      int createdCount = 0;
-      final batch = _db.batch();
+      // 3) 隨機抽
+      pool.shuffle(Random());
+      final picked = pool.take(drawCount).toList();
 
-      for (final prizeDoc in prizesSnap.docs) {
-        final prize = prizeDoc.data();
-        final prizeTitle = (prize['title'] ?? '').toString().trim();
-        final qtyRaw = prize['quantity'];
-        final qty = _toInt(qtyRaw, fallback: 1);
-        if (qty <= 0) continue;
+      // 4) 寫入 winners（用 batch）
+      final batch = FirebaseFirestore.instance.batch();
+      for (final p in picked) {
+        final uid = p.id;
+        final m = p.data();
 
-        final take = min(qty, remaining.length);
-        if (take <= 0) break;
-
-        for (int i = 0; i < take; i++) {
-          final entry = remaining.removeAt(0);
-          final pd = entry.data();
-
-          final participantUid = _pickUid(pd, fallback: entry.id);
-          final participantName = _pickName(pd);
-
-          final winnerRef = _winnersCol.doc();
-          batch.set(winnerRef, <String, dynamic>{
-            'campaignId': widget.campaignId,
-            'prizeId': prizeDoc.id,
-            'prizeTitle': prizeTitle,
-            'entryId': entry.id,
-            'participantUid': participantUid,
-            'participantName': participantName,
-            'createdAt': FieldValue.serverTimestamp(),
-            'createdByUid': user.uid,
-            if (_campaignVendorId.isNotEmpty) 'vendorId': _campaignVendorId,
-          });
-
-          createdCount++;
-          if (remaining.isEmpty) break;
-        }
-
-        if (remaining.isEmpty) break;
+        batch.set(_winnersRef.doc(uid), <String, dynamic>{
+          'uid': uid,
+          'displayName': (m['displayName'] ?? m['name'] ?? '').toString(),
+          'email': (m['email'] ?? '').toString(),
+          'phone': (m['phone'] ?? '').toString(),
+          'drawnAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
       }
 
-      if (createdCount == 0) {
-        _snack('沒有抽出任何得獎者（可能獎項 quantity 為 0 或名單不足）');
-        return;
-      }
+      // 5) 更新 campaign 概覽
+      batch.set(_campaignRef, <String, dynamic>{
+        'lastDrawAt': FieldValue.serverTimestamp(),
+        'winnersCount': FieldValue.increment(picked.length),
+      }, SetOptions(merge: true));
 
-      // 6) commit batch
       await batch.commit();
 
-      // 7) 更新 campaign winnersCount / participantsCount（非必要，但建議）
-      final pCount = participantsSnap.size;
-      final wCount = await _countOnce(_winnersCol);
-      await _campaignRef.set(
-        <String, dynamic>{
-          'participantsCount': pCount,
-          'winnersCount': wCount,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-
-      _snack('抽獎完成：新增 $createdCount 筆得獎');
-      _tabCtrl.animateTo(1);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已抽出 $drawCount 位得獎者')));
     } catch (e) {
-      _snack('抽獎失敗：$e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('抽獎失敗：$e')));
     } finally {
-      if (mounted) setState(() => _drawing = false);
-    }
-  }
-
-  Future<void> _drawSinglePrize(String prizeId, Map<String, dynamic> prize) async {
-    if (_drawing) return;
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      _snack('請先登入');
-      return;
-    }
-
-    final prizeTitle = (prize['title'] ?? '').toString().trim();
-    final qty = _toInt(prize['quantity'], fallback: 1);
-
-    if (qty <= 0) {
-      _snack('此獎項 quantity 為 0');
-      return;
-    }
-
-    setState(() => _drawing = true);
-    try {
-      final participantsSnap = await _participantsCol.get();
-      if (participantsSnap.docs.isEmpty) {
-        _snack('沒有參加者');
-        return;
-      }
-
-      final winnersSnap = await _winnersCol.get();
-      final alreadyWonEntryIds = <String>{};
-      for (final d in winnersSnap.docs) {
-        final entryId = (d.data()['entryId'] ?? '').toString().trim();
-        if (entryId.isNotEmpty) alreadyWonEntryIds.add(entryId);
-      }
-
-      final pool = participantsSnap.docs
-          .where((p) => !alreadyWonEntryIds.contains(p.id))
-          .toList();
-
-      if (pool.isEmpty) {
-        _snack('所有參加者都已得獎（可用「清空得獎名單」重抽）');
-        return;
-      }
-
-      final rng = Random();
-      pool.shuffle(rng);
-
-      final take = min(qty, pool.length);
-      final batch = _db.batch();
-      for (int i = 0; i < take; i++) {
-        final entry = pool[i];
-        final pd = entry.data();
-        final participantUid = _pickUid(pd, fallback: entry.id);
-        final participantName = _pickName(pd);
-
-        final winnerRef = _winnersCol.doc();
-        batch.set(winnerRef, <String, dynamic>{
-          'campaignId': widget.campaignId,
-          'prizeId': prizeId,
-          'prizeTitle': prizeTitle,
-          'entryId': entry.id,
-          'participantUid': participantUid,
-          'participantName': participantName,
-          'createdAt': FieldValue.serverTimestamp(),
-          'createdByUid': user.uid,
-          if (_campaignVendorId.isNotEmpty) 'vendorId': _campaignVendorId,
-        });
-      }
-      await batch.commit();
-
-      final wCount = await _countOnce(_winnersCol);
-      await _campaignRef.set(
-        <String, dynamic>{
-          'participantsCount': participantsSnap.size,
-          'winnersCount': wCount,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-
-      _snack('已抽出 $take 位：$prizeTitle');
-      _tabCtrl.animateTo(1);
-    } catch (e) {
-      _snack('抽獎失敗：$e');
-    } finally {
-      if (mounted) setState(() => _drawing = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _clearWinners() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('清空得獎名單'),
-        content: const Text('確定要清空此活動 winners？可用於重新抽獎。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('清空')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    setState(() => _drawing = true);
+    setState(() => _busy = true);
     try {
-      // 分批刪除（每批最多 450）
-      while (true) {
-        final snap = await _winnersCol.limit(450).get();
-        if (snap.docs.isEmpty) break;
-        final batch = _db.batch();
-        for (final d in snap.docs) {
+      final snap = await _winnersRef.get();
+      final docs = snap.docs;
+      if (docs.isEmpty) return;
+
+      // 分批刪除（避免 500 限制）
+      const chunkSize = 400;
+      for (int i = 0; i < docs.length; i += chunkSize) {
+        final chunk = docs.sublist(i, (i + chunkSize).clamp(0, docs.length));
+        final batch = FirebaseFirestore.instance.batch();
+        for (final d in chunk) {
           batch.delete(d.reference);
         }
         await batch.commit();
       }
 
-      final pCount = await _countOnce(_participantsCol);
-      await _campaignRef.set(
-        <String, dynamic>{
-          'participantsCount': pCount,
-          'winnersCount': 0,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
+      await _campaignRef.set(<String, dynamic>{
+        'winnersCount': 0,
+        'lastDrawAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
-      _snack('已清空得獎名單');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已清空得獎者名單')));
     } catch (e) {
-      _snack('清空失敗：$e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('清空失敗：$e')));
     } finally {
-      if (mounted) setState(() => _drawing = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _copyWinnersCsvToClipboard(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) async {
-    final rows = <List<String>>[
-      ['prizeTitle', 'participantName', 'participantUid', 'entryId', 'createdAt'],
-    ];
+  Future<void> _openDrawDialog(int suggested) async {
+    final c = TextEditingController(text: suggested.toString());
+    bool allowRepeat = false;
 
-    for (final d in docs) {
-      final data = d.data();
-      rows.add([
-        (data['prizeTitle'] ?? '').toString(),
-        (data['participantName'] ?? '').toString(),
-        (data['participantUid'] ?? '').toString(),
-        (data['entryId'] ?? '').toString(),
-        (data['createdAt'] ?? '').toString(),
-      ]);
-    }
-
-    // 簡單 CSV（避免額外依賴）
-    final csv = rows.map((r) => r.map(_escapeCsv).join(',')).join('\n');
-    await Clipboard.setData(ClipboardData(text: csv));
-    _snack('已複製 CSV 到剪貼簿');
-  }
-
-  String _escapeCsv(String s) {
-    final v = s.replaceAll('"', '""');
-    // 含逗號/換行/引號就包起來
-    if (v.contains(',') || v.contains('\n') || v.contains('"')) {
-      return '"$v"';
-    }
-    return v;
-  }
-
-  int _toInt(dynamic v, {required int fallback}) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    return int.tryParse('${v ?? ''}') ?? fallback;
-  }
-
-  String _pickUid(Map<String, dynamic> d, {required String fallback}) {
-    final keys = ['uid', 'userId', 'buyerUid'];
-    for (final k in keys) {
-      final s = (d[k] ?? '').toString().trim();
-      if (s.isNotEmpty) return s;
-    }
-    return fallback;
-  }
-
-  String _pickName(Map<String, dynamic> d) {
-    final keys = ['name', 'userName', 'buyerName', 'displayName'];
-    for (final k in keys) {
-      final s = (d[k] ?? '').toString().trim();
-      if (s.isNotEmpty) return s;
-    }
-    return '(未填姓名)';
-  }
-
-  // ------------------------------------------------------------
-  // UI
-  // ------------------------------------------------------------
-
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-    if (_accessDenied) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('抽獎/得獎名單')),
-        body: const Center(child: Text('無權限存取此活動抽獎功能')),
-      );
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_campaignTitle.isEmpty ? '抽獎/得獎名單' : '抽獎｜$_campaignTitle'),
-        bottom: TabBar(
-          controller: _tabCtrl,
-          tabs: const [
-            Tab(text: '抽獎'),
-            Tab(text: '得獎名單'),
+    final result = await showDialog<int>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('抽獎設定'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: c,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '抽出人數',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Checkbox(
+                  value: allowRepeat,
+                  onChanged: (v) => allowRepeat = (v == true),
+                ),
+                const Expanded(child: Text('允許重複得獎（跨次抽獎也可能再中）')),
+              ],
+            ),
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: '重新整理',
-            icon: const Icon(Icons.refresh),
-            onPressed: () => setState(() {}),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
           ),
-          if (_drawing)
-            const Padding(
-              padding: EdgeInsets.only(right: 12),
-              child: Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
-            ),
-        ],
-      ),
-      body: TabBarView(
-        controller: _tabCtrl,
-        children: [
-          _buildDrawTab(),
-          _buildWinnersTab(),
+          FilledButton(
+            onPressed: () {
+              final n = int.tryParse(c.text.trim()) ?? 0;
+              Navigator.pop(context, n);
+            },
+            child: const Text('開始抽獎'),
+          ),
         ],
       ),
     );
+
+    if (result == null) return;
+    final n = result;
+    if (n <= 0) return;
+
+    await _drawWinners(count: n, allowRepeatAcrossRuns: allowRepeat);
   }
 
-  Widget _buildDrawTab() {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _prizes$(),
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _campaignRef.snapshots(),
       builder: (context, snap) {
-        final prizes = snap.data?.docs ?? [];
-
-        return ListView(
-          padding: const EdgeInsets.all(12),
-          children: [
-            _buildMetaCard(prizesCount: prizes.length),
-            const SizedBox(height: 10),
-
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    icon: const Icon(Icons.casino_outlined),
-                    label: const Text('一鍵抽出所有獎項'),
-                    onPressed: _drawing ? null : _drawAllPrizes,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('清空得獎名單'),
-                  onPressed: _drawing ? null : _clearWinners,
-                ),
-              ],
+        if (snap.hasError) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('活動抽獎')),
+            body: Center(
+              child: Text(
+                '讀取活動失敗：${snap.error}',
+                style: const TextStyle(color: Colors.red),
+              ),
             ),
+          );
+        }
+        if (!snap.hasData) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('活動抽獎')),
+            body: const Center(child: CircularProgressIndicator()),
+          );
+        }
 
-            const SizedBox(height: 14),
-            const Text('獎項列表（可單獎抽出）', style: TextStyle(fontWeight: FontWeight.w900)),
-            const SizedBox(height: 8),
+        final data = snap.data!.data() ?? <String, dynamic>{};
+        final title = (data['title'] ?? data['name'] ?? '活動抽獎').toString();
+        final status = (data['status'] ?? 'draft').toString();
+        final defaultWinnerCount = _toInt(data['winnerCount'], fallback: 1);
 
-            if (!snap.hasData)
-              const Padding(
-                padding: EdgeInsets.all(20),
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (prizes.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(20),
-                child: Center(child: Text('尚無獎項')),
-              )
-            else
-              Card(
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: prizes.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (_, i) {
-                    final doc = prizes[i];
-                    final d = doc.data();
-                    final title = (d['title'] ?? '').toString().trim();
-                    final isActive = d['isActive'] == true;
-                    final qty = _toInt(d['quantity'], fallback: 1);
-                    final sortOrder = _toInt(d['sortOrder'], fallback: 0);
-
-                    return ListTile(
-                      title: Text(
-                        title.isEmpty ? '(未命名獎項)' : title,
-                        style: const TextStyle(fontWeight: FontWeight.w900),
-                      ),
-                      subtitle: Text('狀態：${isActive ? '啟用' : '停用'}｜數量：$qty｜排序：$sortOrder'),
-                      trailing: FilledButton(
-                        onPressed: (!isActive || _drawing) ? null : () => _drawSinglePrize(doc.id, d),
-                        child: const Text('抽此獎'),
-                      ),
-                    );
-                  },
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(title),
+            actions: [
+              IconButton(
+                tooltip: '抽獎',
+                onPressed: _busy
+                    ? null
+                    : () => _openDrawDialog(defaultWinnerCount),
+                icon: _busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.casino),
+              ),
+              const SizedBox(width: 6),
+              IconButton(
+                tooltip: '清空得獎者',
+                onPressed: _busy ? null : _clearWinners,
+                icon: const Icon(Icons.delete_sweep),
+              ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              _InfoCard(
+                campaignId: widget.campaignId,
+                status: status,
+                winnerCount: defaultWinnerCount,
+              ),
+              const SizedBox(height: 12),
+              FutureBuilder<int>(
+                future: _countDocs(_participantsRef),
+                builder: (context, s) => _StatTile(
+                  title: '參加者數',
+                  value: s.data?.toString() ?? '—',
+                  icon: Icons.people,
                 ),
               ),
-          ],
+              const SizedBox(height: 8),
+              FutureBuilder<int>(
+                future: _countDocs(_winnersRef),
+                builder: (context, s) => _StatTile(
+                  title: '得獎者數',
+                  value: s.data?.toString() ?? '—',
+                  icon: Icons.emoji_events,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                '得獎者名單',
+                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+              ),
+              const SizedBox(height: 8),
+              _WinnersList(winnersRef: _winnersRef),
+              const SizedBox(height: 80),
+            ],
+          ),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: _busy ? null : () => _openDrawDialog(defaultWinnerCount),
+            icon: const Icon(Icons.casino),
+            label: const Text('抽獎'),
+          ),
         );
       },
     );
   }
+}
 
-  Widget _buildMetaCard({required int prizesCount}) {
-    return FutureBuilder<List<int>>(
-      future: () async {
-        final p = await _countOnce(_participantsCol);
-        final w = await _countOnce(_winnersCol);
-        return [p, w];
-      }(),
+class _InfoCard extends StatelessWidget {
+  const _InfoCard({
+    required this.campaignId,
+    required this.status,
+    required this.winnerCount,
+  });
+
+  final String campaignId;
+  final String status;
+  final int winnerCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('活動資訊', style: TextStyle(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                Chip(
+                  avatar: const Icon(Icons.key, size: 16),
+                  label: Text(campaignId),
+                ),
+                Chip(
+                  avatar: const Icon(Icons.flag, size: 16),
+                  label: Text(status),
+                ),
+                Chip(
+                  avatar: const Icon(Icons.confirmation_number, size: 16),
+                  label: Text('預設抽出：$winnerCount'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({
+    required this.title,
+    required this.value,
+    required this.icon,
+  });
+
+  final String title;
+  final String value;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0.6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ListTile(
+        leading: Icon(icon),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+        trailing: Text(
+          value,
+          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+        ),
+      ),
+    );
+  }
+}
+
+class _WinnersList extends StatelessWidget {
+  const _WinnersList({required this.winnersRef});
+
+  final CollectionReference<Map<String, dynamic>> winnersRef;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: winnersRef
+          .orderBy('drawnAt', descending: true)
+          .limit(200)
+          .snapshots(),
       builder: (context, snap) {
-        final pCount = (snap.data?.isNotEmpty == true) ? snap.data![0] : 0;
-        final wCount = (snap.data?.length == 2) ? snap.data![1] : 0;
+        if (snap.hasError) {
+          return Text(
+            '讀取得獎者失敗：${snap.error}',
+            style: const TextStyle(color: Colors.red),
+          );
+        }
+        if (!snap.hasData) {
+          return const Padding(
+            padding: EdgeInsets.all(8),
+            child: LinearProgressIndicator(),
+          );
+        }
+
+        final docs = snap.data!.docs;
+        if (docs.isEmpty) {
+          return Text('尚無得獎者', style: TextStyle(color: Colors.grey[700]));
+        }
 
         return Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                const Icon(Icons.emoji_events_outlined, size: 26),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _campaignTitle.isEmpty ? '活動資訊' : _campaignTitle,
-                        style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '獎項：$prizesCount｜參加者：$pCount｜得獎：$wCount',
-                        style: const TextStyle(color: Colors.black54),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '角色：${_role.isEmpty ? '-' : _role}${_role == 'vendor' ? '（vendorId: $_myVendorId）' : ''}',
-                        style: const TextStyle(color: Colors.black54),
-                      ),
-                    ],
-                  ),
+          elevation: 0.6,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: docs.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, i) {
+              final d = docs[i];
+              final m = d.data();
+              final name = (m['displayName'] ?? '').toString().trim();
+              final email = (m['email'] ?? '').toString().trim();
+              final phone = (m['phone'] ?? '').toString().trim();
+
+              return ListTile(
+                leading: const Icon(Icons.emoji_events),
+                title: Text(
+                  name.isEmpty ? d.id : name,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
                 ),
-              ],
-            ),
+                subtitle: Text(
+                  [email, phone].where((e) => e.isNotEmpty).join(' · '),
+                ),
+                trailing: Text(
+                  d.id,
+                  style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                ),
+              );
+            },
           ),
         );
       },
     );
   }
+}
 
-  Widget _buildWinnersTab() {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _prizes$(),
-      builder: (context, prizeSnap) {
-        final prizes = prizeSnap.data?.docs ?? [];
-
-        // 建立 prizeId->title map，並提供篩選
-        final prizeItems = <DropdownMenuItem<String>>[
-          const DropdownMenuItem(value: '全部', child: Text('全部')),
-          ...prizes.map((p) {
-            final t = (p.data()['title'] ?? '').toString().trim();
-            return DropdownMenuItem(value: p.id, child: Text(t.isEmpty ? p.id : t));
-          }),
-        ];
-
-        final filterPrizeId = (_winnerPrizeFilter == '全部') ? null : _winnerPrizeFilter;
-
-        return Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  const Text('篩選獎項：', style: TextStyle(fontWeight: FontWeight.w900)),
-                  const SizedBox(width: 10),
-                  DropdownButton<String>(
-                    value: _winnerPrizeFilter,
-                    items: prizeItems,
-                    onChanged: (v) => setState(() => _winnerPrizeFilter = v ?? '全部'),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: '複製 CSV（依目前篩選）',
-                    icon: const Icon(Icons.copy_outlined),
-                    onPressed: () async {
-                      try {
-                        // 取目前篩選 winners（一次性）
-                        Query<Map<String, dynamic>> q = _winnersCol.orderBy('createdAt', descending: true);
-                        if (filterPrizeId != null && filterPrizeId.isNotEmpty) {
-                          q = q.where('prizeId', isEqualTo: filterPrizeId);
-                        }
-                        final snap = await q.limit(500).get();
-                        await _copyWinnersCsvToClipboard(snap.docs);
-                      } catch (e) {
-                        _snack('複製失敗：$e');
-                      }
-                    },
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: _winners$(prizeId: filterPrizeId),
-                builder: (context, snap) {
-                  if (!snap.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  final docs = snap.data!.docs;
-                  if (docs.isEmpty) return const Center(child: Text('尚無得獎名單'));
-
-                  return ListView.separated(
-                    itemCount: docs.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final d = docs[i].data();
-                      final prizeTitle = (d['prizeTitle'] ?? '').toString().trim();
-                      final name = (d['participantName'] ?? '').toString().trim();
-                      final uid = (d['participantUid'] ?? '').toString().trim();
-                      final entryId = (d['entryId'] ?? '').toString().trim();
-
-                      return ListTile(
-                        leading: const Icon(Icons.emoji_events_outlined),
-                        title: Text(
-                          prizeTitle.isEmpty ? '(未命名獎項)' : prizeTitle,
-                          style: const TextStyle(fontWeight: FontWeight.w900),
-                        ),
-                        subtitle: Text('得獎者：${name.isEmpty ? '(未填姓名)' : name}｜uid：$uid｜entry：$entryId'),
-                        trailing: IconButton(
-                          tooltip: '刪除此筆得獎',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: _drawing
-                              ? null
-                              : () async {
-                                  try {
-                                    await docs[i].reference.delete();
-                                    _snack('已刪除一筆得獎');
-                                  } catch (e) {
-                                    _snack('刪除失敗：$e');
-                                  }
-                                },
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
+int _toInt(dynamic v, {int fallback = 0}) {
+  if (v == null) return fallback;
+  if (v is int) return v;
+  if (v is double) return v.round();
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v.trim()) ?? fallback;
+  return fallback;
 }

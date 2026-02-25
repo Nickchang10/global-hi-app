@@ -81,10 +81,20 @@ class _AdminCampaignParticipantsPageState
 
   String _s(dynamic v) => (v ?? '').toString().trim();
 
+  String _normalizeRole(dynamic role) {
+    final raw = (role ?? '').toString().toLowerCase().trim();
+    // 常見 enum.toString() 會是 "Role.admin" → 抹掉前綴
+    if (raw.contains('.')) return raw.split('.').last;
+    return raw;
+  }
+
   /// ------------------------------------------------------------
-  /// 權限：Admin 全可看；Vendor 只能看「自己 vendorId 的活動」。
-  /// 這裡採用 AdminGate cachedRoleInfo/cachedVendorId（你專案已用）
-  /// 若你尚未在進入此頁前 ensure role，可改成在這裡呼叫 ensureAndGetRole。
+  /// 權限：
+  /// - Admin 全可看
+  /// - Vendor 只能看「自己 vendorId 的活動」
+  ///
+  /// ✅ 修正點：
+  /// 你專案的 cachedRoleInfo 是 non-nullable，因此不能用 ?.（會出現 invalid_null_aware_operator）
   /// ------------------------------------------------------------
   Future<void> _bootstrapGate() async {
     setState(() {
@@ -95,8 +105,10 @@ class _AdminCampaignParticipantsPageState
 
     try {
       final gate = context.read<AdminGate>();
-      final role = (gate.cachedRoleInfo?.role ?? '').toLowerCase().trim();
-      final myVendorId = (gate.cachedVendorId ?? '').trim();
+
+      // ✅ 關鍵修正：不要用 cachedRoleInfo?.role（你的 cachedRoleInfo 不是 nullable）
+      final role = _normalizeRole(gate.cachedRoleInfo.role);
+      final myVendorId = _s(gate.cachedVendorId);
 
       if (role == 'admin') {
         _allowed = true;
@@ -111,8 +123,10 @@ class _AdminCampaignParticipantsPageState
         }
 
         // 讀取活動 vendorId，確認是否為自己的活動
-        final camp =
-            await _db.collection('campaigns').doc(widget.campaignId).get();
+        final camp = await _db
+            .collection('campaigns')
+            .doc(widget.campaignId)
+            .get();
         final data = camp.data() ?? <String, dynamic>{};
         final campVendorId = _s(data['vendorId']);
 
@@ -122,8 +136,7 @@ class _AdminCampaignParticipantsPageState
           return;
         }
 
-        // 若活動未設 vendorId：你可以選擇允許或拒絕
-        // 這裡採「允許」以避免舊資料阻擋
+        // 若活動未設 vendorId：允許（避免舊資料阻擋）
         _allowed = true;
         return;
       }
@@ -140,7 +153,7 @@ class _AdminCampaignParticipantsPageState
 
   Query<Map<String, dynamic>> _baseQuery() {
     // 參加者子集合
-    // 若 createdAt 不存在，orderBy 可能出錯；此處仍採 orderBy（建議你資料都有 createdAt）
+    // 若 createdAt 不存在，orderBy 會出錯；此處保留你的寫法（建議資料都有 createdAt）
     return _db
         .collection('campaigns')
         .doc(widget.campaignId)
@@ -200,7 +213,9 @@ class _AdminCampaignParticipantsPageState
   }
 
   /// ✅ 匯出 CSV：不使用 const ListToCsvConverter（會編譯錯）
-  Future<void> _exportCsv(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) async {
+  Future<void> _exportCsv(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) async {
     if (_exporting) return;
     setState(() => _exporting = true);
 
@@ -241,7 +256,7 @@ class _AdminCampaignParticipantsPageState
       await Clipboard.setData(ClipboardData(text: csv));
       _snack('CSV 已複製到剪貼簿（共 ${docs.length} 筆）');
 
-      // 額外提供預覽，避免某些瀏覽器剪貼簿權限限制
+      // 預覽（避免某些瀏覽器剪貼簿權限限制）
       if (!mounted) return;
       await showDialog(
         context: context,
@@ -251,7 +266,9 @@ class _AdminCampaignParticipantsPageState
             width: 720,
             child: SingleChildScrollView(
               child: SelectableText(
-                csv.length > 20000 ? '${csv.substring(0, 20000)}\n...\n(內容過長已截斷顯示)' : csv,
+                csv.length > 20000
+                    ? '${csv.substring(0, 20000)}\n...\n(內容過長已截斷顯示)'
+                    : csv,
                 style: const TextStyle(fontSize: 12),
               ),
             ),
@@ -319,7 +336,9 @@ class _AdminCampaignParticipantsPageState
                 final docs = snap.data!.docs;
 
                 // client-side 搜尋
-                final filtered = docs.where((d) => _matchQuery(d.data())).toList();
+                final filtered = docs
+                    .where((d) => _matchQuery(d.data()))
+                    .toList();
 
                 if (filtered.isEmpty) {
                   return const Center(child: Text('沒有符合條件的參加者'));
@@ -340,7 +359,9 @@ class _AdminCampaignParticipantsPageState
                     final note = _s(data['note']);
                     final createdAt = _toDate(data['createdAt']);
 
-                    final title = name.isNotEmpty ? name : (phone.isNotEmpty ? phone : doc.id);
+                    final title = name.isNotEmpty
+                        ? name
+                        : (phone.isNotEmpty ? phone : doc.id);
 
                     final subtitle = <String>[
                       if (uid.isNotEmpty) 'uid:$uid',
@@ -352,7 +373,10 @@ class _AdminCampaignParticipantsPageState
                     ].join('｜');
 
                     return ListTile(
-                      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+                      title: Text(
+                        title,
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
                       subtitle: Text(subtitle),
                       trailing: PopupMenuButton<String>(
                         onSelected: (v) async {
@@ -365,7 +389,10 @@ class _AdminCampaignParticipantsPageState
                           }
                         },
                         itemBuilder: (_) => const [
-                          PopupMenuItem(value: 'copy_uid', child: Text('複製 uid')),
+                          PopupMenuItem(
+                            value: 'copy_uid',
+                            child: Text('複製 uid'),
+                          ),
                           PopupMenuDivider(),
                           PopupMenuItem(value: 'delete', child: Text('刪除')),
                         ],
@@ -413,7 +440,9 @@ class _AdminCampaignParticipantsPageState
             stream: _baseQuery().snapshots(),
             builder: (context, snap) {
               final docs = snap.data?.docs ?? const [];
-              final filtered = docs.where((d) => _matchQuery(d.data())).toList();
+              final filtered = docs
+                  .where((d) => _matchQuery(d.data()))
+                  .toList();
 
               return FilledButton.icon(
                 onPressed: _exporting ? null : () => _exportCsv(filtered),

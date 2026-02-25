@@ -1,184 +1,367 @@
 // lib/models/order.dart
-import 'dart:math';
+//
+// ✅ Order / OrderItem model（最終完整版｜可直接使用｜已修正 int closure 回傳 double 問題）
+// ------------------------------------------------------------
+// 金額一律用 int（元）避免 double 精度與 fold 型別錯誤。
+// 若要做百分比折扣，請用整數運算：amount * rate ~/ 100。
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'cart_item.dart';
 
-/// 訂單模型：
-/// - 對應購物車的 CartItem 清單
-/// - total 會依照商品單價 * 數量自動計算
-/// - status：pending / shipped / delivered / cancelled / refund
-/// - 額外欄位：物流追蹤、支付方式、時間軸等
-class Order {
-  /// 訂單編號，例如：ORD-000123
-  final String id;
+/// 兼容：若你其他地方用 Order / OrderModel 其中一種，都能編譯
+typedef Order = OrderModel;
+typedef OrderItem = OrderItemModel;
 
-  /// 購物車項目
-  final List<CartItem> items;
+enum OrderStatus {
+  pending, // 已建立待付款
+  paid, // 已付款
+  shipped, // 已出貨
+  completed, // 已完成
+  cancelled, // 已取消
+  refunded, // 已退款
+}
 
-  /// 訂單總金額（所有商品 price * qty 加總）
-  final int total;
+OrderStatus _statusFromString(String s) {
+  switch (s) {
+    case 'paid':
+      return OrderStatus.paid;
+    case 'shipped':
+      return OrderStatus.shipped;
+    case 'completed':
+      return OrderStatus.completed;
+    case 'cancelled':
+      return OrderStatus.cancelled;
+    case 'refunded':
+      return OrderStatus.refunded;
+    case 'pending':
+    default:
+      return OrderStatus.pending;
+  }
+}
 
-  /// 下單時間
-  final DateTime createdAt;
+String _statusToString(OrderStatus s) => s.name;
 
-  /// 訂單狀態：pending / shipped / delivered / cancelled / refund
-  final String status;
+class OrderItemModel {
+  final String productId;
+  final String title;
+  final String image;
 
-  /// 收件 / 配送地址（顯示用）
-  final String? shippingAddress;
+  /// 單價（元）
+  final int unitPrice;
 
-  /// 付款方式（例如：信用卡 VISA **** 4242）
-  final String? paymentMethod;
+  final int qty;
+  final String currency;
 
-  /// 物流追蹤號碼（有物流時才有）
-  final String? trackingNumber;
+  final String vendorId;
+  final String vendorName;
 
-  /// 物流商名稱（如：黑貓 / 宅配通）
-  final String? carrier;
-
-  /// 發票連結（實務中可放雲端發票網址）
-  final String? invoiceUrl;
-
-  /// 是否可以取消（例如 pending 時為 true，其餘為 false）
-  final bool canCancel;
-
-  /// 訂單時間軸（給 UI 用）：
-  /// 每個節點包含：{ 'label': String, 'time': DateTime?, 'done': bool }
-  final List<Map<String, dynamic>> timeline;
-
-  Order({
-    required this.id,
-    required this.items,
-    required this.total,
-    required this.createdAt,
-    this.status = 'pending',
-    this.shippingAddress,
-    this.paymentMethod,
-    this.trackingNumber,
-    this.carrier,
-    this.invoiceUrl,
-    this.canCancel = true,
-    this.timeline = const [],
+  const OrderItemModel({
+    required this.productId,
+    required this.title,
+    required this.image,
+    required this.unitPrice,
+    required this.qty,
+    required this.currency,
+    required this.vendorId,
+    required this.vendorName,
   });
 
-  /// 依照購物車 items 自動產生一筆訂單：
-  /// - 自動計算 total
-  /// - 自動產生隨機訂單編號
-  /// - 預設狀態為 pending
-  /// - 自動帶出一組簡單時間軸（下單 / 付款 / 出貨 / 送達）
-  factory Order.generate(
-    List<CartItem> items, {
-    String status = 'pending',
-    String? shippingAddress,
-    String? paymentMethod,
-    String? trackingNumber,
-    String? carrier,
-    String? invoiceUrl,
-    bool? canCancel,
+  int get lineTotal => unitPrice * qty;
+
+  Map<String, dynamic> toMap() => {
+    'productId': productId,
+    'title': title,
+    'image': image,
+    'unitPrice': unitPrice,
+    'qty': qty,
+    'currency': currency,
+    'vendorId': vendorId,
+    'vendorName': vendorName,
+  };
+
+  static OrderItemModel fromMap(Map<String, dynamic> map) {
+    return OrderItemModel(
+      productId: (map['productId'] ?? '').toString(),
+      title: (map['title'] ?? '').toString(),
+      image: (map['image'] ?? '').toString(),
+      unitPrice: _toInt(map['unitPrice'], fallback: 0),
+      qty: _toInt(map['qty'], fallback: 1).clamp(1, 999999),
+      currency: (map['currency'] ?? 'TWD').toString(),
+      vendorId: (map['vendorId'] ?? '').toString(),
+      vendorName: (map['vendorName'] ?? '').toString(),
+    );
+  }
+}
+
+class OrderModel {
+  final String id;
+  final String userId;
+
+  final List<OrderItemModel> items;
+
+  /// 幣別（預設 TWD）
+  final String currency;
+
+  /// 小計（元）
+  final int subtotal;
+
+  /// 運費（元）
+  final int shippingFee;
+
+  /// 折扣（元）：例如優惠券折抵
+  final int discountAmount;
+
+  /// 點數折抵（元）：可選
+  final int pointsDiscount;
+
+  /// 應付總額（元）
+  final int total;
+
+  final OrderStatus status;
+
+  // 支付資訊（可選）
+  final String paymentMethod; // e.g. "linepay", "credit", "cod"
+  final String transactionId;
+
+  // 收件資訊（可選）
+  final String receiverName;
+  final String receiverPhone;
+  final String shippingAddress;
+
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  const OrderModel({
+    required this.id,
+    required this.userId,
+    required this.items,
+    required this.currency,
+    required this.subtotal,
+    required this.shippingFee,
+    required this.discountAmount,
+    required this.pointsDiscount,
+    required this.total,
+    required this.status,
+    required this.paymentMethod,
+    required this.transactionId,
+    required this.receiverName,
+    required this.receiverPhone,
+    required this.shippingAddress,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  /// 從購物車建立訂單（建議你 Checkout 時用這個）
+  factory OrderModel.fromCart({
+    required String id,
+    required String userId,
+    required List<CartItem> cartItems,
+    int shippingFee = 0,
+    int discountAmount = 0,
+    int pointsDiscount = 0,
+    String currency = 'TWD',
+    OrderStatus status = OrderStatus.pending,
+    String paymentMethod = '',
+    String transactionId = '',
+    String receiverName = '',
+    String receiverPhone = '',
+    String shippingAddress = '',
   }) {
-    final total = items.fold<int>(
-      0,
-      (sum, e) => sum + e.product.price * e.qty,
+    final items = cartItems
+        .map(
+          (c) => OrderItemModel(
+            productId: c.productId,
+            title: c.title,
+            image: c.image,
+            unitPrice: c.unitPrice,
+            qty: c.qty,
+            currency: c.currency,
+            vendorId: c.vendorId,
+            vendorName: c.vendorName,
+          ),
+        )
+        .toList();
+
+    // ✅ FIX: 避免使用 sum 當參數名稱（會撞到可見型別名稱，觸發 lint）
+    // ✅ 也避免 double：fold<int>
+    final subtotalCalc = items.fold<int>(0, (acc, e) => acc + e.lineTotal);
+
+    final totalCalc = _calcTotalInt(
+      subtotal: subtotalCalc,
+      shippingFee: shippingFee,
+      discountAmount: discountAmount,
+      pointsDiscount: pointsDiscount,
     );
 
     final now = DateTime.now();
-    final createdAt = now;
-
-    // 建立簡單的時間軸，之後可以在 OrdersPage / OrderDetailPage 直接使用
-    final List<Map<String, dynamic>> timeline = [
-      {
-        'label': '下單',
-        'time': createdAt,
-        'done': true,
-      },
-      {
-        'label': '付款',
-        'time': createdAt.add(const Duration(minutes: 5)),
-        'done': status != 'pending',
-      },
-      {
-        'label': '出貨',
-        'time': null,
-        'done': status == 'shipped' || status == 'delivered',
-      },
-      {
-        'label': '送達',
-        'time': null,
-        'done': status == 'delivered',
-      },
-    ];
-
-    if (status == 'cancelled') {
-      timeline.add({
-        'label': '已取消',
-        'time': createdAt.add(const Duration(minutes: 10)),
-        'done': true,
-      });
-    } else if (status == 'refund') {
-      timeline.add({
-        'label': '退款/退貨',
-        'time': createdAt.add(const Duration(days: 1)),
-        'done': true,
-      });
-    }
-
-    return Order(
-      id: 'ORD-${Random().nextInt(999999).toString().padLeft(6, '0')}',
-      items: List<CartItem>.from(items),
-      total: total,
-      createdAt: createdAt,
+    return OrderModel(
+      id: id,
+      userId: userId,
+      items: items,
+      currency: currency,
+      subtotal: subtotalCalc,
+      shippingFee: shippingFee,
+      discountAmount: discountAmount,
+      pointsDiscount: pointsDiscount,
+      total: totalCalc,
       status: status,
-      shippingAddress: shippingAddress,
       paymentMethod: paymentMethod,
-      trackingNumber: trackingNumber,
-      carrier: carrier,
-      invoiceUrl: invoiceUrl,
-      canCancel: canCancel ?? (status == 'pending'),
-      timeline: timeline,
+      transactionId: transactionId,
+      receiverName: receiverName,
+      receiverPhone: receiverPhone,
+      shippingAddress: shippingAddress,
+      createdAt: now,
+      updatedAt: now,
     );
   }
 
-  /// 建立一個新的 Order（例如更新狀態/物流資訊）
-  Order copyWith({
-    String? id,
-    List<CartItem>? items,
-    int? total,
-    DateTime? createdAt,
-    String? status,
-    String? shippingAddress,
-    String? paymentMethod,
-    String? trackingNumber,
-    String? carrier,
-    String? invoiceUrl,
-    bool? canCancel,
-    List<Map<String, dynamic>>? timeline,
+  /// ✅ 若你需要「百分比折扣」，用這個（整數運算，永遠不回傳 double）
+  /// 例如 9 折：percentOff = 10（折抵 10%）
+  static int percentDiscountAmount({
+    required int amount,
+    required int percentOff,
   }) {
-    return Order(
+    if (amount <= 0) return 0;
+    final p = percentOff.clamp(0, 100);
+    return amount * p ~/ 100; // ✅ int
+  }
+
+  static int _calcTotalInt({
+    required int subtotal,
+    required int shippingFee,
+    required int discountAmount,
+    required int pointsDiscount,
+  }) {
+    final raw = subtotal + shippingFee - discountAmount - pointsDiscount;
+    return raw < 0 ? 0 : raw;
+  }
+
+  OrderModel copyWith({
+    String? id,
+    String? userId,
+    List<OrderItemModel>? items,
+    String? currency,
+    int? subtotal,
+    int? shippingFee,
+    int? discountAmount,
+    int? pointsDiscount,
+    int? total,
+    OrderStatus? status,
+    String? paymentMethod,
+    String? transactionId,
+    String? receiverName,
+    String? receiverPhone,
+    String? shippingAddress,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) {
+    return OrderModel(
       id: id ?? this.id,
+      userId: userId ?? this.userId,
       items: items ?? this.items,
+      currency: currency ?? this.currency,
+      subtotal: subtotal ?? this.subtotal,
+      shippingFee: shippingFee ?? this.shippingFee,
+      discountAmount: discountAmount ?? this.discountAmount,
+      pointsDiscount: pointsDiscount ?? this.pointsDiscount,
       total: total ?? this.total,
-      createdAt: createdAt ?? this.createdAt,
       status: status ?? this.status,
-      shippingAddress: shippingAddress ?? this.shippingAddress,
       paymentMethod: paymentMethod ?? this.paymentMethod,
-      trackingNumber: trackingNumber ?? this.trackingNumber,
-      carrier: carrier ?? this.carrier,
-      invoiceUrl: invoiceUrl ?? this.invoiceUrl,
-      canCancel: canCancel ?? this.canCancel,
-      timeline: timeline ?? this.timeline,
+      transactionId: transactionId ?? this.transactionId,
+      receiverName: receiverName ?? this.receiverName,
+      receiverPhone: receiverPhone ?? this.receiverPhone,
+      shippingAddress: shippingAddress ?? this.shippingAddress,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 
-  @override
-  String toString() {
-    return 'Order(id: $id, total: $total, status: $status, items: ${items.length})';
+  Map<String, dynamic> toMap() {
+    return {
+      'userId': userId,
+      'items': items.map((e) => e.toMap()).toList(),
+      'currency': currency,
+      'subtotal': subtotal,
+      'shippingFee': shippingFee,
+      'discountAmount': discountAmount,
+      'pointsDiscount': pointsDiscount,
+      'total': total,
+      'status': _statusToString(status),
+      'paymentMethod': paymentMethod,
+      'transactionId': transactionId,
+      'receiverName': receiverName,
+      'receiverPhone': receiverPhone,
+      'shippingAddress': shippingAddress,
+      'createdAt': createdAt == null ? null : Timestamp.fromDate(createdAt!),
+      'updatedAt': updatedAt == null ? null : Timestamp.fromDate(updatedAt!),
+    };
   }
 
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    return other is Order && other.id == id;
+  static OrderModel fromMap(String id, Map<String, dynamic> map) {
+    final itemsRaw = map['items'];
+    final items = (itemsRaw is List)
+        ? itemsRaw
+              .whereType<Map>()
+              .map((e) => OrderItemModel.fromMap(Map<String, dynamic>.from(e)))
+              .toList()
+        : <OrderItemModel>[];
+
+    // ✅ FIX: 同樣避免 sum 參數名稱
+    final subtotalCalc = items.fold<int>(0, (acc, e) => acc + e.lineTotal);
+
+    final shippingFee = _toInt(map['shippingFee'], fallback: 0);
+    final discountAmount = _toInt(map['discountAmount'], fallback: 0);
+    final pointsDiscount = _toInt(map['pointsDiscount'], fallback: 0);
+
+    final subtotal = _toInt(map['subtotal'], fallback: subtotalCalc);
+    final total = _toInt(
+      map['total'],
+      fallback: _calcTotalInt(
+        subtotal: subtotal,
+        shippingFee: shippingFee,
+        discountAmount: discountAmount,
+        pointsDiscount: pointsDiscount,
+      ),
+    );
+
+    return OrderModel(
+      id: id,
+      userId: (map['userId'] ?? '').toString(),
+      items: items,
+      currency: (map['currency'] ?? 'TWD').toString(),
+      subtotal: subtotal,
+      shippingFee: shippingFee,
+      discountAmount: discountAmount,
+      pointsDiscount: pointsDiscount,
+      total: total,
+      status: _statusFromString((map['status'] ?? 'pending').toString()),
+      paymentMethod: (map['paymentMethod'] ?? '').toString(),
+      transactionId: (map['transactionId'] ?? '').toString(),
+      receiverName: (map['receiverName'] ?? '').toString(),
+      receiverPhone: (map['receiverPhone'] ?? '').toString(),
+      shippingAddress: (map['shippingAddress'] ?? '').toString(),
+      createdAt: _toDateTime(map['createdAt']),
+      updatedAt: _toDateTime(map['updatedAt']),
+    );
   }
 
-  @override
-  int get hashCode => id.hashCode;
+  static OrderModel fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data() ?? const <String, dynamic>{};
+    return fromMap(doc.id, data);
+  }
+}
+
+int _toInt(dynamic v, {required int fallback}) {
+  if (v is int) return v;
+  if (v is double) return v.round();
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v) ?? fallback;
+  return fallback;
+}
+
+DateTime? _toDateTime(dynamic v) {
+  if (v == null) return null;
+  if (v is Timestamp) return v.toDate();
+  if (v is DateTime) return v;
+  return null;
 }

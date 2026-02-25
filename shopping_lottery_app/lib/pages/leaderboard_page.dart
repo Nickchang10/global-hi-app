@@ -1,5 +1,4 @@
 // lib/pages/leaderboard_page.dart
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -11,7 +10,7 @@ class LeaderboardPage extends StatefulWidget {
 }
 
 class _LeaderboardPageState extends State<LeaderboardPage> {
-  List<Map<String, dynamic>> _players = [];
+  List<Map<String, dynamic>> _players = <Map<String, dynamic>>[];
   DateTime? _lastReset;
   bool _loading = true;
 
@@ -34,24 +33,27 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
       await prefs.setString('leaderboard_last_reset', now.toIso8601String());
     } else {
       _players = List.generate(
-          10, (i) => {'name': '玩家${i + 1}', 'points': 500 - i * 30});
+        10,
+        (i) => {'name': '玩家${i + 1}', 'points': 500 - i * 30},
+      );
     }
 
+    if (!mounted) return;
     setState(() => _loading = false);
   }
 
   bool _isNewWeek(DateTime now, DateTime lastReset) {
     final thisMonday = now.subtract(Duration(days: now.weekday - 1));
-    final lastMonday = lastReset.subtract(Duration(days: lastReset.weekday - 1));
+    final lastMonday = lastReset.subtract(
+      Duration(days: lastReset.weekday - 1),
+    );
     return thisMonday.isAfter(lastMonday);
   }
 
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     final now = DateTime.now();
@@ -80,6 +82,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                     final i = entry.key;
                     final p = entry.value;
                     final rank = i + 1;
+
                     Color badgeColor;
                     IconData? icon;
                     switch (rank) {
@@ -104,18 +107,21 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                       margin: const EdgeInsets.symmetric(vertical: 4),
                       decoration: BoxDecoration(
                         gradient: rank <= 3
-                            ? LinearGradient(colors: [
-                                badgeColor.withOpacity(0.9),
-                                badgeColor.withOpacity(0.6)
-                              ])
+                            ? LinearGradient(
+                                colors: [
+                                  badgeColor.withValues(alpha: 0.9),
+                                  badgeColor.withValues(alpha: 0.6),
+                                ],
+                              )
                             : null,
                         color: rank > 3 ? Colors.white : null,
                         borderRadius: BorderRadius.circular(12),
                         boxShadow: const [
                           BoxShadow(
-                              color: Colors.black12,
-                              blurRadius: 3,
-                              offset: Offset(0, 2))
+                            color: Colors.black12,
+                            blurRadius: 3,
+                            offset: Offset(0, 2),
+                          ),
                         ],
                       ),
                       child: ListTile(
@@ -124,15 +130,21 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                           backgroundColor: badgeColor,
                           child: icon != null
                               ? Icon(icon, size: 20, color: Colors.white)
-                              : Text('$rank',
+                              : Text(
+                                  '$rank',
                                   style: const TextStyle(
-                                      fontWeight: FontWeight.bold)),
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                         ),
                         title: Text(p['name'] as String),
-                        trailing: Text('${p['points']} 分',
-                            style: const TextStyle(
-                                color: Colors.orange,
-                                fontWeight: FontWeight.bold)),
+                        trailing: Text(
+                          '${p['points']} 分',
+                          style: const TextStyle(
+                            color: Colors.orange,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     );
                   }),

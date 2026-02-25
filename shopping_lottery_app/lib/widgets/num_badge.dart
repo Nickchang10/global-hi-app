@@ -18,6 +18,7 @@ class NumBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (value <= 0) return child;
+
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -32,14 +33,23 @@ class NumBadge extends StatelessWidget {
             decoration: BoxDecoration(
               color: color,
               borderRadius: BorderRadius.circular(size / 2),
-              boxShadow: [
-                BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 4, offset: const Offset(0, 1)),
+              boxShadow: const [
+                // 0.15 * 255 = 38.25 -> 38
+                BoxShadow(
+                  color: Color.fromARGB(38, 0, 0, 0),
+                  blurRadius: 4,
+                  offset: Offset(0, 1),
+                ),
               ],
             ),
             child: Center(
               child: Text(
                 value > 99 ? '99+' : '$value',
-                style: TextStyle(color: Colors.white, fontSize: size * 0.6, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: size * 0.6,
+                  fontWeight: FontWeight.bold,
+                ),
                 textAlign: TextAlign.center,
               ),
             ),

@@ -1,225 +1,302 @@
-// lib/pages/admin_simple_dashboard_page.dart
-//
-// ✅ AdminSimpleDashboardPage（最終完整版｜可編譯 + Drawer + 模式切換 + i18n 一致 + 可接收 role）
-// ------------------------------------------------------------
-// - 新增 role 參數（解決 admin_shell_page 傳 role 編譯錯誤）
-// - 移除 const AdminModeSwitcher() → AdminModeSwitcher()
-// - Drawer 改 ListView 結構（防 overflow）
-// ------------------------------------------------------------
-
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../widgets/news_home_section.dart'; // 最新消息輪播
 
-// Controllers
-import '../controllers/admin_mode_controller.dart';
-import '../controllers/locale_controller.dart';
+// ------------------ Provider ------------------
+class AdminSimpleProvider extends ChangeNotifier {
+  final FirebaseFirestore? firestore;
+  AdminSimpleProvider({this.firestore}) {
+    _init();
+  }
 
-// Services
-import '../services/admin_gate.dart';
-import '../services/auth_service.dart';
+  bool loading = false;
+  int totalOrders = 0;
+  int totalProducts = 0;
+  double monthlyRevenue = 0.0;
+  List<Map<String, dynamic>> latestOrders = [];
 
-// Localization
-import '../l10n/app_localizations.dart';
+  Future<void> _init() async {
+    loading = true;
+    notifyListeners();
+    await Future.delayed(const Duration(milliseconds: 400)); // 模擬延遲
+    await _loadMockData(); // 可換成 firestore
+    loading = false;
+    notifyListeners();
+  }
 
-// Widgets
-import '../widgets/admin_mode_switcher.dart';
+  Future<void> _loadMockData() async {
+    totalOrders = 25;
+    totalProducts = 8;
+    monthlyRevenue = 12580.0;
+    latestOrders = List.generate(5, (i) {
+      return {
+        'id': 'ORD-${1000 + i}',
+        'buyer': 'user${i + 1}@osmile.com',
+        'amount': 1000 + (i * 200),
+        'status': (i % 2 == 0) ? '已付款' : '待付款',
+        'date': DateTime.now().subtract(Duration(days: i)),
+      };
+    });
+  }
 
-// Pages
-import 'admin_products_page.dart';
-import 'notifications_page.dart';
-import 'reports_page.dart';
-
-class AdminSimpleDashboardPage extends StatefulWidget {
-  /// ✅ 新增可選 role 參數（避免 admin_shell_page 傳 role 編譯錯誤）
-  final String role;
-  const AdminSimpleDashboardPage({super.key, this.role = 'admin'});
-
-  @override
-  State<AdminSimpleDashboardPage> createState() =>
-      _AdminSimpleDashboardPageState();
+  Future<void> refresh() async {
+    await _init();
+  }
 }
 
-class _AdminSimpleDashboardPageState extends State<AdminSimpleDashboardPage> {
-  int _selectedIndex = 0;
-  Future<RoleInfo>? _roleFuture;
-  String? _lastUid;
+// ------------------ Page ------------------
+class AdminSimpleDashboardPage extends StatelessWidget {
+  const AdminSimpleDashboardPage({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final gate = context.read<AdminGate>();
-    final authSvc = context.read<AuthService>();
-    final modeCtrl = context.watch<AdminModeController>();
-    final localeCtrl = context.watch<LocaleController>();
-    final t = AppLocalizations.of(context);
+    final provider = context.watch<AdminSimpleProvider>();
+    final cs = Theme.of(context).colorScheme;
 
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-
-        final user = snap.data;
-        if (user == null) {
-          return Scaffold(
-            appBar: AppBar(title: Text(t.appTitle)),
-            body: Center(child: Text(t.notLoggedIn)),
-          );
-        }
-
-        if (_roleFuture == null || _lastUid != user.uid) {
-          _lastUid = user.uid;
-          _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
-        }
-
-        return FutureBuilder<RoleInfo>(
-          future: _roleFuture,
-          builder: (context, roleSnap) {
-            if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
-            }
-
-            if (roleSnap.hasError) {
-              return Scaffold(
-                body: Center(
-                  child: Text('讀取角色失敗：${roleSnap.error}'),
-                ),
-              );
-            }
-
-            final info = roleSnap.data;
-            final role = (info?.role ?? widget.role).toLowerCase().trim();
-            final isAdmin = role == 'admin';
-            final isVendor = role == 'vendor';
-
-            if (!isAdmin && !isVendor) {
-              return const Scaffold(body: Center(child: Text('此帳號無後台存取權限')));
-            }
-
-            final items = <_SimpleNavItem>[
-              _SimpleNavItem(
-                title: t.products,
-                icon: Icons.shopping_bag_outlined,
-                page: const AdminProductsPage(),
-              ),
-              _SimpleNavItem(
-                title: t.notifications,
-                icon: Icons.notifications_outlined,
-                page: const NotificationsPage(),
-              ),
-              if (isAdmin)
-                _SimpleNavItem(
-                  title: t.reports,
-                  icon: Icons.bar_chart_outlined,
-                  page: const ReportsPage(),
-                ),
-            ];
-
-            final safeIndex = _selectedIndex.clamp(0, items.length - 1);
-            if (safeIndex != _selectedIndex) _selectedIndex = safeIndex;
-            final current = items[safeIndex];
-
-            return Scaffold(
-              appBar: AppBar(
-                title: Text(current.title,
-                    style: const TextStyle(fontWeight: FontWeight.w900)),
-                actions: [
-                  IconButton(
-                    tooltip: t.logout,
-                    icon: const Icon(Icons.logout),
-                    onPressed: () async {
-                      gate.clearCache();
-                      modeCtrl.clearPersisted();
-                      await authSvc.signOut();
-                      if (!context.mounted) return;
-                      Navigator.pushReplacementNamed(context, '/login');
-                    },
+    return Scaffold(
+      backgroundColor: cs.surface,
+      appBar: AppBar(
+        title: const Text('管理員儀表板'),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: '刷新資料',
+            onPressed: provider.refresh,
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: provider.loading
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const NewsHomeSection(), // 最新消息輪播
+                  const SizedBox(height: 20),
+                  _buildSummaryRow(provider),
+                  const SizedBox(height: 28),
+                  const Text(
+                    '快速入口',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildModuleGrid(context),
+                  const SizedBox(height: 28),
+                  _buildLatestOrders(provider),
+                  const SizedBox(height: 40),
+                  const Center(
+                    child: Text(
+                      '© Osmile Admin',
+                      style: TextStyle(color: Colors.black45),
+                    ),
                   ),
                 ],
               ),
+            ),
+    );
+  }
 
-              // ✅ Drawer 改 ListView 結構防 overflow
-              drawer: Drawer(
-                child: SafeArea(
-                  child: ListView(
-                    padding: EdgeInsets.zero,
-                    children: [
-                      DrawerHeader(
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primaryContainer,
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.admin_panel_settings,
-                                size: 40,
-                                color: Theme.of(context).colorScheme.primary),
-                            const SizedBox(height: 10),
-                            Text(
-                              t.appTitle,
-                              style: const TextStyle(
-                                  fontSize: 18, fontWeight: FontWeight.w900),
-                            ),
-                            const SizedBox(height: 6),
-                            Text('${t.role}：$role',
-                                style: const TextStyle(fontSize: 13)),
-                            Text('模式：${modeCtrl.isSimpleMode ? '簡潔' : '完整'}',
-                                style: const TextStyle(fontSize: 13)),
-                            Text('${t.language}：${localeCtrl.currentLocaleLabel}',
-                                style: const TextStyle(fontSize: 13)),
-                          ],
-                        ),
-                      ),
-                      for (int i = 0; i < items.length; i++)
-                        ListTile(
-                          leading: Icon(items[i].icon),
-                          title: Text(items[i].title),
-                          selected: safeIndex == i,
-                          onTap: () {
-                            setState(() => _selectedIndex = i);
-                            Navigator.pop(context);
-                          },
-                        ),
-                      const Divider(height: 1),
-                      ListTile(
-                        leading: const Icon(Icons.logout),
-                        title: Text(t.logout),
-                        onTap: () async {
-                          Navigator.pop(context);
-                          gate.clearCache();
-                          modeCtrl.clearPersisted();
-                          await authSvc.signOut();
-                          if (!context.mounted) return;
-                          Navigator.pushReplacementNamed(context, '/login');
-                        },
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                  ),
-                ),
-              ),
+  // ---- Summary ----
+  Widget _buildSummaryRow(AdminSimpleProvider p) {
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      children: [
+        _SummaryCard(
+          title: '全部訂單',
+          value: '${p.totalOrders}',
+          icon: Icons.receipt_long,
+        ),
+        _SummaryCard(
+          title: '商品數',
+          value: '${p.totalProducts}',
+          icon: Icons.inventory_2_outlined,
+        ),
+        _SummaryCard(
+          title: '本月營收',
+          value: 'NT\$${p.monthlyRevenue.toStringAsFixed(0)}',
+          icon: Icons.payments,
+        ),
+      ],
+    );
+  }
 
-              body: SafeArea(child: current.page),
+  // ---- Modules ----
+  Widget _buildModuleGrid(BuildContext context) {
+    final modules = [
+      {'title': '訂單管理', 'icon': Icons.receipt_long},
+      {'title': '商品管理', 'icon': Icons.inventory_2_outlined},
+      {'title': '廠商管理', 'icon': Icons.apartment_outlined},
+      {'title': '公告', 'icon': Icons.campaign_outlined},
+      {'title': '報表', 'icon': Icons.bar_chart_outlined},
+      {'title': '系統設定', 'icon': Icons.settings_outlined},
+    ];
 
-              // ✅ 移除 const，確保可編譯
-              floatingActionButton: AdminModeSwitcher(),
-            );
-          },
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: modules.length,
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        childAspectRatio: 3.8,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+      ),
+      itemBuilder: (_, i) {
+        final m = modules[i];
+        return _ModuleCard(
+          title: m['title'] as String,
+          icon: m['icon'] as IconData,
         );
       },
     );
   }
+
+  // ---- Latest Orders ----
+  Widget _buildLatestOrders(AdminSimpleProvider p) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          '最近訂單',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        const SizedBox(height: 10),
+        if (p.latestOrders.isEmpty)
+          const Text('目前沒有訂單', style: TextStyle(color: Colors.black54))
+        else
+          Card(
+            elevation: 0.5,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: ListView.separated(
+              itemCount: p.latestOrders.length,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, i) {
+                final o = p.latestOrders[i];
+                return ListTile(
+                  leading: Icon(
+                    Icons.shopping_cart_outlined,
+                    color: Colors.blue.shade700,
+                  ),
+                  title: Text('${o['id']}'),
+                  subtitle: Text('${o['status']}｜${o['buyer']}'),
+                  trailing: Text(
+                    'NT\$${o['amount']}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
 }
 
-class _SimpleNavItem {
+// ------------------ Widgets ------------------
+class _SummaryCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final IconData icon;
+  const _SummaryCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      // ✅ 修正：surfaceVariant deprecated → surfaceContainerHighest
+      color: cs.surfaceContainerHighest.withValues(alpha: 0.4),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: cs.primary.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: cs.primary),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    value,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModuleCard extends StatelessWidget {
   final String title;
   final IconData icon;
-  final Widget page;
-  const _SimpleNavItem({
-    required this.title,
-    required this.icon,
-    required this.page,
-  });
+  const _ModuleCard({required this.title, required this.icon});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Material(
+      // ✅ 修正：surfaceVariant deprecated → surfaceContainerHighest
+      color: cs.surfaceContainerHighest.withValues(alpha: 0.2),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('開啟 $title')));
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Icon(icon, color: cs.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: Colors.black38),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

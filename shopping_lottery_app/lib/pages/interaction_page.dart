@@ -2,11 +2,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:confetti/confetti.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart'; // ✅ Uint8List / Clipboard
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -21,6 +20,8 @@ import 'package:osmile_shopping_app/services/notification_service.dart';
 // - 修正：_FriendsRow 橫向小卡 RenderFlex overflow（縮排 + FittedBox）
 // - 修正：demo posts 使用 const comments 導致 add() 失敗（改為可變 List）
 // - ✅ 整合 NotificationService：重要行為推播到「我的」紅點/通知中心
+// - ✅ 修正：withOpacity deprecated → 改用 withValues(alpha: x)
+// - ✅ 修正：curly_braces_in_flow_control_structures（所有 if 單行改成 block）
 // ======================================================
 
 class InteractionPage extends StatefulWidget {
@@ -53,7 +54,13 @@ class _InteractionPageState extends State<InteractionPage>
   String _friendSearch = '';
 
   // ===== Feed =====
-  final List<String> _tags = const ['#Osmile', '#今日步數', '#親子互動', '#長輩關懷', '#健康打卡'];
+  final List<String> _tags = const [
+    '#Osmile',
+    '#今日步數',
+    '#親子互動',
+    '#長輩關懷',
+    '#健康打卡',
+  ];
   final List<_Leader> _leaders = [
     _Leader(name: '用戶 1', score: 120),
     _Leader(name: '用戶 2', score: 87),
@@ -62,8 +69,9 @@ class _InteractionPageState extends State<InteractionPage>
   final List<_Post> _posts = [];
 
   // ===== Activity / Gamification =====
-  final ConfettiController _confetti =
-      ConfettiController(duration: const Duration(milliseconds: 1400));
+  final ConfettiController _confetti = ConfettiController(
+    duration: const Duration(milliseconds: 1400),
+  );
 
   int _points = 120;
   int _streakDays = 2;
@@ -79,7 +87,9 @@ class _InteractionPageState extends State<InteractionPage>
   // activity list
   String _selectedActivityCategory = '全部';
 
-  final PageController _bannerController = PageController(viewportFraction: 0.92);
+  final PageController _bannerController = PageController(
+    viewportFraction: 0.92,
+  );
   int _bannerIndex = 0;
   Timer? _bannerTimer;
 
@@ -153,9 +163,13 @@ class _InteractionPageState extends State<InteractionPage>
     _tab = TabController(length: 3, vsync: this);
 
     _tab.addListener(() {
-      if (_tab.indexIsChanging) return;
+      if (_tab.indexIsChanging) {
+        return;
+      }
       final idx = _tab.index;
-      if (idx == _tabIndex) return;
+      if (idx == _tabIndex) {
+        return;
+      }
 
       setState(() => _tabIndex = idx);
 
@@ -171,8 +185,12 @@ class _InteractionPageState extends State<InteractionPage>
     _loadPersisted();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (_tabIndex == 2) _startBannerAuto();
+      if (!mounted) {
+        return;
+      }
+      if (_tabIndex == 2) {
+        _startBannerAuto();
+      }
     });
   }
 
@@ -204,7 +222,12 @@ class _InteractionPageState extends State<InteractionPage>
     IconData? icon,
   }) {
     try {
-      _ns().addNotification(type: type, title: title, message: message, icon: icon);
+      _ns().addNotification(
+        type: type,
+        title: title,
+        message: message,
+        icon: icon,
+      );
     } catch (_) {
       // ignore
     }
@@ -216,12 +239,48 @@ class _InteractionPageState extends State<InteractionPage>
 
   void _seedInitialData() {
     _friends.addAll(const [
-      _Friend(id: 'me', name: '我', initials: '我', colorValue: 0xFF1976D2, online: true),
-      _Friend(id: 'f_alice', name: 'Alice', initials: 'A', colorValue: 0xFFFF9800, online: true),
-      _Friend(id: 'f_bob', name: 'Bob', initials: 'B', colorValue: 0xFF1E88E5, online: false),
-      _Friend(id: 'f_carol', name: 'Carol', initials: 'C', colorValue: 0xFFE91E63, online: true),
-      _Friend(id: 'f_david', name: 'David', initials: 'D', colorValue: 0xFFFFC107, online: false),
-      _Friend(id: 'f_emma', name: 'Emma', initials: 'E', colorValue: 0xFFFF5722, online: true),
+      _Friend(
+        id: 'me',
+        name: '我',
+        initials: '我',
+        colorValue: 0xFF1976D2,
+        online: true,
+      ),
+      _Friend(
+        id: 'f_alice',
+        name: 'Alice',
+        initials: 'A',
+        colorValue: 0xFFFF9800,
+        online: true,
+      ),
+      _Friend(
+        id: 'f_bob',
+        name: 'Bob',
+        initials: 'B',
+        colorValue: 0xFF1E88E5,
+        online: false,
+      ),
+      _Friend(
+        id: 'f_carol',
+        name: 'Carol',
+        initials: 'C',
+        colorValue: 0xFFE91E63,
+        online: true,
+      ),
+      _Friend(
+        id: 'f_david',
+        name: 'David',
+        initials: 'D',
+        colorValue: 0xFFFFC107,
+        online: false,
+      ),
+      _Friend(
+        id: 'f_emma',
+        name: 'Emma',
+        initials: 'E',
+        colorValue: 0xFFFF5722,
+        online: true,
+      ),
     ]);
 
     // ✅ demo posts：comments 必須是可變 List（不能 const），否則留言 add() 會爆
@@ -251,9 +310,7 @@ class _InteractionPageState extends State<InteractionPage>
             'https://images.unsplash.com/photo-1520975958225-8d0f6c9a4b0b?auto=format&fit=crop&w=1200&q=70',
         likes: 87,
         liked: false,
-        comments: [
-          const _Comment(user: 'Emma', text: '很實用的功能！'),
-        ],
+        comments: [const _Comment(user: 'Emma', text: '很實用的功能！')],
       ),
     ]);
   }
@@ -351,9 +408,15 @@ class _InteractionPageState extends State<InteractionPage>
             if (mounted) {
               setState(() {
                 _signedToday = (map['signedToday'] == true);
-                _todayDone = (map['todayDone'] is int) ? map['todayDone'] as int : _todayDone;
-                _points = (map['points'] is int) ? map['points'] as int : _points;
-                _streakDays = (map['streakDays'] is int) ? map['streakDays'] as int : _streakDays;
+                _todayDone = (map['todayDone'] is int)
+                    ? map['todayDone'] as int
+                    : _todayDone;
+                _points = (map['points'] is int)
+                    ? map['points'] as int
+                    : _points;
+                _streakDays = (map['streakDays'] is int)
+                    ? map['streakDays'] as int
+                    : _streakDays;
                 _pollAnswer = map['pollAnswer']?.toString();
               });
             }
@@ -401,7 +464,9 @@ class _InteractionPageState extends State<InteractionPage>
   // ======================================================
 
   void _toast(String msg) {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
@@ -423,7 +488,9 @@ class _InteractionPageState extends State<InteractionPage>
   Future<String> _getInviteCode() async {
     final prefs = await SharedPreferences.getInstance();
     final code = prefs.getString(_kPrefsInviteCode);
-    if (code != null && code.trim().isNotEmpty) return code.trim();
+    if (code != null && code.trim().isNotEmpty) {
+      return code.trim();
+    }
     final newCode = _genInviteCode();
     await prefs.setString(_kPrefsInviteCode, newCode);
     return newCode;
@@ -435,10 +502,17 @@ class _InteractionPageState extends State<InteractionPage>
 
   Future<void> _pickImageForCompose() async {
     try {
-      final x = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
-      if (x == null) return;
+      final x = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 80,
+      );
+      if (x == null) {
+        return;
+      }
       final bytes = await x.readAsBytes();
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       setState(() => _pendingImageBytes = bytes);
     } catch (e) {
       _toast('選圖失敗：$e');
@@ -467,7 +541,13 @@ class _InteractionPageState extends State<InteractionPage>
               Row(
                 children: [
                   const Expanded(
-                    child: Text('新增貼文', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                    child: Text(
+                      '新增貼文',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
+                    ),
                   ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
@@ -530,15 +610,21 @@ class _InteractionPageState extends State<InteractionPage>
                     child: OutlinedButton.icon(
                       onPressed: () async {
                         await _pickImageForCompose();
-                        if (mounted) setState(() {});
+                        if (mounted) {
+                          setState(() {});
+                        }
                       },
                       icon: const Icon(Icons.photo_library_outlined),
                       label: const Text('選擇圖片'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: _primary,
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        side: BorderSide(color: _primary.withOpacity(0.35)),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        side: BorderSide(
+                          color: _primary.withValues(alpha: 0.35),
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                   ),
@@ -593,7 +679,9 @@ class _InteractionPageState extends State<InteractionPage>
                         foregroundColor: Colors.white,
                         elevation: 0,
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                   ),
@@ -605,7 +693,9 @@ class _InteractionPageState extends State<InteractionPage>
       },
     ).whenComplete(() {
       // 關閉時清掉暫存圖片，避免下次殘留
-      if (mounted) setState(() => _pendingImageBytes = null);
+      if (mounted) {
+        setState(() => _pendingImageBytes = null);
+      }
     });
   }
 
@@ -630,8 +720,13 @@ class _InteractionPageState extends State<InteractionPage>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('查看 $tag 相關貼文（示範）',
-                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15)),
+              Text(
+                '查看 $tag 相關貼文（示範）',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 15,
+                ),
+              ),
               const SizedBox(height: 10),
               if (filtered.isEmpty)
                 Text('目前沒有相關貼文', style: TextStyle(color: Colors.grey.shade600))
@@ -640,7 +735,7 @@ class _InteractionPageState extends State<InteractionPage>
                   return ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: CircleAvatar(
-                      backgroundColor: _primary.withOpacity(0.12),
+                      backgroundColor: _primary.withValues(alpha: 0.12),
                       foregroundColor: _primary,
                       child: Text(
                         p.user.isNotEmpty ? p.user[0] : '?',
@@ -675,7 +770,9 @@ class _InteractionPageState extends State<InteractionPage>
                     foregroundColor: Colors.white,
                     elevation: 0,
                     padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                   ),
                 ),
               ),
@@ -692,7 +789,9 @@ class _InteractionPageState extends State<InteractionPage>
 
   void _openAddFriendSheet() async {
     final code = await _getInviteCode();
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
     final inputCtrl = TextEditingController();
 
@@ -714,7 +813,13 @@ class _InteractionPageState extends State<InteractionPage>
               Row(
                 children: [
                   const Expanded(
-                    child: Text('新增好友', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                    child: Text(
+                      '新增好友',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
+                    ),
                   ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
@@ -730,17 +835,23 @@ class _InteractionPageState extends State<InteractionPage>
                 decoration: BoxDecoration(
                   color: const Color(0xFFF8FAFF),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: _primary.withOpacity(0.18)),
+                  border: Border.all(color: _primary.withValues(alpha: 0.18)),
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.qr_code_2_rounded, color: _primary.withOpacity(0.9)),
+                    Icon(
+                      Icons.qr_code_2_rounded,
+                      color: _primary.withValues(alpha: 0.9),
+                    ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('我的邀請碼', style: TextStyle(fontWeight: FontWeight.w900)),
+                          const Text(
+                            '我的邀請碼',
+                            style: TextStyle(fontWeight: FontWeight.w900),
+                          ),
                           const SizedBox(height: 4),
                           Text(
                             code,
@@ -756,12 +867,18 @@ class _InteractionPageState extends State<InteractionPage>
                     OutlinedButton(
                       onPressed: () async {
                         await Clipboard.setData(ClipboardData(text: code));
-                        if (mounted) _toast('已複製邀請碼');
+                        if (mounted) {
+                          _toast('已複製邀請碼');
+                        }
                       },
                       style: OutlinedButton.styleFrom(
                         foregroundColor: _primary,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                        side: BorderSide(color: _primary.withOpacity(0.35)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        side: BorderSide(
+                          color: _primary.withValues(alpha: 0.35),
+                        ),
                       ),
                       child: const Text('複製'),
                     ),
@@ -829,8 +946,12 @@ class _InteractionPageState extends State<InteractionPage>
                       style: OutlinedButton.styleFrom(
                         foregroundColor: _primary,
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                        side: BorderSide(color: _primary.withOpacity(0.35)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        side: BorderSide(
+                          color: _primary.withValues(alpha: 0.35),
+                        ),
                       ),
                     ),
                   ),
@@ -846,7 +967,9 @@ class _InteractionPageState extends State<InteractionPage>
                           online: true,
                         );
                         setState(() {
-                          if (_friends.every((x) => x.id != sug.id)) _friends.add(sug);
+                          if (_friends.every((x) => x.id != sug.id)) {
+                            _friends.add(sug);
+                          }
                         });
                         _persistFriends();
                         Navigator.pop(context);
@@ -865,7 +988,9 @@ class _InteractionPageState extends State<InteractionPage>
                         foregroundColor: Colors.white,
                         elevation: 0,
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                   ),
@@ -876,8 +1001,13 @@ class _InteractionPageState extends State<InteractionPage>
 
               Align(
                 alignment: Alignment.centerLeft,
-                child: Text('你可能認識',
-                    style: TextStyle(fontWeight: FontWeight.w900, color: Colors.grey.shade800)),
+                child: Text(
+                  '你可能認識',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: Colors.grey.shade800,
+                  ),
+                ),
               ),
               const SizedBox(height: 10),
 
@@ -949,7 +1079,9 @@ class _InteractionPageState extends State<InteractionPage>
 
   void _acceptFriendDirect(_Friend f) {
     setState(() {
-      if (_friends.any((x) => x.id == f.id)) return;
+      if (_friends.any((x) => x.id == f.id)) {
+        return;
+      }
       _friends.add(f);
     });
     _persistFriends();
@@ -972,7 +1104,9 @@ class _InteractionPageState extends State<InteractionPage>
     );
     setState(() {
       _requests.removeWhere((x) => x.id == r.id);
-      if (_friends.every((x) => x.id != friend.id)) _friends.add(friend);
+      if (_friends.every((x) => x.id != friend.id)) {
+        _friends.add(friend);
+      }
     });
     _persistFriends();
     _persistRequests();
@@ -1016,18 +1150,30 @@ class _InteractionPageState extends State<InteractionPage>
                 children: [
                   CircleAvatar(
                     radius: 26,
-                    backgroundColor: color.withOpacity(0.18),
+                    backgroundColor: color.withValues(alpha: 0.18),
                     foregroundColor: color,
-                    child: Text(f.initials, style: const TextStyle(fontWeight: FontWeight.w900)),
+                    child: Text(
+                      f.initials,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(f.name, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                        Text(
+                          f.name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 16,
+                          ),
+                        ),
                         const SizedBox(height: 4),
-                        Text(f.online ? '在線中' : '離線中', style: TextStyle(color: Colors.grey.shade600)),
+                        Text(
+                          f.online ? '在線中' : '離線中',
+                          style: TextStyle(color: Colors.grey.shade600),
+                        ),
                       ],
                     ),
                   ),
@@ -1063,7 +1209,9 @@ class _InteractionPageState extends State<InteractionPage>
                         foregroundColor: Colors.white,
                         elevation: 0,
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                   ),
@@ -1072,7 +1220,9 @@ class _InteractionPageState extends State<InteractionPage>
                     child: OutlinedButton.icon(
                       onPressed: () {
                         Navigator.pop(context);
-                        setState(() => _friends.removeWhere((x) => x.id == f.id));
+                        setState(() {
+                          _friends.removeWhere((x) => x.id == f.id);
+                        });
                         _persistFriends();
                         _toast('已移除好友（示範）');
                         _pushNotif(
@@ -1086,9 +1236,13 @@ class _InteractionPageState extends State<InteractionPage>
                       label: const Text('移除'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: Colors.redAccent,
-                        side: BorderSide(color: Colors.redAccent.withOpacity(0.35)),
+                        side: BorderSide(
+                          color: Colors.redAccent.withValues(alpha: 0.35),
+                        ),
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                   ),
@@ -1113,10 +1267,18 @@ class _InteractionPageState extends State<InteractionPage>
   void _startBannerAuto() {
     _stopBannerAuto();
     _bannerTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (!mounted) return;
-      if (_tabIndex != 2) return; // ✅ 非活動頁不輪播
-      if (!_bannerController.hasClients) return; // ✅ 修正 PageController not attached
-      if (_banners.isEmpty) return;
+      if (!mounted) {
+        return;
+      }
+      if (_tabIndex != 2) {
+        return; // ✅ 非活動頁不輪播
+      }
+      if (!_bannerController.hasClients) {
+        return; // ✅ 修正 PageController not attached
+      }
+      if (_banners.isEmpty) {
+        return;
+      }
 
       final next = (_bannerIndex + 1) % _banners.length;
       setState(() => _bannerIndex = next);
@@ -1129,13 +1291,20 @@ class _InteractionPageState extends State<InteractionPage>
     });
   }
 
-  void _playReward({required int points, String? toast, String? notifTitle, String? notifMsg}) {
+  void _playReward({
+    required int points,
+    String? toast,
+    String? notifTitle,
+    String? notifMsg,
+  }) {
     setState(() {
       _points += points;
     });
     _confetti.play();
     _persistDaily();
-    if (toast != null) _toast(toast);
+    if (toast != null) {
+      _toast(toast);
+    }
 
     if (notifTitle != null && notifMsg != null) {
       _pushNotif(
@@ -1208,7 +1377,13 @@ class _InteractionPageState extends State<InteractionPage>
               Row(
                 children: [
                   Expanded(
-                    child: Text(e.title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                    child: Text(
+                      e.title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
+                    ),
                   ),
                   IconButton(
                     onPressed: () => Navigator.pop(context),
@@ -1229,7 +1404,11 @@ class _InteractionPageState extends State<InteractionPage>
                     height: 170,
                     color: Colors.grey.shade200,
                     alignment: Alignment.center,
-                    child: const Icon(Icons.broken_image_outlined, color: Colors.grey, size: 40),
+                    child: const Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.grey,
+                      size: 40,
+                    ),
                   ),
                 ),
               ),
@@ -1237,7 +1416,10 @@ class _InteractionPageState extends State<InteractionPage>
 
               Align(
                 alignment: Alignment.centerLeft,
-                child: Text(e.subtitle, style: TextStyle(color: Colors.grey.shade700, height: 1.25)),
+                child: Text(
+                  e.subtitle,
+                  style: TextStyle(color: Colors.grey.shade700, height: 1.25),
+                ),
               ),
               const SizedBox(height: 12),
 
@@ -1253,10 +1435,18 @@ class _InteractionPageState extends State<InteractionPage>
                   children: [
                     Row(
                       children: [
-                        const Text('進度', style: TextStyle(fontWeight: FontWeight.w900)),
+                        const Text(
+                          '進度',
+                          style: TextStyle(fontWeight: FontWeight.w900),
+                        ),
                         const Spacer(),
-                        Text('${(e.progress * 100).toStringAsFixed(0)}%',
-                            style: TextStyle(color: Colors.grey.shade700, fontWeight: FontWeight.w800)),
+                        Text(
+                          '${(e.progress * 100).toStringAsFixed(0)}%',
+                          style: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 10),
@@ -1270,8 +1460,10 @@ class _InteractionPageState extends State<InteractionPage>
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Text('完成可獲得 +${e.rewardPoints} 點',
-                        style: TextStyle(color: Colors.grey.shade700)),
+                    Text(
+                      '完成可獲得 +${e.rewardPoints} 點',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
                   ],
                 ),
               ),
@@ -1296,9 +1488,13 @@ class _InteractionPageState extends State<InteractionPage>
                       label: const Text('提醒我'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: _primary,
-                        side: BorderSide(color: _primary.withOpacity(0.35)),
+                        side: BorderSide(
+                          color: _primary.withValues(alpha: 0.35),
+                        ),
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                   ),
@@ -1316,7 +1512,9 @@ class _InteractionPageState extends State<InteractionPage>
                             e.progress = max(e.progress, 0.05);
                           } else {
                             e.progress = (e.progress + 0.20).clamp(0.0, 1.0);
-                            if (e.progress >= 1.0) justCompleted = true;
+                            if (e.progress >= 1.0) {
+                              justCompleted = true;
+                            }
                           }
                         });
                         _persistDaily();
@@ -1327,7 +1525,8 @@ class _InteractionPageState extends State<InteractionPage>
                             points: e.rewardPoints,
                             toast: '任務完成 +${e.rewardPoints} 點',
                             notifTitle: '活動任務完成',
-                            notifMsg: '「${e.title}」完成，獲得 +${e.rewardPoints} 點（示範）',
+                            notifMsg:
+                                '「${e.title}」完成，獲得 +${e.rewardPoints} 點（示範）',
                           );
                         } else {
                           _toast(justJoined ? '報名成功（示範）' : '已打卡（示範）');
@@ -1336,19 +1535,29 @@ class _InteractionPageState extends State<InteractionPage>
                           _pushNotif(
                             type: 'system',
                             title: justJoined ? '活動已報名' : '活動已打卡',
-                            message: justJoined ? '你已報名「${e.title}」（示範）' : '你在「${e.title}」完成一次打卡（示範）',
-                            icon: justJoined ? Icons.how_to_reg_rounded : Icons.flag_rounded,
+                            message: justJoined
+                                ? '你已報名「${e.title}」（示範）'
+                                : '你在「${e.title}」完成一次打卡（示範）',
+                            icon: justJoined
+                                ? Icons.how_to_reg_rounded
+                                : Icons.flag_rounded,
                           );
                         }
                       },
-                      icon: Icon(e.joined ? Icons.flag_rounded : Icons.how_to_reg_rounded),
+                      icon: Icon(
+                        e.joined
+                            ? Icons.flag_rounded
+                            : Icons.how_to_reg_rounded,
+                      ),
                       label: Text(e.joined ? '打卡' : '立即報名'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: e.joined ? _primary : _brand,
                         foregroundColor: Colors.white,
                         elevation: 0,
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                   ),
@@ -1434,7 +1643,11 @@ class _InteractionPageState extends State<InteractionPage>
             );
           }
         },
-        child: Icon(_tabIndex == 0 ? Icons.add : (_tabIndex == 1 ? Icons.person_add_alt_1 : Icons.emoji_events)),
+        child: Icon(
+          _tabIndex == 0
+              ? Icons.add
+              : (_tabIndex == 1 ? Icons.person_add_alt_1 : Icons.emoji_events),
+        ),
       ),
     );
   }
@@ -1443,7 +1656,9 @@ class _InteractionPageState extends State<InteractionPage>
   // Tab 1: Feed
   // ---------------------------
   Widget _buildFeedTab() {
-    final progress = (_todayGoal == 0) ? 0.0 : (_todayDone / _todayGoal).clamp(0.0, 1.0);
+    final progress = (_todayGoal == 0)
+        ? 0.0
+        : (_todayDone / _todayGoal).clamp(0.0, 1.0);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 20),
@@ -1505,7 +1720,11 @@ class _InteractionPageState extends State<InteractionPage>
                 p.likes += p.liked ? 1 : -1;
               });
               if (p.liked) {
-                _playReward(points: 1, notifTitle: '互動獎勵', notifMsg: '你按讚獲得 +1 點（示範）');
+                _playReward(
+                  points: 1,
+                  notifTitle: '互動獎勵',
+                  notifMsg: '你按讚獲得 +1 點（示範）',
+                );
                 _pushNotif(
                   type: 'system',
                   title: '你按了一個讚',
@@ -1516,7 +1735,12 @@ class _InteractionPageState extends State<InteractionPage>
             },
             onAddComment: (text) {
               setState(() => p.comments.add(_Comment(user: '我', text: text)));
-              _playReward(points: 2, toast: '留言 +2 點', notifTitle: '互動獎勵', notifMsg: '你留言獲得 +2 點（示範）');
+              _playReward(
+                points: 2,
+                toast: '留言 +2 點',
+                notifTitle: '互動獎勵',
+                notifMsg: '你留言獲得 +2 點（示範）',
+              );
               _pushNotif(
                 type: 'system',
                 title: '留言已送出',
@@ -1552,8 +1776,12 @@ class _InteractionPageState extends State<InteractionPage>
     final filtered = _friendSearch.trim().isEmpty
         ? list
         : list
-            .where((f) => f.name.toLowerCase().contains(_friendSearch.trim().toLowerCase()))
-            .toList();
+              .where(
+                (f) => f.name.toLowerCase().contains(
+                  _friendSearch.trim().toLowerCase(),
+                ),
+              )
+              .toList();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 20),
@@ -1583,7 +1811,10 @@ class _InteractionPageState extends State<InteractionPage>
             const SizedBox(width: 10),
             IconButton.filled(
               onPressed: _openAddFriendSheet,
-              style: IconButton.styleFrom(backgroundColor: _brand, foregroundColor: Colors.white),
+              style: IconButton.styleFrom(
+                backgroundColor: _brand,
+                foregroundColor: Colors.white,
+              ),
               icon: const Icon(Icons.person_add_alt_1),
               tooltip: '新增好友',
             ),
@@ -1600,7 +1831,7 @@ class _InteractionPageState extends State<InteractionPage>
               border: Border.all(color: Colors.grey.shade200),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
+                  color: Colors.black.withValues(alpha: 0.04),
                   blurRadius: 10,
                   offset: const Offset(0, 6),
                 ),
@@ -1609,7 +1840,10 @@ class _InteractionPageState extends State<InteractionPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('好友邀請', style: TextStyle(fontWeight: FontWeight.w900)),
+                const Text(
+                  '好友邀請',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
                 const SizedBox(height: 10),
                 for (final r in _requests.take(5)) ...[
                   _FriendRequestTile(
@@ -1644,7 +1878,7 @@ class _InteractionPageState extends State<InteractionPage>
                 border: Border.all(color: Colors.grey.shade200),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
+                    color: Colors.black.withValues(alpha: 0.04),
                     blurRadius: 10,
                     offset: const Offset(0, 6),
                   ),
@@ -1656,9 +1890,12 @@ class _InteractionPageState extends State<InteractionPage>
                   children: [
                     CircleAvatar(
                       radius: 24,
-                      backgroundColor: c.withOpacity(0.16),
+                      backgroundColor: c.withValues(alpha: 0.16),
                       foregroundColor: c,
-                      child: Text(f.initials, style: const TextStyle(fontWeight: FontWeight.w900)),
+                      child: Text(
+                        f.initials,
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
                     ),
                     Positioned(
                       right: 2,
@@ -1675,16 +1912,23 @@ class _InteractionPageState extends State<InteractionPage>
                     ),
                   ],
                 ),
-                title: Text(f.name, style: const TextStyle(fontWeight: FontWeight.w900)),
-                subtitle: Text(f.online ? '在線中' : '離線中',
-                    style: TextStyle(color: Colors.grey.shade600)),
+                title: Text(
+                  f.name,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+                subtitle: Text(
+                  f.online ? '在線中' : '離線中',
+                  style: TextStyle(color: Colors.grey.shade600),
+                ),
                 trailing: ElevatedButton(
                   onPressed: () => _toast('開啟與 ${f.name} 的聊天（示範）'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _primary,
                     foregroundColor: Colors.white,
                     elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
                   ),
                   child: const Text('發訊息'),
                 ),
@@ -1704,7 +1948,9 @@ class _InteractionPageState extends State<InteractionPage>
     const categories = ['全部', '健康挑戰', '親子互動', 'Osmile 功能'];
     final filtered = _selectedActivityCategory == '全部'
         ? _events
-        : _events.where((e) => e.category == _selectedActivityCategory).toList();
+        : _events
+              .where((e) => e.category == _selectedActivityCategory)
+              .toList();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 20),
@@ -1714,8 +1960,8 @@ class _InteractionPageState extends State<InteractionPage>
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                _brand.withOpacity(0.18),
-                _primary.withOpacity(0.10),
+                _brand.withValues(alpha: 0.18),
+                _primary.withValues(alpha: 0.10),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
@@ -1739,19 +1985,32 @@ class _InteractionPageState extends State<InteractionPage>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('活動中心', style: TextStyle(fontWeight: FontWeight.w900)),
+                    const Text(
+                      '活動中心',
+                      style: TextStyle(fontWeight: FontWeight.w900),
+                    ),
                     const SizedBox(height: 4),
-                    Text('玩任務、拿點數、換徽章（示範）',
-                        style: TextStyle(color: Colors.grey.shade700)),
+                    Text(
+                      '玩任務、拿點數、換徽章（示範）',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
                   ],
                 ),
               ),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text('$_points',
-                      style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
-                  Text('點數', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                  Text(
+                    '$_points',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 18,
+                    ),
+                  ),
+                  Text(
+                    '點數',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
                 ],
               ),
             ],
@@ -1809,7 +2068,9 @@ class _InteractionPageState extends State<InteractionPage>
                   color: selected ? Colors.white : Colors.black87,
                 ),
               ),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(999),
+              ),
             );
           }).toList(),
         ),
@@ -1843,16 +2104,33 @@ class _InteractionPageState extends State<InteractionPage>
                       e.progress = max(e.progress, 0.05);
                     } else {
                       e.progress = (e.progress + 0.20).clamp(0.0, 1.0);
-                      if (e.progress >= 1.0) completed = true;
+                      if (e.progress >= 1.0) {
+                        completed = true;
+                      }
                     }
                   });
 
                   if (justJoined) {
-                    _playReward(points: 3, toast: '報名 +3 點', notifTitle: '活動報名成功', notifMsg: '你已報名「${e.title}」，獲得 +3 點（示範）');
+                    _playReward(
+                      points: 3,
+                      toast: '報名 +3 點',
+                      notifTitle: '活動報名成功',
+                      notifMsg: '你已報名「${e.title}」，獲得 +3 點（示範）',
+                    );
                   } else if (completed) {
-                    _playReward(points: e.rewardPoints, toast: '任務完成 +${e.rewardPoints} 點', notifTitle: '活動任務完成', notifMsg: '「${e.title}」完成，獲得 +${e.rewardPoints} 點（示範）');
+                    _playReward(
+                      points: e.rewardPoints,
+                      toast: '任務完成 +${e.rewardPoints} 點',
+                      notifTitle: '活動任務完成',
+                      notifMsg: '「${e.title}」完成，獲得 +${e.rewardPoints} 點（示範）',
+                    );
                   } else {
-                    _playReward(points: 2, toast: '打卡 +2 點', notifTitle: '活動打卡', notifMsg: '你在「${e.title}」完成一次打卡，獲得 +2 點（示範）');
+                    _playReward(
+                      points: 2,
+                      toast: '打卡 +2 點',
+                      notifTitle: '活動打卡',
+                      notifMsg: '你在「${e.title}」完成一次打卡，獲得 +2 點（示範）',
+                    );
                   }
 
                   _persistDaily();
@@ -1894,7 +2172,7 @@ class _PointsHeader extends StatelessWidget {
         border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 10,
             offset: const Offset(0, 6),
           ),
@@ -1906,20 +2184,28 @@ class _PointsHeader extends StatelessWidget {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: Colors.orangeAccent.withOpacity(0.16),
+              color: Colors.orangeAccent.withValues(alpha: 0.16),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: const Icon(Icons.local_fire_department_rounded, color: Colors.orangeAccent),
+            child: const Icon(
+              Icons.local_fire_department_rounded,
+              color: Colors.orangeAccent,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('連續 $streakDays 天活躍',
-                    style: const TextStyle(fontWeight: FontWeight.w900)),
+                Text(
+                  '連續 $streakDays 天活躍',
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
                 const SizedBox(height: 4),
-                Text('累積點數：$points', style: TextStyle(color: Colors.grey.shade700)),
+                Text(
+                  '累積點數：$points',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
               ],
             ),
           ),
@@ -1929,10 +2215,15 @@ class _PointsHeader extends StatelessWidget {
               backgroundColor: Colors.orangeAccent,
               foregroundColor: Colors.white,
               elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
             ),
-            child: Text(signedToday ? '已簽到' : '簽到', style: const TextStyle(fontWeight: FontWeight.w900)),
-          )
+            child: Text(
+              signedToday ? '已簽到' : '簽到',
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+          ),
         ],
       ),
     );
@@ -1958,8 +2249,8 @@ class _TodayChallengeCard extends StatelessWidget {
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
-            Colors.orangeAccent.withOpacity(0.12),
-            Colors.blueAccent.withOpacity(0.08),
+            Colors.orangeAccent.withValues(alpha: 0.12),
+            Colors.blueAccent.withValues(alpha: 0.08),
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -1977,18 +2268,28 @@ class _TodayChallengeCard extends StatelessWidget {
               color: Colors.white,
               borderRadius: BorderRadius.circular(14),
             ),
-            child: const Icon(Icons.emoji_events_outlined, color: Colors.orangeAccent),
+            child: const Icon(
+              Icons.emoji_events_outlined,
+              color: Colors.orangeAccent,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('今日互動挑戰', style: TextStyle(fontWeight: FontWeight.w900)),
+                const Text(
+                  '今日互動挑戰',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
                 const SizedBox(height: 4),
                 Text(
                   '按讚 + 留言累積進度，達成可領點數（示範）',
-                  style: TextStyle(color: Colors.grey.shade700, fontSize: 12, height: 1.2),
+                  style: TextStyle(
+                    color: Colors.grey.shade700,
+                    fontSize: 12,
+                    height: 1.2,
+                  ),
                 ),
                 const SizedBox(height: 10),
                 ClipRRect(
@@ -2001,8 +2302,10 @@ class _TodayChallengeCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 6),
-                Text('進度：$done / $goal',
-                    style: TextStyle(color: Colors.grey.shade700, fontSize: 12)),
+                Text(
+                  '進度：$done / $goal',
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                ),
               ],
             ),
           ),
@@ -2014,9 +2317,14 @@ class _TodayChallengeCard extends StatelessWidget {
               foregroundColor: Colors.white,
               elevation: 0,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
             ),
-            child: const Text('去挑戰', style: TextStyle(fontWeight: FontWeight.w900)),
+            child: const Text(
+              '去挑戰',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
           ),
         ],
       ),
@@ -2028,10 +2336,7 @@ class _PollCard extends StatelessWidget {
   final String? value;
   final ValueChanged<String> onSelect;
 
-  const _PollCard({
-    required this.value,
-    required this.onSelect,
-  });
+  const _PollCard({required this.value, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
@@ -2050,7 +2355,9 @@ class _PollCard extends StatelessWidget {
         ),
         selectedColor: Colors.orangeAccent,
         backgroundColor: Colors.white,
-        side: BorderSide(color: selected ? Colors.orangeAccent : Colors.grey.shade200),
+        side: BorderSide(
+          color: selected ? Colors.orangeAccent : Colors.grey.shade200,
+        ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
       );
     }
@@ -2067,21 +2374,21 @@ class _PollCard extends StatelessWidget {
         children: [
           const Text('今日小調查', style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 6),
-          Text('你今天有跟 Osmile 手錶互動了嗎？',
-              style: TextStyle(color: Colors.grey.shade700, height: 1.2)),
+          Text(
+            '你今天有跟 Osmile 手錶互動了嗎？',
+            style: TextStyle(color: Colors.grey.shade700, height: 1.2),
+          ),
           const SizedBox(height: 10),
           Wrap(
             spacing: 10,
             runSpacing: 10,
-            children: [
-              chip('有，已記錄運動'),
-              chip('等一下準備運動'),
-              chip('今天先休息一下'),
-            ],
+            children: [chip('有，已記錄運動'), chip('等一下準備運動'), chip('今天先休息一下')],
           ),
           const SizedBox(height: 8),
-          Text(value == null ? '我的回答：尚未作答' : '我的回答：$value',
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+          Text(
+            value == null ? '我的回答：尚未作答' : '我的回答：$value',
+            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+          ),
         ],
       ),
     );
@@ -2145,7 +2452,9 @@ class _FriendsRow extends StatelessWidget {
                   children: [
                     CircleAvatar(
                       radius: 22,
-                      backgroundColor: Colors.orangeAccent.withOpacity(0.16),
+                      backgroundColor: Colors.orangeAccent.withValues(
+                        alpha: 0.16,
+                      ),
                       foregroundColor: Colors.orangeAccent,
                       child: const Icon(Icons.person_add_alt_1, size: 20),
                     ),
@@ -2180,9 +2489,12 @@ class _FriendsRow extends StatelessWidget {
                     children: [
                       CircleAvatar(
                         radius: 22,
-                        backgroundColor: c.withOpacity(0.18),
+                        backgroundColor: c.withValues(alpha: 0.18),
                         foregroundColor: c,
-                        child: Text(f.initials, style: const TextStyle(fontWeight: FontWeight.w900)),
+                        child: Text(
+                          f.initials,
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
                       ),
                       Positioned(
                         right: -1,
@@ -2215,10 +2527,7 @@ class _TagRow extends StatelessWidget {
   final List<String> tags;
   final ValueChanged<String> onTap;
 
-  const _TagRow({
-    required this.tags,
-    required this.onTap,
-  });
+  const _TagRow({required this.tags, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -2269,9 +2578,16 @@ class _LeaderboardCard extends StatelessWidget {
           children: [
             SizedBox(
               width: 26,
-              child: Text('$rank', style: const TextStyle(fontWeight: FontWeight.w900)),
+              child: Text(
+                '$rank',
+                style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
             ),
-            const Icon(Icons.local_fire_department, color: Colors.orangeAccent, size: 18),
+            const Icon(
+              Icons.local_fire_department,
+              color: Colors.orangeAccent,
+              size: 18,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: ClipRRect(
@@ -2285,7 +2601,10 @@ class _LeaderboardCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            Text('${l.score}', style: const TextStyle(fontWeight: FontWeight.w900)),
+            Text(
+              '${l.score}',
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
           ],
         ),
       );
@@ -2303,8 +2622,10 @@ class _LeaderboardCard extends StatelessWidget {
         children: [
           const Text('人氣排行榜', style: TextStyle(fontWeight: FontWeight.w900)),
           const SizedBox(height: 4),
-          Text('本週互動熱度（示範）',
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+          Text(
+            '本週互動熱度（示範）',
+            style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+          ),
           for (int i = 0; i < leaders.length; i++) row(leaders[i], i + 1),
         ],
       ),
@@ -2348,11 +2669,15 @@ class _PostCardState extends State<_PostCard> {
   }
 
   Widget _imgFallback() => Container(
-        height: 190,
-        color: Colors.grey.shade200,
-        alignment: Alignment.center,
-        child: const Icon(Icons.broken_image_outlined, color: Colors.grey, size: 42),
-      );
+    height: 190,
+    color: Colors.grey.shade200,
+    alignment: Alignment.center,
+    child: const Icon(
+      Icons.broken_image_outlined,
+      color: Colors.grey,
+      size: 42,
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -2365,7 +2690,7 @@ class _PostCardState extends State<_PostCard> {
         border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 10,
             offset: const Offset(0, 6),
           ),
@@ -2377,15 +2702,21 @@ class _PostCardState extends State<_PostCard> {
         children: [
           ListTile(
             leading: CircleAvatar(
-              backgroundColor: widget.primary.withOpacity(0.12),
+              backgroundColor: widget.primary.withValues(alpha: 0.12),
               foregroundColor: widget.primary,
               child: Text(
                 p.user.isNotEmpty ? p.user[0] : '?',
                 style: const TextStyle(fontWeight: FontWeight.w900),
               ),
             ),
-            title: Text(p.user, style: const TextStyle(fontWeight: FontWeight.w900)),
-            subtitle: Text(p.time, style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+            title: Text(
+              p.user,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+            subtitle: Text(
+              p.time,
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+            ),
             trailing: IconButton(
               onPressed: widget.onMore,
               icon: const Icon(Icons.more_horiz),
@@ -2404,7 +2735,10 @@ class _PostCardState extends State<_PostCard> {
                     onTap: () => widget.onTapTag(t),
                     borderRadius: BorderRadius.circular(999),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.grey.shade50,
                         borderRadius: BorderRadius.circular(999),
@@ -2425,7 +2759,12 @@ class _PostCardState extends State<_PostCard> {
             ),
 
           if (p.imageBytes != null)
-            Image.memory(p.imageBytes!, height: 190, width: double.infinity, fit: BoxFit.cover)
+            Image.memory(
+              p.imageBytes!,
+              height: 190,
+              width: double.infinity,
+              fit: BoxFit.cover,
+            )
           else if (p.imageUrl != null && p.imageUrl!.isNotEmpty)
             Image.network(
               p.imageUrl!,
@@ -2433,7 +2772,9 @@ class _PostCardState extends State<_PostCard> {
               width: double.infinity,
               fit: BoxFit.cover,
               errorBuilder: (_, __, ___) => _imgFallback(),
-            ),
+            )
+          else
+            _imgFallback(),
 
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
@@ -2449,31 +2790,49 @@ class _PostCardState extends State<_PostCard> {
                 TextButton.icon(
                   onPressed: widget.onLike,
                   icon: Icon(
-                    p.liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                    p.liked
+                        ? Icons.favorite_rounded
+                        : Icons.favorite_border_rounded,
                     color: p.liked ? Colors.redAccent : Colors.grey.shade700,
                   ),
                   label: Text(
                     '${p.likes}',
-                    style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w900),
+                    style: TextStyle(
+                      color: Colors.grey.shade800,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 6),
                 TextButton.icon(
-                  onPressed: () => setState(() => _showComments = !_showComments),
-                  icon: Icon(Icons.mode_comment_outlined, color: Colors.grey.shade700),
+                  onPressed: () {
+                    setState(() => _showComments = !_showComments);
+                  },
+                  icon: Icon(
+                    Icons.mode_comment_outlined,
+                    color: Colors.grey.shade700,
+                  ),
                   label: Text(
                     '${p.comments.length}',
-                    style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w900),
+                    style: TextStyle(
+                      color: Colors.grey.shade800,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
                 const Spacer(),
                 IconButton(
                   onPressed: widget.onShare,
-                  icon: Icon(Icons.ios_share_rounded, color: Colors.grey.shade700),
+                  icon: Icon(
+                    Icons.ios_share_rounded,
+                    color: Colors.grey.shade700,
+                  ),
                   tooltip: '分享',
                 ),
                 IconButton(
-                  onPressed: () => setState(() => _showComments = true),
+                  onPressed: () {
+                    setState(() => _showComments = true);
+                  },
                   icon: Icon(Icons.add_comment_outlined, color: widget.brand),
                   tooltip: '留言',
                 ),
@@ -2490,8 +2849,10 @@ class _PostCardState extends State<_PostCard> {
                   if (p.comments.isEmpty)
                     Align(
                       alignment: Alignment.centerLeft,
-                      child: Text('目前沒有留言，來當第一個吧。',
-                          style: TextStyle(color: Colors.grey.shade600)),
+                      child: Text(
+                        '目前沒有留言，來當第一個吧。',
+                        style: TextStyle(color: Colors.grey.shade600),
+                      ),
                     )
                   else
                     ...p.comments.map((c) {
@@ -2502,11 +2863,16 @@ class _PostCardState extends State<_PostCard> {
                           children: [
                             CircleAvatar(
                               radius: 14,
-                              backgroundColor: widget.primary.withOpacity(0.12),
+                              backgroundColor: widget.primary.withValues(
+                                alpha: 0.12,
+                              ),
                               foregroundColor: widget.primary,
                               child: Text(
                                 c.user.isNotEmpty ? c.user[0] : '?',
-                                style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 12,
+                                ),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -2516,15 +2882,22 @@ class _PostCardState extends State<_PostCard> {
                                 decoration: BoxDecoration(
                                   color: Colors.grey.shade50,
                                   borderRadius: BorderRadius.circular(14),
-                                  border: Border.all(color: Colors.grey.shade200),
+                                  border: Border.all(
+                                    color: Colors.grey.shade200,
+                                  ),
                                 ),
                                 child: RichText(
                                   text: TextSpan(
-                                    style: TextStyle(color: Colors.grey.shade900, height: 1.3),
+                                    style: TextStyle(
+                                      color: Colors.grey.shade900,
+                                      height: 1.3,
+                                    ),
                                     children: [
                                       TextSpan(
                                         text: '${c.user}  ',
-                                        style: const TextStyle(fontWeight: FontWeight.w900),
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w900,
+                                        ),
                                       ),
                                       TextSpan(text: c.text),
                                     ],
@@ -2548,11 +2921,15 @@ class _PostCardState extends State<_PostCard> {
                             fillColor: Colors.white,
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide(color: Colors.grey.shade200),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade200,
+                              ),
                             ),
                             enabledBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(16),
-                              borderSide: BorderSide(color: Colors.grey.shade200),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade200,
+                              ),
                             ),
                           ),
                         ),
@@ -2561,7 +2938,9 @@ class _PostCardState extends State<_PostCard> {
                       ElevatedButton(
                         onPressed: () {
                           final text = _commentCtrl.text.trim();
-                          if (text.isEmpty) return;
+                          if (text.isEmpty) {
+                            return;
+                          }
                           widget.onAddComment(text);
                           _commentCtrl.clear();
                           setState(() {});
@@ -2570,10 +2949,18 @@ class _PostCardState extends State<_PostCard> {
                           backgroundColor: widget.brand,
                           foregroundColor: Colors.white,
                           elevation: 0,
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
                         ),
-                        child: const Text('送出', style: TextStyle(fontWeight: FontWeight.w900)),
+                        child: const Text(
+                          '送出',
+                          style: TextStyle(fontWeight: FontWeight.w900),
+                        ),
                       ),
                     ],
                   ),
@@ -2607,16 +2994,22 @@ class _FriendRequestTile extends StatelessWidget {
       children: [
         CircleAvatar(
           radius: 22,
-          backgroundColor: c.withOpacity(0.16),
+          backgroundColor: c.withValues(alpha: 0.16),
           foregroundColor: c,
-          child: Text(req.fromInitials, style: const TextStyle(fontWeight: FontWeight.w900)),
+          child: Text(
+            req.fromInitials,
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(req.fromName, style: const TextStyle(fontWeight: FontWeight.w900)),
+              Text(
+                req.fromName,
+                style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
               const SizedBox(height: 2),
               Text(
                 req.message,
@@ -2625,7 +3018,10 @@ class _FriendRequestTile extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 2),
-              Text(timeText, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+              Text(
+                timeText,
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+              ),
             ],
           ),
         ),
@@ -2634,8 +3030,10 @@ class _FriendRequestTile extends StatelessWidget {
           onPressed: onDecline,
           style: OutlinedButton.styleFrom(
             foregroundColor: Colors.redAccent,
-            side: BorderSide(color: Colors.redAccent.withOpacity(0.35)),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            side: BorderSide(color: Colors.redAccent.withValues(alpha: 0.35)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
           ),
           child: const Text('拒絕'),
         ),
@@ -2646,9 +3044,14 @@ class _FriendRequestTile extends StatelessWidget {
             backgroundColor: Colors.blueAccent,
             foregroundColor: Colors.white,
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
           ),
-          child: const Text('接受', style: TextStyle(fontWeight: FontWeight.w900)),
+          child: const Text(
+            '接受',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
         ),
       ],
     );
@@ -2656,8 +3059,12 @@ class _FriendRequestTile extends StatelessWidget {
 
   static String _relativeTime(DateTime t) {
     final diff = DateTime.now().difference(t);
-    if (diff.inMinutes < 60) return '${max(1, diff.inMinutes)} 分鐘前';
-    if (diff.inHours < 24) return '${diff.inHours} 小時前';
+    if (diff.inMinutes < 60) {
+      return '${max(1, diff.inMinutes)} 分鐘前';
+    }
+    if (diff.inHours < 24) {
+      return '${diff.inHours} 小時前';
+    }
     return '${diff.inDays} 天前';
   }
 }
@@ -2689,19 +3096,25 @@ class _FriendChip extends StatelessWidget {
         children: [
           CircleAvatar(
             radius: 18,
-            backgroundColor: color.withOpacity(0.16),
+            backgroundColor: color.withValues(alpha: 0.16),
             foregroundColor: color,
-            child: Text(initials, style: const TextStyle(fontWeight: FontWeight.w900)),
+            child: Text(
+              initials,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(name, style: const TextStyle(fontWeight: FontWeight.w900)),
+            child: Text(
+              name,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
           ),
           IconButton(
             onPressed: onAdd,
             icon: const Icon(Icons.add_circle_outline),
             tooltip: '加入',
-          )
+          ),
         ],
       ),
     );
@@ -2725,7 +3138,10 @@ class _BannerCard extends StatelessWidget {
           image: DecorationImage(
             image: NetworkImage(item.imageUrl),
             fit: BoxFit.cover,
-            colorFilter: ColorFilter.mode(Colors.black.withOpacity(0.30), BlendMode.darken),
+            colorFilter: ColorFilter.mode(
+              Colors.black.withValues(alpha: 0.30),
+              BlendMode.darken,
+            ),
           ),
         ),
         child: Padding(
@@ -2737,24 +3153,39 @@ class _BannerCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.18),
+                    color: Colors.white.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: Colors.white.withOpacity(0.25)),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.25),
+                    ),
                   ),
                   child: Text(
                     item.tag,
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 10),
                 Text(
                   item.title,
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 18),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 18,
+                  ),
                 ),
                 const SizedBox(height: 4),
-                Text(item.subtitle, style: const TextStyle(color: Colors.white70)),
+                Text(
+                  item.subtitle,
+                  style: const TextStyle(color: Colors.white70),
+                ),
               ],
             ),
           ),
@@ -2793,7 +3224,7 @@ class _ActivityCard extends StatelessWidget {
           border: Border.all(color: Colors.grey.shade200),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.04),
+              color: Colors.black.withValues(alpha: 0.04),
               blurRadius: 10,
               offset: const Offset(0, 6),
             ),
@@ -2803,7 +3234,9 @@ class _ActivityCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(18),
+              ),
               child: Image.network(
                 event.imageUrl,
                 height: 150,
@@ -2813,7 +3246,11 @@ class _ActivityCard extends StatelessWidget {
                   height: 150,
                   color: Colors.grey.shade200,
                   alignment: Alignment.center,
-                  child: const Icon(Icons.broken_image_outlined, color: Colors.grey, size: 40),
+                  child: const Icon(
+                    Icons.broken_image_outlined,
+                    color: Colors.grey,
+                    size: 40,
+                  ),
                 ),
               ),
             ),
@@ -2822,9 +3259,18 @@ class _ActivityCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(event.title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                  Text(
+                    event.title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
                   const SizedBox(height: 6),
-                  Text(event.subtitle, style: TextStyle(color: Colors.grey.shade700, height: 1.25)),
+                  Text(
+                    event.subtitle,
+                    style: TextStyle(color: Colors.grey.shade700, height: 1.25),
+                  ),
                   const SizedBox(height: 12),
                   Row(
                     children: [
@@ -2840,33 +3286,55 @@ class _ActivityCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 10),
-                      Text('${(event.progress * 100).toStringAsFixed(0)}%',
-                          style: TextStyle(color: Colors.grey.shade700, fontWeight: FontWeight.w900)),
+                      Text(
+                        '${(event.progress * 100).toStringAsFixed(0)}%',
+                        style: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 12),
                   Row(
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.grey.shade50,
                           borderRadius: BorderRadius.circular(999),
                           border: Border.all(color: Colors.grey.shade200),
                         ),
-                        child: Text('完成 +${event.rewardPoints} 點',
-                            style: TextStyle(color: Colors.grey.shade800, fontWeight: FontWeight.w900)),
+                        child: Text(
+                          '完成 +${event.rewardPoints} 點',
+                          style: TextStyle(
+                            color: Colors.grey.shade800,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
                       ),
                       const Spacer(),
                       ElevatedButton.icon(
                         onPressed: onJoinOrCheck,
-                        icon: Icon(event.joined ? Icons.flag_rounded : Icons.how_to_reg_rounded),
-                        label: Text(event.joined ? '打卡' : '報名', style: const TextStyle(fontWeight: FontWeight.w900)),
+                        icon: Icon(
+                          event.joined
+                              ? Icons.flag_rounded
+                              : Icons.how_to_reg_rounded,
+                        ),
+                        label: Text(
+                          event.joined ? '打卡' : '報名',
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: btnColor,
                           foregroundColor: Colors.white,
                           elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
                         ),
                       ),
                     ],
@@ -2909,9 +3377,16 @@ class _EmptyHint extends StatelessWidget {
         children: [
           Icon(icon, size: 56, color: Colors.grey.shade400),
           const SizedBox(height: 10),
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+          Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+          ),
           const SizedBox(height: 6),
-          Text(subtitle, textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade600)),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey.shade600),
+          ),
           const SizedBox(height: 12),
           ElevatedButton(
             onPressed: onPressed,
@@ -2919,9 +3394,14 @@ class _EmptyHint extends StatelessWidget {
               backgroundColor: Colors.blueAccent,
               foregroundColor: Colors.white,
               elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
             ),
-            child: Text(buttonText, style: const TextStyle(fontWeight: FontWeight.w900)),
+            child: Text(
+              buttonText,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
           ),
         ],
       ),
@@ -2949,20 +3429,22 @@ class _Friend {
   });
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'initials': initials,
-        'colorValue': colorValue,
-        'online': online,
-      };
+    'id': id,
+    'name': name,
+    'initials': initials,
+    'colorValue': colorValue,
+    'online': online,
+  };
 
   factory _Friend.fromJson(Map<String, dynamic> m) => _Friend(
-        id: (m['id'] ?? '').toString(),
-        name: (m['name'] ?? '').toString(),
-        initials: (m['initials'] ?? '').toString(),
-        colorValue: (m['colorValue'] is int) ? (m['colorValue'] as int) : 0xFF1976D2,
-        online: m['online'] == true,
-      );
+    id: (m['id'] ?? '').toString(),
+    name: (m['name'] ?? '').toString(),
+    initials: (m['initials'] ?? '').toString(),
+    colorValue: (m['colorValue'] is int)
+        ? (m['colorValue'] as int)
+        : 0xFF1976D2,
+    online: m['online'] == true,
+  );
 }
 
 class _FriendRequest {
@@ -2983,22 +3465,25 @@ class _FriendRequest {
   });
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'fromName': fromName,
-        'fromInitials': fromInitials,
-        'fromColorValue': fromColorValue,
-        'message': message,
-        'createdAt': createdAt.toIso8601String(),
-      };
+    'id': id,
+    'fromName': fromName,
+    'fromInitials': fromInitials,
+    'fromColorValue': fromColorValue,
+    'message': message,
+    'createdAt': createdAt.toIso8601String(),
+  };
 
   factory _FriendRequest.fromJson(Map<String, dynamic> m) => _FriendRequest(
-        id: (m['id'] ?? '').toString(),
-        fromName: (m['fromName'] ?? '').toString(),
-        fromInitials: (m['fromInitials'] ?? '').toString(),
-        fromColorValue: (m['fromColorValue'] is int) ? (m['fromColorValue'] as int) : 0xFF7E57C2,
-        message: (m['message'] ?? '').toString(),
-        createdAt: DateTime.tryParse((m['createdAt'] ?? '').toString()) ?? DateTime.now(),
-      );
+    id: (m['id'] ?? '').toString(),
+    fromName: (m['fromName'] ?? '').toString(),
+    fromInitials: (m['fromInitials'] ?? '').toString(),
+    fromColorValue: (m['fromColorValue'] is int)
+        ? (m['fromColorValue'] as int)
+        : 0xFF7E57C2,
+    message: (m['message'] ?? '').toString(),
+    createdAt:
+        DateTime.tryParse((m['createdAt'] ?? '').toString()) ?? DateTime.now(),
+  );
 }
 
 class _Leader {

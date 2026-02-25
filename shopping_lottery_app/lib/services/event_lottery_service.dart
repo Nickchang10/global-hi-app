@@ -7,10 +7,11 @@ class EventLotteryService extends ChangeNotifier {
   static final EventLotteryService instance = EventLotteryService._internal();
   EventLotteryService._internal();
 
-  final _rand = Random();
+  final Random _rand = Random();
   bool _isActive = false;
 
-  List<Map<String, dynamic>> _participants = []; // 用戶名單
+  // ✅ prefer_final_fields：未重新指派就用 final
+  final List<Map<String, dynamic>> _participants = []; // 用戶名單
   DateTime? _eventEndTime;
 
   bool get isActive => _isActive;

@@ -1,151 +1,89 @@
 // lib/pages/activity_detail_page.dart
-// =====================================================
-// ✅ ActivityDetailPage（活動詳情頁 最終完整版）
-// -----------------------------------------------------
-// - 支援從首頁推播點進來顯示 title / subtitle / content
-// - 可導向抽獎頁 / 商城頁
-// - 適用 Web / App（不依賴 dart:io）
-// =====================================================
-
 import 'package:flutter/material.dart';
 
 class ActivityDetailPage extends StatelessWidget {
-  const ActivityDetailPage({super.key});
+  const ActivityDetailPage({super.key, this.args});
+
+  final Object? args;
+
+  Map<String, dynamic> _asMap(Object? a) {
+    if (a is Map) return Map<String, dynamic>.from(a);
+    return <String, dynamic>{};
+  }
 
   @override
   Widget build(BuildContext context) {
-    final args = (ModalRoute.of(context)?.settings.arguments as Map?) ?? {};
-    final title = (args['title'] ?? '活動詳情').toString();
-    final subtitle = (args['subtitle'] ?? '').toString();
-    final content = (args['content'] ?? '').toString();
+    final m = _asMap(args);
+
+    final title = (m['title'] ?? '活動詳情').toString();
+    final subtitle = (m['subtitle'] ?? m['message'] ?? '').toString();
+    final content = (m['content'] ?? m['body'] ?? '').toString();
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F8FA),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0.6,
-        centerTitle: true,
-        title: Text(
-          title,
-          style: const TextStyle(fontWeight: FontWeight.w900, color: Colors.black),
-        ),
-      ),
+      appBar: AppBar(title: const Text('活動詳情')),
       body: ListView(
-        padding: const EdgeInsets.all(18),
+        padding: const EdgeInsets.all(16),
         children: [
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: Colors.grey.shade200),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.03),
-                  blurRadius: 10,
-                  offset: const Offset(0, 6),
-                ),
-              ],
+          Text(
+            title,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+          ),
+          if (subtitle.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              subtitle,
+              style: TextStyle(
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (subtitle.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Text(
-                      subtitle,
-                      style: const TextStyle(
-                        color: Colors.black87,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                      ),
-                    ),
-                  ),
-                Text(
-                  content.isEmpty
-                      ? '（此活動內容尚未設定）'
-                      : content,
-                  style: const TextStyle(
-                    fontSize: 14.5,
-                    height: 1.5,
-                    color: Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 24),
-
-                // ===== 活動操作按鈕 =====
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: () => Navigator.pushNamed(context, '/lottery'),
-                        icon: const Icon(Icons.casino_outlined),
-                        label: const Text('立即抽獎'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orangeAccent,
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => Navigator.pushNamed(context, '/shop'),
-                        icon: const Icon(Icons.shopping_cart_outlined),
-                        label: const Text('前往商城'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.blueAccent,
-                          side: const BorderSide(color: Colors.blueAccent),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+          ],
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.03),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+            ),
+            child: Text(
+              content.trim().isEmpty ? '（尚未提供活動內容）' : content,
+              style: const TextStyle(height: 1.45),
             ),
           ),
-
-          const SizedBox(height: 20),
-
-          // ===== 活動說明區塊 =====
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: Colors.grey.shade200),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: const [
-                Text(
-                  '活動辦法',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                    fontSize: 16,
-                    color: Colors.black87,
-                  ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () {
+                    try {
+                      Navigator.of(context).pushNamed('/lotterys');
+                    } catch (_) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('尚未設定 /lotterys 路由')),
+                      );
+                    }
+                  },
+                  child: const Text('前往抽獎'),
                 ),
-                SizedBox(height: 8),
-                Text(
-                  '1. 活動期間完成簽到、抽獎或消費可獲得額外機會。\n'
-                  '2. 每位會員每日最多可參加 2 次抽獎。\n'
-                  '3. 優惠券與積分獎勵將自動發送至帳戶。\n'
-                  '4. 活動結束後恕不補發，最終解釋權歸 Osmile 所有。',
-                  style: TextStyle(height: 1.6, color: Colors.black87),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    try {
+                      Navigator.of(context).pushNamed('/shop');
+                    } catch (_) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('尚未設定 /shop 路由')),
+                      );
+                    }
+                  },
+                  child: const Text('去逛商店'),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ],
       ),

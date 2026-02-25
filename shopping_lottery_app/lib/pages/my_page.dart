@@ -1,269 +1,225 @@
 // lib/pages/my_page.dart
+//
+// ✅ MyPage（最終可編譯版）
+// ------------------------------------------------------------
+// 修正重點：
+// - 移除不存在的 import：coupon_page.dart
+// - 改用 Navigator.pushNamed('/coupons')（由 main.dart 統一路由管理）
+// - 未登入：顯示登入引導
+// - 已登入：顯示基本會員資訊 + 常用入口（訂單/優惠券/通知/設定）
+// - ✅ 修正：withOpacity(deprecated) → withValues(alpha: ...)
+// ------------------------------------------------------------
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../services/auth_service.dart';
-import '../services/firestore_mock_service.dart';
-import '../services/notification_service.dart';
-import '../services/coupon_service.dart';
 
-import 'coupon_page.dart';
-import 'order_list_page.dart';
-import 'points_ecosystem_with_detail.dart';
-import 'points_notification_page.dart';
-import '../widgets/points_push_overlay.dart';
-import '../utils/haptic_audio_feedback.dart';
-
-/// 📱 Osmile 會員中心（MyPage）
-///
-/// 功能：
-/// - 顯示個人資訊、積分、訂單、優惠券、通知中心
-/// - 支援登出與震動 / 動畫提示
-class MyPage extends StatelessWidget {
+class MyPage extends StatefulWidget {
   const MyPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final auth = context.watch<AuthService>();
-    final store = context.watch<FirestoreMockService>();
-    final couponService = CouponService.instance;
-    final notifications = context.watch<NotificationService>().notifications;
+  State<MyPage> createState() => _MyPageState();
+}
 
-    final username = auth.currentUser ?? "訪客";
-    final userId = auth.currentUserId;
+class _MyPageState extends State<MyPage> {
+  User? get _user => FirebaseAuth.instance.currentUser;
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _pushNamed(String route, {Object? arguments}) {
+    try {
+      Navigator.pushNamed(context, route, arguments: arguments);
+    } catch (_) {
+      _snack('無法前往：$route（請確認 main.dart 已註冊路由）');
+    }
+  }
+
+  Future<void> _goLogin() async {
+    _pushNamed('/login');
+  }
+
+  Future<void> _logout() async {
+    await FirebaseAuth.instance.signOut();
+    if (mounted) setState(() {});
+    _snack('已登出');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final u = _user;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7FB),
       appBar: AppBar(
-        title: const Text("👤 我的帳戶"),
-        centerTitle: true,
-        backgroundColor: Colors.blueAccent,
-        foregroundColor: Colors.white,
+        title: const Text('我的', style: TextStyle(fontWeight: FontWeight.w900)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: "登出",
-            onPressed: () {
-              auth.logout();
-              HapticAudioFeedback.warning();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("您已登出 ✅")),
-              );
-            },
+            tooltip: '重新整理',
+            icon: const Icon(Icons.refresh),
+            onPressed: () => setState(() {}),
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // 👤 個人頭像 + 基本資料
-          Card(
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            elevation: 4,
+      body: u == null ? _needLoginView() : _profileView(u),
+    );
+  }
+
+  Widget _needLoginView() {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Card(
+            elevation: 0,
             child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Row(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  const CircleAvatar(
-                    radius: 36,
-                    backgroundColor: Colors.blueAccent,
-                    child: Icon(Icons.person, color: Colors.white, size: 40),
+                  Icon(Icons.lock_outline, size: 44, color: cs.primary),
+                  const SizedBox(height: 10),
+                  const Text(
+                    '請先登入才能查看個人中心',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          username,
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text("會員代號：$userId",
-                            style: const TextStyle(color: Colors.grey)),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            const Icon(Icons.star,
-                                size: 18, color: Colors.amber),
-                            const SizedBox(width: 4),
-                            Text("積分：${store.userPoints}",
-                                style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500)),
-                          ],
-                        ),
-                      ],
-                    ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _goLogin,
+                    icon: const Icon(Icons.login),
+                    label: const Text('前往登入'),
                   ),
                 ],
               ),
             ),
           ),
-
-          const SizedBox(height: 20),
-
-          // 🔹 功能選單區塊
-          _buildSectionTitle("📦 我的功能"),
-          _buildMenuTile(
-            context,
-            icon: Icons.shopping_bag,
-            color: Colors.pinkAccent,
-            title: "訂單紀錄",
-            subtitle: "查看歷史訂單與再次購買",
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const OrderListPage()),
-              );
-            },
-          ),
-          _buildMenuTile(
-            context,
-            icon: Icons.local_activity,
-            color: Colors.orangeAccent,
-            title: "我的優惠券",
-            subtitle: "查看與使用折扣券",
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const CouponPage()),
-              );
-            },
-          ),
-          _buildMenuTile(
-            context,
-            icon: Icons.star_rate,
-            color: Colors.amber,
-            title: "積分任務",
-            subtitle: "完成任務獲得積分獎勵",
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (_) => const PointsEcosystemPage()),
-              );
-            },
-          ),
-          _buildMenuTile(
-            context,
-            icon: Icons.notifications_active,
-            color: Colors.indigo,
-            title: "通知中心",
-            subtitle: "查看抽獎、積分、商城推播訊息",
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (_) => const PointsNotificationPage()),
-              );
-            },
-          ),
-
-          const SizedBox(height: 20),
-
-          // 🔔 最新通知摘要
-          _buildSectionTitle("🔔 最新通知"),
-          if (notifications.isEmpty)
-            const Text(
-              "目前沒有通知訊息",
-              style: TextStyle(color: Colors.grey, fontSize: 14),
-            )
-          else
-            Column(
-              children: notifications.take(3).map((n) {
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 6),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: Colors.blueAccent,
-                      child: Icon(n["icon"] ?? Icons.notifications,
-                          color: Colors.white),
-                    ),
-                    title: Text(n["title"] ?? "通知"),
-                    subtitle: Text(
-                      n["message"] ?? "",
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-
-          const SizedBox(height: 24),
-
-          // 🎁 一鍵領取隨機優惠券
-          Center(
-            child: ElevatedButton.icon(
-              icon: const Icon(Icons.card_giftcard),
-              label: const Text("領取隨機優惠券"),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blueAccent,
-                foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              onPressed: () {
-                couponService.grantRandomCoupon(source: "會員中心活動");
-                HapticAudioFeedback.success();
-                PointsPushOverlay.show(
-                  context,
-                  title: "🎉 優惠券已領取！",
-                  message: "已新增至您的優惠券清單。",
-                  icon: Icons.local_activity,
-                  color: Colors.orangeAccent,
-                );
-              },
-            ),
-          ),
-
-          const SizedBox(height: 40),
-        ],
+        ),
       ),
     );
   }
 
-  // 🔧 功能小元件：標題
-  Widget _buildSectionTitle(String title) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Text(
-          title,
-          style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: Colors.black87,
+  Widget _profileView(User u) {
+    final cs = Theme.of(context).colorScheme;
+
+    final name = (u.displayName ?? '').trim();
+    final email = (u.email ?? '').trim();
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+      children: [
+        Card(
+          elevation: 0,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 24,
+                  // ✅ 修正：withOpacity(deprecated) → withValues(alpha: ...)
+                  backgroundColor: cs.primaryContainer.withValues(alpha: 0.6),
+                  child: Icon(Icons.person, color: cs.onPrimaryContainer),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name.isEmpty ? '會員' : name,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        email.isEmpty
+                            ? 'uid: ${u.uid}'
+                            : '$email\nuid: ${u.uid}',
+                        style: TextStyle(
+                          color: cs.onSurfaceVariant,
+                          height: 1.25,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _logout,
+                  icon: const Icon(Icons.logout),
+                  label: const Text('登出'),
+                ),
+              ],
+            ),
           ),
         ),
-      );
 
-  // 🔧 功能小元件：功能列
-  Widget _buildMenuTile(
-    BuildContext context, {
+        const SizedBox(height: 14),
+        Text(
+          '常用功能',
+          style: TextStyle(fontWeight: FontWeight.w900, color: cs.onSurface),
+        ),
+        const SizedBox(height: 8),
+
+        _tile(
+          icon: Icons.receipt_long,
+          title: '我的訂單',
+          subtitle: '查看訂單、物流、付款狀態',
+          onTap: () => _pushNamed('/orders', arguments: {'uid': u.uid}),
+        ),
+        _tile(
+          icon: Icons.confirmation_number_outlined,
+          title: '我的優惠券',
+          subtitle: '查看可用優惠券 / 折扣碼',
+          // ✅ 取代 coupon_page.dart：走路由
+          onTap: () => _pushNamed('/coupons', arguments: {'uid': u.uid}),
+        ),
+        _tile(
+          icon: Icons.notifications_none,
+          title: '通知中心',
+          subtitle: '查看推播與系統通知',
+          onTap: () => _pushNamed('/notifications', arguments: {'uid': u.uid}),
+        ),
+        _tile(
+          icon: Icons.settings_outlined,
+          title: '設定',
+          subtitle: '帳號設定、偏好設定',
+          onTap: () => _pushNamed('/settings', arguments: {'uid': u.uid}),
+        ),
+
+        const SizedBox(height: 16),
+        Card(
+          elevation: 0,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(
+              '✅ 已修正：不再 import coupon_page.dart（檔案不存在）。\n'
+              '目前改由 /coupons 路由承接（請到 main.dart routes 註冊對應頁面）。',
+              style: TextStyle(color: cs.onSurfaceVariant, height: 1.4),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _tile({
     required IconData icon,
-    required Color color,
     required String title,
     required String subtitle,
     required VoidCallback onTap,
   }) {
     return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      elevation: 2,
+      elevation: 0,
       child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: color,
-          child: Icon(icon, color: Colors.white),
-        ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(subtitle),
+        leading: Icon(icon),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+        subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
         trailing: const Icon(Icons.chevron_right),
         onTap: onTap,
       ),

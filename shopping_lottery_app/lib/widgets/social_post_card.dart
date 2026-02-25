@@ -1,282 +1,322 @@
 // lib/widgets/social_post_card.dart
-import 'dart:io';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
-import 'package:osmile_shopping_app/services/social_service.dart';
 
-/// 🧱 Osmile 貼文卡元件（完整版）
+/// ✅ SocialPostCard（社群貼文卡片｜完整版｜可編譯）
+/// ------------------------------------------------------------
+/// 支援：
+/// - 顯示貼文作者、內容、時間
+/// - 顯示圖片（可選）
+/// - Like / Comment（可選回呼）
 ///
-/// 功能：
-/// ✅ 多圖輪播 / 圓角卡片設計
-/// ✅ 按讚動畫 / 即時更新
-/// ✅ 留言 / 刪除留言
-/// ✅ 顯示時間、留言數
-/// ✅ 適用於 SocialPage
-class SocialPostCard extends StatefulWidget {
-  final Map<String, dynamic> post;
-  final int index;
-
+/// Firestore 建議欄位：
+/// social_posts/{postId}
+///   - authorName: String
+///   - authorAvatarUrl: String (optional)
+///   - content: String
+///   - imageUrl: String (optional)
+///   - likeCount: num
+///   - commentCount: num
+///   - createdAt: Timestamp
+///   - likedUids: List<String> (optional)
+class SocialPostCard extends StatelessWidget {
   const SocialPostCard({
     super.key,
-    required this.post,
-    required this.index,
+    required this.postId,
+    required this.data,
+    this.onTap,
+    this.onCommentTap,
+    this.onLikeChanged,
+    this.compact = false,
   });
 
-  @override
-  State<SocialPostCard> createState() => _SocialPostCardState();
-}
+  final String postId;
+  final Map<String, dynamic> data;
 
-class _SocialPostCardState extends State<SocialPostCard>
-    with SingleTickerProviderStateMixin {
-  final TextEditingController _commentCtrl = TextEditingController();
-  late AnimationController _animCtrl;
-  late Animation<double> _scaleAnim;
+  final VoidCallback? onTap;
+  final VoidCallback? onCommentTap;
 
-  @override
-  void initState() {
-    super.initState();
-    _animCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 200),
-    );
-    _scaleAnim = Tween<double>(begin: 1.0, end: 1.3).animate(
-      CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutBack),
-    );
+  /// 外部接手按讚寫入
+  final Future<void> Function(bool liked)? onLikeChanged;
+
+  final bool compact;
+
+  String _s(dynamic v, [String fallback = '']) => (v ?? fallback).toString();
+
+  int _toInt(dynamic v, {int fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString()) ?? fallback;
   }
 
-  @override
-  void dispose() {
-    _animCtrl.dispose();
-    super.dispose();
+  DateTime? _asDate(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    return null;
+  }
+
+  String _fmtTime(DateTime? dt) {
+    if (dt == null) return '—';
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    return '$y/$m/$d $hh:$mm';
   }
 
   @override
   Widget build(BuildContext context) {
-    final social = context.watch<SocialService>();
-    final post = widget.post;
+    final authorName = _s(data['authorName'], '匿名');
+    final avatarUrl = _s(data['authorAvatarUrl'], '');
+    final content = _s(data['content'], '');
+    final imageUrl = _s(data['imageUrl'], '');
 
-    final user = post["user"] ?? "Osmile 用戶";
-    final content = post["content"] ?? "";
-    final time = DateFormat("MM/dd HH:mm").format(post["time"]);
-    final likes = post["likes"] ?? 0;
-    final isLiked = post["isLiked"] ?? false;
-    final comments = List<String>.from(post["comments"] ?? []);
-    final images = List<String>.from(post["images"] ?? []);
+    final likeCount = _toInt(data['likeCount'], fallback: 0);
+    final commentCount = _toInt(data['commentCount'], fallback: 0);
+    final createdAt = _asDate(data['createdAt']);
+
+    final user = FirebaseAuth.instance.currentUser;
+    final likedUids = (data['likedUids'] is List)
+        ? (data['likedUids'] as List).map((e) => e.toString()).toList()
+        : <String>[];
+    final isLiked = user != null && likedUids.contains(user.uid);
+
+    final pad = compact ? 12.0 : 14.0;
 
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 3,
-      shadowColor: Colors.black26,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 👤 用戶名稱 + 時間
-            Row(
-              children: [
-                CircleAvatar(
-                  backgroundColor: Colors.blueAccent,
-                  child: Text(
-                    user.isNotEmpty ? user[0] : "?",
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    user,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 15),
-                  ),
-                ),
-                Text(time,
-                    style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              ],
-            ),
-            const SizedBox(height: 8),
-
-            // 🖼️ 多圖輪播
-            if (images.isNotEmpty)
-              SizedBox(
-                height: 220,
-                child: PageView.builder(
-                  controller: PageController(viewportFraction: 0.9),
-                  itemCount: images.length,
-                  itemBuilder: (_, i) {
-                    final img = images[i];
-                    final isFile = img.startsWith('/');
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(14),
-                        child: isFile
-                            ? Image.file(File(img), fit: BoxFit.cover)
-                            : Image.asset(
-                                img,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => Container(
-                                  color: Colors.grey.shade200,
-                                  child: const Icon(Icons.image_not_supported,
-                                      size: 80, color: Colors.grey),
-                                ),
-                              ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-
-            if (content.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: Text(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: EdgeInsets.all(pad),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _header(authorName, avatarUrl, _fmtTime(createdAt)),
+              if (content.trim().isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Text(
                   content,
                   style: const TextStyle(
-                      fontSize: 15,
-                      height: 1.5,
-                      color: Colors.black87,
-                      fontWeight: FontWeight.w400),
-                ),
-              ),
-
-            const SizedBox(height: 8),
-
-            // ❤️ 按讚 / 留言列
-            Row(
-              children: [
-                GestureDetector(
-                  onTap: () {
-                    context.read<SocialService>().toggleLike(widget.index);
-                    _animCtrl.forward(from: 0.0);
-                  },
-                  child: ScaleTransition(
-                    scale: _scaleAnim,
-                    child: Icon(
-                      isLiked ? Icons.favorite : Icons.favorite_border,
-                      color: isLiked ? Colors.redAccent : Colors.grey,
-                      size: 26,
-                    ),
+                    fontWeight: FontWeight.w700,
+                    height: 1.35,
                   ),
                 ),
-                const SizedBox(width: 4),
-                Text("$likes",
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w500, color: Colors.black87)),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.comment_outlined,
-                      color: Colors.blueAccent),
-                  onPressed: () => _openCommentSheet(context, comments),
-                ),
-                Text("${comments.length}",
-                    style: const TextStyle(color: Colors.black87)),
               ],
-            ),
+              if (imageUrl.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                _imageBlock(imageUrl),
+              ],
+              const SizedBox(height: 10),
+              _actionsRow(
+                context: context,
+                liked: isLiked,
+                likeCount: likeCount,
+                commentCount: commentCount,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
-            // 💬 顯示前兩則留言
-            if (comments.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(left: 6, top: 6),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: comments
-                      .take(2)
-                      .map((c) => Text("💬 $c",
-                          style: const TextStyle(
-                              fontSize: 14, color: Colors.black87)))
-                      .toList(),
+  Widget _header(String name, String avatarUrl, String timeText) {
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 18,
+          backgroundColor: Colors.blueAccent.withValues(alpha: 0.10),
+          backgroundImage: avatarUrl.isNotEmpty
+              ? NetworkImage(avatarUrl)
+              : null,
+          child: avatarUrl.isNotEmpty
+              ? null
+              : Text(
+                  name.isNotEmpty ? name.substring(0, 1) : '?',
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(name, style: const TextStyle(fontWeight: FontWeight.w900)),
+              const SizedBox(height: 2),
+              Text(
+                timeText,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
+            ],
+          ),
+        ),
+        Icon(Icons.more_horiz, color: Colors.grey.shade600),
+      ],
+    );
+  }
+
+  Widget _imageBlock(String url) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: AspectRatio(
+        aspectRatio: 16 / 9,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.network(url, fit: BoxFit.cover),
+            Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.22),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  /// 💬 留言彈窗
-  void _openCommentSheet(BuildContext context, List<String> comments) {
-    final index = widget.index;
-    final social = context.read<SocialService>();
-    final ctrl = TextEditingController();
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-          left: 16,
-          right: 16,
-          top: 20,
+  Widget _actionsRow({
+    required BuildContext context,
+    required bool liked,
+    required int likeCount,
+    required int commentCount,
+  }) {
+    return Row(
+      children: [
+        _pill(
+          icon: liked ? Icons.favorite : Icons.favorite_border,
+          label: '$likeCount',
+          iconColor: liked ? Colors.redAccent : Colors.grey.shade700,
+          onTap: () => _toggleLike(context, liked: liked, likeCount: likeCount),
         ),
-        child: Column(
+        const SizedBox(width: 10),
+        _pill(
+          icon: Icons.mode_comment_outlined,
+          label: '$commentCount',
+          iconColor: Colors.grey.shade700,
+          onTap: onCommentTap,
+        ),
+        const Spacer(),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.blueAccent.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: Colors.blueAccent.withValues(alpha: 0.14),
+            ),
+          ),
+          child: const Text(
+            '分享',
+            style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _pill({
+    required IconData icon,
+    required String label,
+    required Color iconColor,
+    required VoidCallback? onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.grey.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: Colors.grey.withValues(alpha: 0.12)),
+        ),
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text("留言互動",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-
-            // 留言列表
-            if (comments.isNotEmpty)
-              Container(
-                height: 200,
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: ListView.builder(
-                  itemCount: comments.length,
-                  itemBuilder: (_, i) => ListTile(
-                    leading:
-                        const Icon(Icons.chat_bubble_outline, color: Colors.blueAccent),
-                    title: Text(comments[i]),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline,
-                          color: Colors.redAccent),
-                      onPressed: () {
-                        social.removeComment(index, i);
-                      },
-                    ),
-                  ),
-                ),
-              ),
-
-            const SizedBox(height: 10),
-            TextField(
-              controller: ctrl,
-              decoration: const InputDecoration(
-                hintText: "輸入留言內容...",
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.send),
-              label: const Text("送出留言"),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blueAccent,
-                foregroundColor: Colors.white,
-                minimumSize: const Size(double.infinity, 46),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-              onPressed: () {
-                final text = ctrl.text.trim();
-                if (text.isNotEmpty) {
-                  social.addComment(index, text);
-                  Navigator.pop(context);
-                }
-              },
+            Icon(icon, size: 18, color: iconColor),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
             ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _toggleLike(
+    BuildContext context, {
+    required bool liked,
+    required int likeCount,
+  }) async {
+    // ✅ 修正 use_build_context_synchronously：
+    // 在任何 await 前先取得 messenger，後面都不要再用 context
+    final messenger = ScaffoldMessenger.maybeOf(context);
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      messenger?.showSnackBar(const SnackBar(content: Text('請先登入才能按讚')));
+      return;
+    }
+
+    // 外部接手
+    if (onLikeChanged != null) {
+      try {
+        await onLikeChanged!.call(!liked);
+      } catch (e) {
+        messenger?.showSnackBar(SnackBar(content: Text('按讚失敗：$e')));
+      }
+      return;
+    }
+
+    // 預設：直接寫 Firestore
+    final fs = FirebaseFirestore.instance;
+    final ref = fs.collection('social_posts').doc(postId);
+
+    try {
+      await fs.runTransaction((tx) async {
+        final snap = await tx.get(ref);
+        if (!snap.exists) return;
+
+        final d = snap.data() as Map<String, dynamic>;
+        final list = (d['likedUids'] is List)
+            ? (d['likedUids'] as List).map((e) => e.toString()).toList()
+            : <String>[];
+
+        final currentCount = _toInt(d['likeCount'], fallback: likeCount);
+
+        if (liked) {
+          list.remove(user.uid);
+          tx.update(ref, {
+            'likedUids': list,
+            'likeCount': (currentCount - 1).clamp(0, 1 << 30),
+          });
+        } else {
+          if (!list.contains(user.uid)) list.add(user.uid);
+          tx.update(ref, {'likedUids': list, 'likeCount': currentCount + 1});
+        }
+      });
+    } catch (e) {
+      messenger?.showSnackBar(SnackBar(content: Text('按讚失敗：$e')));
+    }
   }
 }

@@ -3,8 +3,8 @@
 // ✅ AdminSystemModulesPage（最終完整版｜系統功能群組入口頁）
 // ------------------------------------------------------------
 // - 使用 ExpansionTile 呈現五大功能群組
-// - 點擊子項導向對應管理頁（已預留 routeName）
-// - 適用於 admin 角色
+// - 點擊子項導向對應管理頁（routeName）
+// - 長按顯示 route（方便你 debug）
 // ------------------------------------------------------------
 
 import 'package:flutter/material.dart';
@@ -14,6 +14,10 @@ class AdminSystemModulesPage extends StatelessWidget {
 
   void _go(BuildContext context, String routeName) {
     Navigator.pushNamed(context, routeName);
+  }
+
+  void _toast(BuildContext context, String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -30,9 +34,10 @@ class AdminSystemModulesPage extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
         children: [
           _buildGroup(
+            context,
             title: '客戶服務',
             icon: Icons.support_agent_outlined,
-            items: [
+            items: const [
               _NavItem('FAQ 常見問題', '/admin_faqs'),
               _NavItem('下載區', '/admin_downloads'),
               _NavItem('留言板', '/admin_messages'),
@@ -42,9 +47,10 @@ class AdminSystemModulesPage extends StatelessWidget {
             ],
           ),
           _buildGroup(
+            context,
             title: '網站其他功能',
             icon: Icons.web_outlined,
-            items: [
+            items: const [
               _NavItem('首頁中間自訂區塊', '/admin_home_middle'),
               _NavItem('側欄自訂區塊', '/admin_sidebar_blocks'),
               _NavItem('右側浮動廣告', '/admin_floating_ads'),
@@ -53,26 +59,30 @@ class AdminSystemModulesPage extends StatelessWidget {
             ],
           ),
           _buildGroup(
+            context,
             title: '會員與行銷管理',
             icon: Icons.people_alt_outlined,
-            items: [
+            items: const [
               _NavItem('會員名單', '/admin_users'),
               _NavItem('跑馬燈公告', '/admin_marquees'),
-              _NavItem('活動管理', '/campaigns'),
+              // ✅ 你 main.dart 有 /admin_campaigns，這裡用一致的路由（避免 Unknown route）
+              _NavItem('活動管理', '/admin_campaigns'),
             ],
           ),
           _buildGroup(
+            context,
             title: '網頁自訂',
             icon: Icons.edit_note_outlined,
-            items: [
+            items: const [
               _NavItem('首頁自訂區塊', '/admin_home_blocks'),
               _NavItem('頁尾編輯', '/admin_footer_blocks'),
             ],
           ),
           _buildGroup(
+            context,
             title: '購物設定',
             icon: Icons.shopping_cart_outlined,
-            items: [
+            items: const [
               _NavItem('購物車設定', '/admin_cart_settings'),
               _NavItem('購物訂單管理', '/admin_orders'),
               _NavItem('購物完成通知', '/admin_order_notifications'),
@@ -83,7 +93,8 @@ class AdminSystemModulesPage extends StatelessWidget {
     );
   }
 
-  Widget _buildGroup({
+  Widget _buildGroup(
+    BuildContext context, {
     required String title,
     required IconData icon,
     required List<_NavItem> items,
@@ -100,11 +111,13 @@ class AdminSystemModulesPage extends StatelessWidget {
               dense: true,
               leading: const Icon(Icons.arrow_right),
               title: Text(item.title),
-              onTap: () => item.onTap,
               trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-              onLongPress: () => debugPrint('Navigate to ${item.route}'),
-              onTapDown: (_) {},
-              onTap: () => item.onTap(context),
+
+              // ✅ 修正：只保留一個 onTap，直接導頁
+              onTap: () => _go(context, item.route),
+
+              // ✅ ListTile 支援 onLongPress（用來 debug）
+              onLongPress: () => _toast(context, 'route: ${item.route}'),
             ),
         ],
       ),
@@ -116,8 +129,4 @@ class _NavItem {
   final String title;
   final String route;
   const _NavItem(this.title, this.route);
-
-  void onTap(BuildContext context) {
-    Navigator.pushNamed(context, route);
-  }
 }

@@ -31,6 +31,7 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
   final _db = FirebaseFirestore.instance;
   Future<RoleInfo>? _roleFuture;
   String? _lastUid;
+
   final _searchCtrl = TextEditingController();
   String _q = '';
 
@@ -41,13 +42,17 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
   }
 
   String _s(dynamic v) => (v ?? '').toString().trim();
+
   DateTime _toDate(dynamic ts) =>
       ts is Timestamp ? ts.toDate() : (ts is DateTime ? ts : DateTime.now());
+
   String _fmt(DateTime d) =>
       "${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} ${d.hour}:${d.minute.toString().padLeft(2, '0')}";
 
-  void _snack(String msg) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
 
   Query<Map<String, dynamic>> _baseQuery() =>
       _db.collection('notifications').orderBy('createdAt', descending: true);
@@ -64,8 +69,11 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
   Future<void> _openDialog({String? docId, Map<String, dynamic>? data}) async {
     final titleCtrl = TextEditingController(text: data?['title'] ?? '');
     final contentCtrl = TextEditingController(text: data?['content'] ?? '');
-    bool isActive = data?['isActive'] ?? true;
+    bool isActive = (data?['isActive'] ?? true) == true;
     bool saving = false;
+
+    // ✅ 先抓 root navigator，避免 await 後用到 dialog builder 的 ctx
+    final rootNav = Navigator.of(context, rootNavigator: true);
 
     await showDialog(
       context: context,
@@ -108,7 +116,7 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+            TextButton(onPressed: () => rootNav.pop(), child: const Text('取消')),
             FilledButton(
               onPressed: saving
                   ? null
@@ -119,6 +127,7 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
                         _snack('請輸入完整內容');
                         return;
                       }
+
                       setStateDialog(() => saving = true);
                       try {
                         final col = _db.collection('notifications');
@@ -140,10 +149,14 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
                           });
                           _snack('已更新通知');
                         }
-                        if (mounted) Navigator.pop(ctx);
+
+                        // ✅ await 後只用 State.mounted + rootNav（不再用 ctx）
+                        if (!mounted) return;
+                        rootNav.pop();
                       } catch (e) {
                         _snack('儲存失敗：$e');
                       } finally {
+                        // dialog 可能已被關掉，所以不用 mounted；這裡維持原樣即可
                         setStateDialog(() => saving = false);
                       }
                     },
@@ -153,21 +166,33 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
         ),
       ),
     );
+
+    titleCtrl.dispose();
+    contentCtrl.dispose();
   }
 
   Future<void> _delete(String docId) async {
+    final rootNav = Navigator.of(context, rootNavigator: true);
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('刪除通知'),
         content: const Text('確定要刪除此通知嗎？此動作無法復原。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => rootNav.pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => rootNav.pop(true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
     if (ok != true) return;
+
     try {
       await _db.collection('notifications').doc(docId).delete();
       _snack('已刪除');
@@ -180,6 +205,7 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
   Future<void> _sendNotificationDialog(Map<String, dynamic> notif) async {
     final toUidCtrl = TextEditingController();
     final sendAllVN = ValueNotifier<bool>(true);
+    final rootNav = Navigator.of(context, rootNavigator: true);
 
     final ok = await showDialog<bool>(
       context: context,
@@ -218,13 +244,23 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('發送')),
+          TextButton(
+            onPressed: () => rootNav.pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => rootNav.pop(true),
+            child: const Text('發送'),
+          ),
         ],
       ),
     );
 
-    if (ok != true) return;
+    if (ok != true) {
+      toUidCtrl.dispose();
+      sendAllVN.dispose();
+      return;
+    }
 
     try {
       final uid = FirebaseAuth.instance.currentUser?.uid ?? 'system';
@@ -240,15 +276,23 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
         'actorRole': role,
         'read': false,
         'createdAt': now,
-        'extra': {},
+        'extra': <String, dynamic>{},
       };
 
       if (sendAllVN.value) {
-        // 廣播給所有 Vendor
-        final vendors = await _db.collection('users').where('role', isEqualTo: 'vendor').get();
+        final vendors = await _db
+            .collection('users')
+            .where('role', isEqualTo: 'vendor')
+            .get();
+
         for (final v in vendors.docs) {
-          await _db.collection('notifications').doc(v.id).collection('items').add(data);
+          await _db
+              .collection('notifications')
+              .doc(v.id)
+              .collection('items')
+              .add(data);
         }
+
         await _db.collection('notifications_global').add({
           'title': notif['title'],
           'body': notif['content'],
@@ -263,7 +307,13 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
           _snack('請輸入接收者 UID');
           return;
         }
-        await _db.collection('notifications').doc(toUid).collection('items').add(data);
+
+        await _db
+            .collection('notifications')
+            .doc(toUid)
+            .collection('items')
+            .add(data);
+
         await _db.collection('notifications_global').add({
           'title': notif['title'],
           'body': notif['content'],
@@ -277,6 +327,9 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
       _snack('通知已發送並同步更新');
     } catch (e) {
       _snack('發送失敗：$e');
+    } finally {
+      toUidCtrl.dispose();
+      sendAllVN.dispose();
     }
   }
 
@@ -291,9 +344,13 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
       builder: (context, authSnap) {
         final user = authSnap.data;
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
-        if (user == null) return const Scaffold(body: Center(child: Text('請先登入')));
+        if (user == null) {
+          return const Scaffold(body: Center(child: Text('請先登入')));
+        }
 
         if (_roleFuture == null || _lastUid != user.uid) {
           _lastUid = user.uid;
@@ -304,7 +361,9 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
           future: _roleFuture,
           builder: (context, roleSnap) {
             if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
             if (roleSnap.hasError) {
               return const Scaffold(body: Center(child: Text('讀取權限錯誤')));
@@ -329,10 +388,14 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
                     tooltip: '登出',
                     icon: const Icon(Icons.logout),
                     onPressed: () async {
+                      // ✅ 先抓 navigator，await 後不再直接用 context
+                      final nav = Navigator.of(context);
+
                       gate.clearCache();
                       await authSvc.signOut();
-                      if (!context.mounted) return;
-                      Navigator.pushReplacementNamed(context, '/login');
+
+                      if (!mounted) return;
+                      nav.pushReplacementNamed('/login');
                     },
                   ),
                   const SizedBox(width: 6),
@@ -347,11 +410,15 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
                     Expanded(
                       child: Column(
                         children: [
-                          Expanded(child: _buildNotificationList(isAdmin, isVendor)),
+                          Expanded(
+                            child: _buildNotificationList(isAdmin, isVendor),
+                          ),
                           if (isAdmin) ...[
                             const Divider(height: 20),
-                            const Text('最近發送紀錄',
-                                style: TextStyle(fontWeight: FontWeight.bold)),
+                            const Text(
+                              '最近發送紀錄',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
                             Expanded(child: _buildSendHistoryList()),
                           ],
                         ],
@@ -393,7 +460,10 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _baseQuery().snapshots(),
       builder: (context, snap) {
-        if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
         final docs = snap.data!.docs.where((d) {
           final m = d.data();
           if (isVendor && !(m['isActive'] ?? false)) return false;
@@ -408,13 +478,17 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
           itemBuilder: (_, i) {
             final d = docs[i];
             final m = d.data();
+
             final title = _s(m['title']);
             final content = _s(m['content']);
             final active = (m['isActive'] ?? true) == true;
             final createdAt = _toDate(m['createdAt']);
+
             return ListTile(
-              title: Text(title.isEmpty ? '(未命名通知)' : title,
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              title: Text(
+                title.isEmpty ? '(未命名通知)' : title,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
               subtitle: Text(
                 '${_fmt(createdAt)}\n${content.isEmpty ? '(無內容)' : content}',
                 maxLines: 2,
@@ -425,7 +499,9 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
                       onSelected: (v) {
                         if (v == 'edit') _openDialog(docId: d.id, data: m);
                         if (v == 'toggle') {
-                          _db.collection('notifications').doc(d.id).update({'isActive': !active});
+                          _db.collection('notifications').doc(d.id).update({
+                            'isActive': !active,
+                          });
                         }
                         if (v == 'delete') _delete(d.id);
                         if (v == 'send') _sendNotificationDialog(m);
@@ -433,25 +509,31 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
                       itemBuilder: (_) => [
                         const PopupMenuItem(value: 'edit', child: Text('編輯')),
                         PopupMenuItem(
-                            value: 'toggle', child: Text(active ? '停用' : '啟用')),
+                          value: 'toggle',
+                          child: Text(active ? '停用' : '啟用'),
+                        ),
                         const PopupMenuDivider(),
                         const PopupMenuItem(value: 'send', child: Text('發送通知')),
                         const PopupMenuItem(value: 'delete', child: Text('刪除')),
                       ],
                     )
                   : Switch(value: active, onChanged: null),
-              onTap: () => showDialog(
-                context: context,
-                builder: (_) => AlertDialog(
-                  title: Text(title),
-                  content: Text(content),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('關閉'))
-                  ],
-                ),
-              ),
+              onTap: () {
+                final rootNav = Navigator.of(context, rootNavigator: true);
+                showDialog(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: Text(title),
+                    content: Text(content),
+                    actions: [
+                      TextButton(
+                        onPressed: () => rootNav.pop(),
+                        child: const Text('關閉'),
+                      ),
+                    ],
+                  ),
+                );
+              },
             );
           },
         );
@@ -470,6 +552,7 @@ class _AdminNotificationsPageState extends State<AdminNotificationsPage> {
         if (!snap.hasData) return const SizedBox();
         final docs = snap.data!.docs;
         if (docs.isEmpty) return const Text('尚無發送紀錄');
+
         return ListView.builder(
           itemCount: docs.length,
           itemBuilder: (_, i) {

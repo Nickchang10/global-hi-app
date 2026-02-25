@@ -1,14 +1,16 @@
 // lib/utils/haptic_audio_feedback.dart
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:audioplayers/audioplayers.dart';
 
 /// ======================================================
-/// ✅ HapticAudioFeedback（震動 + 音效）最終完整版
+/// ✅ HapticAudioFeedback（震動 + 音效）最終完整版（可編譯）
 /// ------------------------------------------------------
 /// - 全域開關：setEnabled / setMuted / setVolume
-/// - 方法齊全：feedback / success / warning / error / selection
-/// - Web/不支援裝置：自動 try/catch 忽略
+/// - 方法齊全：feedback / success / warning / error / selection / spin
+/// - Web/不支援裝置：
+///   - Web 直接略過 haptic（kIsWeb）
+///   - 音效仍可播放（需 user gesture；外層按鈕點擊觸發即可）
 /// - 音效避免重疊：用佇列串接 stop->play，避免多次點擊競態
 ///
 /// 需要的 assets（pubspec 已宣告 assets/audio/）：
@@ -90,7 +92,10 @@ class HapticAudioFeedback {
     if (!_enabled) return;
     await init();
     await _vibrate();
-    await _playQueuedWithFallback('audio/warning.mp3', fallback: 'audio/win.mp3');
+    await _playQueuedWithFallback(
+      'audio/warning.mp3',
+      fallback: 'audio/win.mp3',
+    );
   }
 
   /// 錯誤（付款失敗/不足）
@@ -110,7 +115,7 @@ class HapticAudioFeedback {
     // await _playQueued('audio/spin.mp3');
   }
 
-  /// 你若想給抽獎「轉盤」專用音效（選用）
+  /// 抽獎「轉盤」專用音效（選用）
   static Future<void> spin() async {
     if (!_enabled) return;
     await init();
@@ -122,30 +127,35 @@ class HapticAudioFeedback {
   // Haptics
   // -----------------------
   static Future<void> _lightHaptic() async {
+    if (kIsWeb) return; // ✅ Web 不支援震動，直接略過
     try {
       await HapticFeedback.lightImpact();
     } catch (_) {}
   }
 
   static Future<void> _mediumHaptic() async {
+    if (kIsWeb) return;
     try {
       await HapticFeedback.mediumImpact();
     } catch (_) {}
   }
 
   static Future<void> _heavyHaptic() async {
+    if (kIsWeb) return;
     try {
       await HapticFeedback.heavyImpact();
     } catch (_) {}
   }
 
   static Future<void> _vibrate() async {
+    if (kIsWeb) return;
     try {
       await HapticFeedback.vibrate();
     } catch (_) {}
   }
 
   static Future<void> _selectionClick() async {
+    if (kIsWeb) return;
     try {
       await HapticFeedback.selectionClick();
     } catch (_) {}
@@ -160,7 +170,6 @@ class HapticAudioFeedback {
 
     final p = _normalizeAssetPath(assetRelativePath);
 
-    // Web：通常需要 user gesture 才能播放；這裡不做額外處理，讓使用者互動觸發即可
     // 串接佇列：避免 stop/play 同時多次呼叫導致例外或重疊
     _playChain = _playChain.then((_) async {
       try {

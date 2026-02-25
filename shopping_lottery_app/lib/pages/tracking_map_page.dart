@@ -7,6 +7,12 @@
 // - 保留：lastLocal / lastRemote / history 顯示
 // - 保留：Google Maps 外開
 // - 保留：SOS 快捷按鈕（用 dynamic 呼叫，避免方法簽名不一致造成編譯錯）
+//
+// ✅ 修正重點：
+// - use_build_context_synchronously：initState 改用 addPostFrameCallback + mounted 檢查
+// - withOpacity deprecated：全面改用 withValues(alpha: ...)
+// - async gaps 後使用 context：補 mounted 檢查
+// - ✅ prefer_const_constructors：Legend Row children 全 const
 // ======================================================
 
 import 'dart:math';
@@ -29,19 +35,28 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(() async {
-      final t = context.read<TrackingService>();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _bootTracking();
+    });
+  }
+
+  Future<void> _bootTracking() async {
+    final t = context.read<TrackingService>(); // await 前讀取
+    try {
       await t.init();
+      if (!mounted) return;
+
       if (!t.tracking) {
         await t.startLocalTracking();
+        if (!mounted) return;
       }
-    });
+    } catch (_) {}
   }
 
   @override
   Widget build(BuildContext context) {
     final tracking = context.watch<TrackingService>();
-    final dynamic sos = context.watch<SOSService>(); // 用 dynamic 避免簽名差異
+    final dynamic sos = context.watch<SOSService>();
     final local = tracking.lastLocal;
     final remote = tracking.lastRemote;
     final history = tracking.history;
@@ -53,18 +68,27 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0.8,
-        title: const Text('即時追蹤', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          '即時追蹤',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
         actions: [
           IconButton(
             tooltip: tracking.tracking ? '停止追蹤' : '開始追蹤',
-            icon: Icon(tracking.tracking ? Icons.pause_circle : Icons.play_circle),
+            icon: Icon(
+              tracking.tracking ? Icons.pause_circle : Icons.play_circle,
+            ),
             onPressed: () async {
               if (tracking.tracking) {
                 await tracking.stopLocalTracking();
+                if (!mounted) return;
+
                 _safePushNotice(title: '追蹤停止', message: '已停止定位追蹤');
                 _toast('已停止追蹤');
               } else {
                 await tracking.startLocalTracking();
+                if (!mounted) return;
+
                 _safePushNotice(title: '追蹤開始', message: '定位追蹤已啟動（模擬）');
                 _toast('已開始追蹤');
               }
@@ -75,6 +99,7 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
             icon: const Icon(Icons.delete_outline),
             onPressed: () async {
               await tracking.clearHistory();
+              if (!mounted) return;
               _toast('已清除歷史軌跡');
             },
           ),
@@ -83,7 +108,6 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
       ),
       body: Column(
         children: [
-          // ===== 地圖（CustomPaint） =====
           Expanded(
             child: Container(
               margin: const EdgeInsets.all(10),
@@ -121,14 +145,13 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
               ),
             ),
           ),
-
-          // ===== 座標資訊 =====
           if (local != null)
             _LocationTile(
               icon: Icons.person_pin_circle_outlined,
               color: Colors.blue,
               title: '本機位置',
-              subtitle: 'Lat: ${local.lat.toStringAsFixed(5)}, Lng: ${local.lng.toStringAsFixed(5)}',
+              subtitle:
+                  'Lat: ${local.lat.toStringAsFixed(5)}, Lng: ${local.lng.toStringAsFixed(5)}',
               time: local.time,
               onTap: () => _openMap(local.lat, local.lng),
             ),
@@ -137,12 +160,11 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
               icon: Icons.watch_outlined,
               color: Colors.teal,
               title: '遠端設備',
-              subtitle: 'Lat: ${remote.lat.toStringAsFixed(5)}, Lng: ${remote.lng.toStringAsFixed(5)}',
+              subtitle:
+                  'Lat: ${remote.lat.toStringAsFixed(5)}, Lng: ${remote.lng.toStringAsFixed(5)}',
               time: remote.time,
               onTap: () => _openMap(remote.lat, remote.lng),
             ),
-
-          // ===== 快捷操作 =====
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 6, 12, 14),
             child: Row(
@@ -153,8 +175,11 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
                     label: const Text('Google Maps'),
                     onPressed: () {
                       final p = local ?? remote;
-                      if (p != null) _openMap(p.lat, p.lng);
-                      else _toast('目前沒有座標');
+                      if (p != null) {
+                        _openMap(p.lat, p.lng);
+                      } else {
+                        _toast('目前沒有座標');
+                      }
                     },
                   ),
                 ),
@@ -162,7 +187,9 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
                 Expanded(
                   child: ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: sosActive ? Colors.grey : Colors.redAccent,
+                      backgroundColor: sosActive
+                          ? Colors.grey
+                          : Colors.redAccent,
                       foregroundColor: Colors.white,
                     ),
                     icon: const Icon(Icons.sos_outlined),
@@ -171,12 +198,15 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
                       try {
                         if (!sosActive) {
                           await sos.triggerSOS(reason: 'Tracking 快捷 SOS');
+                          if (!mounted) return;
                           _toast('已發出 SOS 警報');
                         } else {
                           await sos.cancelSOS();
+                          if (!mounted) return;
                           _toast('已取消 SOS');
                         }
                       } catch (e) {
+                        if (!mounted) return;
                         _toast('SOS 操作失敗：$e');
                       }
                     },
@@ -191,7 +221,6 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
   }
 
   void _safePushNotice({required String title, required String message}) {
-    // 用 dynamic 避免 NotificationService 的 push() 簽名與你專案不同造成編譯錯
     try {
       final dynamic ns = NotificationService.instance;
       ns.push(type: 'tracking', title: title, message: message);
@@ -200,8 +229,12 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
 
   Future<void> _openMap(double lat, double lng) async {
     final url = Uri.parse('https://www.google.com/maps?q=$lat,$lng');
-    if (await canLaunchUrl(url)) {
+    final ok = await canLaunchUrl(url);
+    if (!mounted) return;
+
+    if (ok) {
       await launchUrl(url, mode: LaunchMode.externalApplication);
+      if (!mounted) return;
     } else {
       _toast('無法開啟地圖');
     }
@@ -210,7 +243,10 @@ class _TrackingMapPageState extends State<TrackingMapPage> {
   void _toast(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(milliseconds: 1200)),
+      SnackBar(
+        content: Text(msg),
+        duration: const Duration(milliseconds: 1200),
+      ),
     );
   }
 }
@@ -236,34 +272,47 @@ class _LegendCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.92),
+        color: Colors.white.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.grey.shade200),
       ),
       child: DefaultTextStyle(
-        style: const TextStyle(fontSize: 12, color: Colors.black87, height: 1.25),
+        style: const TextStyle(
+          fontSize: 12,
+          color: Colors.black87,
+          height: 1.25,
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(tracking ? '追蹤中（模擬）' : '未追蹤',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text(
+              tracking ? '追蹤中（模擬）' : '未追蹤',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 6),
-            Row(children: const [
-              _Dot(color: Colors.blue),
-              SizedBox(width: 6),
-              Text('本機'),
-              SizedBox(width: 10),
-              _Dot(color: Colors.teal),
-              SizedBox(width: 6),
-              Text('遠端'),
-              SizedBox(width: 10),
-              _Dot(color: Colors.red),
-              SizedBox(width: 6),
-              Text('終點'),
-            ]),
+
+            // ✅ 這段就是你 lint 提示的位置：改成全 const
+            const Row(
+              children: [
+                _Dot(color: Colors.blue),
+                SizedBox(width: 6),
+                Text('本機'),
+                SizedBox(width: 10),
+                _Dot(color: Colors.teal),
+                SizedBox(width: 6),
+                Text('遠端'),
+                SizedBox(width: 10),
+                _Dot(color: Colors.red),
+                SizedBox(width: 6),
+                Text('終點'),
+              ],
+            ),
+
             const SizedBox(height: 6),
             Text('軌跡點數：$count'),
-            Text('本機：${local == null ? '—' : 'OK'}  •  遠端：${remote == null ? '—' : 'OK'}'),
+            Text(
+              '本機：${local == null ? '—' : 'OK'}  •  遠端：${remote == null ? '—' : 'OK'}',
+            ),
           ],
         ),
       ),
@@ -274,6 +323,7 @@ class _LegendCard extends StatelessWidget {
 class _Dot extends StatelessWidget {
   final Color color;
   const _Dot({required this.color});
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -300,7 +350,6 @@ class _TrackingMapPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 背景格線（視覺輔助）
     _drawGrid(canvas, size);
 
     final points = <TrackingPoint>[
@@ -318,36 +367,38 @@ class _TrackingMapPainter extends CustomPainter {
     final minLng = lngs.reduce(min);
     final maxLng = lngs.reduce(max);
 
-    double toX(double lng) => (lng - minLng) / ((maxLng - minLng) + 1e-9) * size.width;
-    double toY(double lat) => size.height - (lat - minLat) / ((maxLat - minLat) + 1e-9) * size.height;
+    double toX(double lng) =>
+        (lng - minLng) / ((maxLng - minLng) + 1e-9) * size.width;
+    double toY(double lat) =>
+        size.height - (lat - minLat) / ((maxLat - minLat) + 1e-9) * size.height;
 
-    // ===== 軌跡線 =====
     if (history.length >= 2) {
       final path = Path();
       for (int i = 0; i < history.length; i++) {
         final p = history[i];
         final x = toX(p.lng);
         final y = toY(p.lat);
-        if (i == 0) path.moveTo(x, y);
-        else path.lineTo(x, y);
+        if (i == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
       }
 
       final paintLine = Paint()
-        ..color = Colors.blueAccent.withOpacity(0.85)
+        ..color = Colors.blueAccent.withValues(alpha: 0.85)
         ..strokeWidth = 3
         ..style = PaintingStyle.stroke;
 
       canvas.drawPath(path, paintLine);
     }
 
-    // ===== 終點紅圈 =====
     if (history.isNotEmpty) {
       final end = history.last;
       final endPos = Offset(toX(end.lng), toY(end.lat));
       canvas.drawCircle(endPos, 6, Paint()..color = Colors.red);
     }
 
-    // ===== 本機 / 遠端點 =====
     if (local != null) {
       final o = Offset(toX(local!.lng), toY(local!.lat));
       canvas.drawCircle(o, 7, Paint()..color = Colors.blue);
@@ -363,7 +414,7 @@ class _TrackingMapPainter extends CustomPainter {
 
   void _drawGrid(Canvas canvas, Size size) {
     final p = Paint()
-      ..color = Colors.black.withOpacity(0.04)
+      ..color = Colors.black.withValues(alpha: 0.04)
       ..strokeWidth = 1;
 
     const step = 28.0;
@@ -383,7 +434,7 @@ class _TrackingMapPainter extends CustomPainter {
           color: Colors.white,
           fontSize: 11,
           fontWeight: FontWeight.w800,
-          backgroundColor: color.withOpacity(0.85),
+          backgroundColor: color.withValues(alpha: 0.85),
         ),
       ),
       textDirection: TextDirection.ltr,

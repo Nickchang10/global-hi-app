@@ -1,709 +1,807 @@
 // lib/pages/admin/shop/admin_banner_settings_page.dart
+// =====================================================
+// ✅ AdminBannerSettingsPage（Banner 設定｜修正版完整版｜可編譯）
 //
-// ✅ AdminBannerSettingsPage（最終完整版｜可編譯｜可直接使用）
-// ------------------------------------------------------------
-// - Firestore: shop_config/banners
-//   {
-//     enabled: true,  // 第二層總開關（可選）
-//     items: [
-//       {
-//         id: "b_170....",
-//         enabled: true,
-//         order: 10,
-//         title: "主打商品",
-//         subtitle: "一句話賣點",
-//         imageUrl: "https://...",
-//         route: "/shop",       // 可選：點擊導向
-//         productId: "xxx"      // 可選：點擊開商品（前台會用商品列表內 id 尋找）
-//       }
-//     ],
-//     updatedAt: serverTimestamp
-//   }
+// FIXES
+// - ✅ withOpacity deprecated → withValues(alpha:)
+// - ✅ DropdownButtonFormField deprecated: value → initialValue
+// - ✅ 修正 unused_local_variable: dragHandle（現在真的用在畫面上）
 //
-// - ✅ 支援：
-//   1) Banner 總開關（shop_config/banners.enabled）
-//   2) Banner 項目 CRUD（新增/編輯/刪除）
-//   3) 拖拉排序（ReorderableListView）
-//   4) 單項啟用/停用
-//   5) ✅ 上傳圖片至 Firebase Storage，回寫 imageUrl
+// FEATURES
+// - Banner CRUD（新增/編輯/啟用停用/刪除）
+// - 拖曳排序（ReorderableListView）→ 寫回 sort（batch update）
+// - 篩選（全部/啟用/停用）
+// - 相容 Web/桌面/手機（窄寬自動換行）
 //
-// - 注意：前台還受 app_config/app_center.bannerEnabled 控制（更上層總開關）
-// ------------------------------------------------------------
-
-import 'dart:convert';
+// Firestore（預設）
+// - shop_banners/{bannerId}
+//   - title: String
+//   - imageUrl: String
+//   - linkUrl: String
+//   - enabled: bool
+//   - sort: int
+//   - createdAt: Timestamp
+//   - updatedAt: Timestamp
+// =====================================================
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
-class AdminBannerSettingsPage extends StatelessWidget {
+/// ✅ FIX: withOpacity deprecated → withValues(alpha: 0~1)
+Color _withOpacity(Color c, double opacity01) {
+  final o = opacity01.clamp(0.0, 1.0).toDouble();
+  return c.withValues(alpha: o);
+}
+
+class AdminBannerSettingsPage extends StatefulWidget {
   const AdminBannerSettingsPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        leading: const BackButton(),
-        title: const Text('Banner 管理', style: TextStyle(fontWeight: FontWeight.w900)),
-      ),
-      body: const AdminBannerSettingsBody(),
-    );
-  }
+  State<AdminBannerSettingsPage> createState() =>
+      _AdminBannerSettingsPageState();
 }
 
-class AdminBannerSettingsBody extends StatefulWidget {
-  const AdminBannerSettingsBody({super.key});
-
-  @override
-  State<AdminBannerSettingsBody> createState() => _AdminBannerSettingsBodyState();
-}
-
-class _AdminBannerSettingsBodyState extends State<AdminBannerSettingsBody> {
+class _AdminBannerSettingsPageState extends State<AdminBannerSettingsPage> {
   final _db = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
+  final _df = DateFormat('yyyy/MM/dd HH:mm');
 
-  DocumentReference<Map<String, dynamic>> get _bannerRef =>
-      _db.collection('shop_config').doc('banners');
+  _BannerFilter _filter = _BannerFilter.all;
 
-  DocumentReference<Map<String, dynamic>> get _appCenterRef =>
-      _db.collection('app_config').doc('app_center');
+  CollectionReference<Map<String, dynamic>> get _col =>
+      _db.collection('shop_banners');
 
-  static const Map<String, dynamic> _defaults = {
-    'enabled': true,
-    'items': <dynamic>[],
-  };
+  Query<Map<String, dynamic>> _query() {
+    return _col.orderBy('sort', descending: false).limit(300);
+  }
 
-  bool _hydrated = false;
-  bool _saving = false;
+  bool _hitFilter(_BannerDoc b) {
+    switch (_filter) {
+      case _BannerFilter.all:
+        return true;
+      case _BannerFilter.enabled:
+        return b.enabled == true;
+      case _BannerFilter.disabled:
+        return b.enabled != true;
+    }
+  }
 
-  bool _enabled = true;
-  List<_BannerItem> _items = [];
+  String _fmtTs(dynamic v) {
+    if (v is Timestamp) {
+      return _df.format(v.toDate());
+    }
+    return '-';
+  }
 
-  // upload 狀態（顯示在對話框上）
-  bool _uploading = false;
-  double _uploadProgress = 0;
+  Future<void> _createBanner(List<_BannerDoc> current) async {
+    final res = await showDialog<_BannerEditResult>(
+      context: context,
+      builder: (_) => const _BannerEditDialog(title: '新增 Banner'),
+    );
+    if (res == null) {
+      return;
+    }
+
+    final maxSort = current.isEmpty
+        ? -1
+        : current.map((e) => e.sort).reduce((a, b) => a > b ? a : b);
+
+    try {
+      await _col.add({
+        'title': res.title.trim(),
+        'imageUrl': res.imageUrl.trim(),
+        'linkUrl': res.linkUrl.trim(),
+        'enabled': res.enabled,
+        'sort': maxSort + 1,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已新增 Banner')));
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('新增失敗：$e')));
+    }
+  }
+
+  Future<void> _editBanner(_BannerDoc b) async {
+    final res = await showDialog<_BannerEditResult>(
+      context: context,
+      builder: (_) => _BannerEditDialog(
+        title: '編輯 Banner',
+        initialTitle: b.title,
+        initialImageUrl: b.imageUrl,
+        initialLinkUrl: b.linkUrl,
+        initialEnabled: b.enabled,
+      ),
+    );
+    if (res == null) {
+      return;
+    }
+
+    try {
+      await _col.doc(b.id).update({
+        'title': res.title.trim(),
+        'imageUrl': res.imageUrl.trim(),
+        'linkUrl': res.linkUrl.trim(),
+        'enabled': res.enabled,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已更新 Banner')));
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
+    }
+  }
+
+  Future<void> _toggleEnabled(_BannerDoc b) async {
+    try {
+      await _col.doc(b.id).update({
+        'enabled': !b.enabled,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(b.enabled ? '已停用' : '已啟用')));
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新狀態失敗：$e')));
+    }
+  }
+
+  Future<void> _deleteBanner(_BannerDoc b) async {
+    final ok = await _confirm(
+      title: '刪除 Banner',
+      message: '確定要刪除「${b.title.isEmpty ? b.id : b.title}」嗎？',
+      confirmText: '刪除',
+      isDanger: true,
+    );
+    if (ok != true) {
+      return;
+    }
+
+    try {
+      await _col.doc(b.id).delete();
+
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已刪除')));
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
+    }
+  }
+
+  Future<void> _reorder(
+    List<_BannerDoc> list,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (newIndex > oldIndex) {
+      newIndex -= 1;
+    }
+
+    final items = [...list];
+    final moved = items.removeAt(oldIndex);
+    items.insert(newIndex, moved);
+
+    try {
+      final batch = _db.batch();
+      for (int i = 0; i < items.length; i++) {
+        final b = items[i];
+        // 重新寫入 sort
+        batch.update(_col.doc(b.id), {
+          'sort': i,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已更新排序')));
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新排序失敗：$e')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _saving ? null : _addBanner,
-        icon: const Icon(Icons.add),
-        label: const Text('新增 Banner'),
+      appBar: AppBar(
+        title: const Text('Banner 設定'),
+        actions: [
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
       ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _bannerRef.snapshots(),
+      floatingActionButton: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: _query().snapshots(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return _ErrorView(
-              title: '載入失敗',
-              message: snap.error.toString(),
-              onRetry: () => setState(() {}),
-            );
-          }
-
-          final raw = <String, dynamic>{
-            ..._defaults,
-            ...(snap.data?.data() ?? const <String, dynamic>{}),
-          };
-
-          if (!_hydrated) {
-            _enabled = raw['enabled'] == true;
-            _items = (raw['items'] as List? ?? const [])
-                .whereType<Map>()
-                .map((e) => _BannerItem.fromMap(Map<String, dynamic>.from(e)))
-                .toList();
-            _items.sort((a, b) => a.order.compareTo(b.order));
-            _hydrated = true;
-          }
-
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
-            children: [
-              // ===== 上層開關提醒：app_center.bannerEnabled =====
-              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                stream: _appCenterRef.snapshots(),
-                builder: (context, ac) {
-                  final data = ac.data?.data() ?? const <String, dynamic>{};
-                  final enabled = data['bannerEnabled'] != false; // 缺省 true
-                  if (enabled) return const SizedBox.shrink();
-                  return Card(
-                    elevation: 0,
-                    color: Colors.amber.withOpacity(0.12),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.warning_amber_rounded),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              '注意：App 控制中心已關閉 bannerEnabled，前台不會顯示 Banner（即使你這裡開啟也一樣）。',
-                              style: TextStyle(color: cs.onSurface),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-
-              // ===== 狀態卡 =====
-              Card(
-                elevation: 0,
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        backgroundColor: cs.primaryContainer,
-                        child: Icon(Icons.photo_library_outlined, color: cs.onPrimaryContainer),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Banner 設定',
-                              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
-                            ),
-                            const SizedBox(height: 6),
-                            Row(
-                              children: [
-                                const Text('總開關：'),
-                                Switch(
-                                  value: _enabled,
-                                  onChanged: (v) => setState(() => _enabled = v),
-                                ),
-                                Text(_enabled ? 'enabled=true' : 'enabled=false'),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: '儲存',
-                        icon: const Icon(Icons.save_outlined),
-                        onPressed: _saving ? null : _save,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              const _SectionTitle(
-                title: 'Banner 列表',
-                subtitle: '拖拉可排序；點編輯可設定文字 / 跳轉 / 商品 / 圖片',
-              ),
-              const SizedBox(height: 8),
-
-              Card(
-                elevation: 0,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: _items.isEmpty
-                      ? const Text('目前沒有 Banner，請新增。')
-                      : ReorderableListView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: _items.length,
-                          onReorder: (oldIndex, newIndex) {
-                            setState(() {
-                              if (newIndex > oldIndex) newIndex -= 1;
-                              final it = _items.removeAt(oldIndex);
-                              _items.insert(newIndex, it);
-                              _reassignOrders();
-                            });
-                          },
-                          itemBuilder: (context, i) {
-                            final b = _items[i];
-                            return _BannerRow(
-                              key: ValueKey(b.id),
-                              item: b,
-                              onToggle: (v) => setState(() {
-                                _items[i] = b.copyWith(enabled: v);
-                              }),
-                              onEdit: () => _editBanner(i),
-                              onDelete: () => _deleteBanner(i),
-                            );
-                          },
-                        ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              ExpansionTile(
-                title: const Text('JSON 預覽'),
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: SelectableText(
-                      const JsonEncoder.withIndent('  ').convert(_buildDoc()),
-                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+          final docs = snap.data?.docs ?? const [];
+          final list = docs.map((e) => _BannerDoc.fromDoc(e)).toList();
+          return FloatingActionButton.extended(
+            onPressed: () => _createBanner(list),
+            icon: const Icon(Icons.add),
+            label: const Text('新增 Banner'),
           );
         },
       ),
-    );
-  }
+      body: Column(
+        children: [
+          _filterBar(cs),
+          const Divider(height: 1),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _query().snapshots(),
+              builder: (context, snap) {
+                if (snap.hasError) {
+                  return _ErrorView(
+                    title: '讀取失敗',
+                    message: snap.error.toString(),
+                    hint:
+                        '若錯誤包含 orderBy(sort)，請確認 shop_banners 都有 sort 欄位，或把 query 改成 createdAt/documentId。',
+                    onRetry: () => setState(() {}),
+                  );
+                }
+                if (!snap.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-  void _reassignOrders() {
-    // 用 10,20,30… 便於日後插入
-    for (int i = 0; i < _items.length; i++) {
-      _items[i] = _items[i].copyWith(order: (i + 1) * 10);
-    }
-  }
+                final all = snap.data!.docs
+                    .map((e) => _BannerDoc.fromDoc(e))
+                    .toList();
+                final filtered = all.where(_hitFilter).toList(growable: false);
 
-  Map<String, dynamic> _buildDoc() => {
-        'enabled': _enabled,
-        'items': _items.map((e) => e.toMap()).toList(),
-      };
+                if (filtered.isEmpty) {
+                  return const _EmptyView(
+                    title: '沒有 Banner',
+                    message: '目前篩選條件下沒有資料。',
+                  );
+                }
 
-  Future<void> _save() async {
-    setState(() => _saving = true);
-    try {
-      await _bannerRef.set(
-        {
-          ..._buildDoc(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已儲存')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<void> _addBanner() async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final item = _BannerItem(
-      id: 'b_$now',
-      enabled: true,
-      order: (_items.length + 1) * 10,
-      title: '',
-      subtitle: '',
-      imageUrl: '',
-      route: '',
-      productId: '',
-    );
-
-    setState(() {
-      _items.add(item);
-      _items.sort((a, b) => a.order.compareTo(b.order));
-    });
-
-    // 直接開編輯
-    final idx = _items.indexWhere((e) => e.id == item.id);
-    if (idx >= 0) await _editBanner(idx);
-  }
-
-  Future<void> _deleteBanner(int i) async {
-    final b = _items[i];
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除 Banner'),
-        content: Text('確定刪除「${b.title.isEmpty ? b.id : b.title}」？'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('刪除'),
+                return ReorderableListView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 80),
+                  itemCount: filtered.length,
+                  onReorder: (oldIndex, newIndex) =>
+                      _reorder(filtered, oldIndex, newIndex),
+                  itemBuilder: (context, i) {
+                    final b = filtered[i];
+                    return _bannerTile(
+                      key: ValueKey(b.id),
+                      cs: cs,
+                      b: b,
+                      index: i, // ✅ 讓 dragHandle 能用 index
+                    );
+                  },
+                );
+              },
+            ),
           ),
         ],
       ),
     );
-    if (ok != true) return;
-    setState(() => _items.removeAt(i));
   }
 
-  Future<void> _editBanner(int index) async {
-    final origin = _items[index];
-    var editing = origin;
+  Widget _filterBar(ColorScheme cs) {
+    final dropdown = DropdownButtonFormField<_BannerFilter>(
+      key: ValueKey('bannerFilter_${_filter.name}'),
+      initialValue: _filter,
+      items: _BannerFilter.values
+          .map(
+            (e) =>
+                DropdownMenuItem<_BannerFilter>(value: e, child: Text(e.label)),
+          )
+          .toList(),
+      onChanged: (v) {
+        if (v == null) {
+          return;
+        }
+        setState(() => _filter = v);
+      },
+      isExpanded: true,
+      decoration: InputDecoration(
+        labelText: '篩選',
+        isDense: true,
+        filled: true,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+      ),
+    );
 
-    final titleCtrl = TextEditingController(text: origin.title);
-    final subCtrl = TextEditingController(text: origin.subtitle);
-    final imgCtrl = TextEditingController(text: origin.imageUrl);
-    final routeCtrl = TextEditingController(text: origin.route);
-    final pidCtrl = TextEditingController(text: origin.productId);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: LayoutBuilder(
+        builder: (context, c) {
+          final isNarrow = c.maxWidth < 520;
+          if (isNarrow) {
+            return dropdown;
+          }
+          return SizedBox(width: 260, child: dropdown);
+        },
+      ),
+    );
+  }
 
-    void updateFromCtrls() {
-      editing = editing.copyWith(
-        title: titleCtrl.text.trim(),
-        subtitle: subCtrl.text.trim(),
-        imageUrl: imgCtrl.text.trim(),
-        route: routeCtrl.text.trim(),
-        productId: pidCtrl.text.trim(),
-      );
-    }
+  Widget _bannerTile({
+    required Key key,
+    required ColorScheme cs,
+    required _BannerDoc b,
+    required int index,
+  }) {
+    final statusColor = b.enabled ? cs.primary : cs.error;
+    final statusBg = b.enabled ? cs.primaryContainer : cs.errorContainer;
+    final statusFg = b.enabled ? cs.onPrimaryContainer : cs.onErrorContainer;
 
-    final ok = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) {
-        return StatefulBuilder(
-          builder: (context, setLocal) {
-            Future<void> doUpload() async {
-              setLocal(() {
-                _uploading = true;
-                _uploadProgress = 0;
-              });
+    final title = b.title.isEmpty ? '（未命名）' : b.title;
 
-              try {
-                final res = await FilePicker.platform.pickFiles(
-                  type: FileType.image,
-                  withData: true, // ✅ 這樣 Web/手機都可以用 putData，不用 dart:io
-                );
-                if (res == null || res.files.isEmpty) return;
+    // ✅ FIX: dragHandle「真的用上」→ 不會再 unused_local_variable
+    final dragHandle = ReorderableDragStartListener(
+      index: index,
+      child: const Tooltip(
+        message: '拖曳排序',
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Icon(Icons.drag_handle),
+        ),
+      ),
+    );
 
-                final file = res.files.first;
-                final bytes = file.bytes;
-                if (bytes == null) {
-                  throw Exception('讀取圖片失敗：bytes=null（請改用 withData:true）');
-                }
-
-                final ext = (file.extension ?? 'jpg').toLowerCase();
-                final contentType =
-                    ext == 'png' ? 'image/png' : (ext == 'webp' ? 'image/webp' : 'image/jpeg');
-
-                final path = 'banners/${editing.id}_${DateTime.now().millisecondsSinceEpoch}.$ext';
-                final ref = _storage.ref().child(path);
-
-                final task = ref.putData(
-                  bytes,
-                  SettableMetadata(contentType: contentType),
-                );
-
-                task.snapshotEvents.listen((s) {
-                  final total = s.totalBytes == 0 ? 1 : s.totalBytes;
-                  final p = s.bytesTransferred / total;
-                  setLocal(() => _uploadProgress = p.clamp(0, 1));
-                });
-
-                await task;
-                final url = await ref.getDownloadURL();
-
-                setLocal(() {
-                  imgCtrl.text = url;
-                  updateFromCtrls();
-                });
-              } finally {
-                setLocal(() {
-                  _uploading = false;
-                  _uploadProgress = 0;
-                });
-              }
-            }
-
-            return AlertDialog(
-              title: const Text('編輯 Banner', style: TextStyle(fontWeight: FontWeight.w900)),
-              content: SizedBox(
-                width: 520,
-                child: SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('啟用', style: TextStyle(fontWeight: FontWeight.w800)),
-                        value: editing.enabled,
-                        onChanged: (v) => setLocal(() {
-                          editing = editing.copyWith(enabled: v);
-                        }),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: titleCtrl,
-                        decoration: const InputDecoration(
-                          labelText: '標題（title）',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (_) => setLocal(updateFromCtrls),
-                      ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        controller: subCtrl,
-                        decoration: const InputDecoration(
-                          labelText: '副標（subtitle）',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (_) => setLocal(updateFromCtrls),
-                      ),
-                      const SizedBox(height: 10),
-
-                      // 圖片
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: imgCtrl,
-                              decoration: const InputDecoration(
-                                labelText: '圖片 URL（imageUrl）',
-                                border: OutlineInputBorder(),
-                              ),
-                              onChanged: (_) => setLocal(updateFromCtrls),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          FilledButton.tonalIcon(
-                            onPressed: _uploading ? null : doUpload,
-                            icon: const Icon(Icons.upload),
-                            label: const Text('上傳'),
-                          ),
-                        ],
-                      ),
-                      if (_uploading) ...[
-                        const SizedBox(height: 8),
-                        LinearProgressIndicator(value: _uploadProgress == 0 ? null : _uploadProgress),
-                        const SizedBox(height: 6),
-                        Text(
-                          '上傳中... ${(kDebugMode ? (_uploadProgress * 100).toStringAsFixed(0) : '')}%',
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                      ],
-                      const SizedBox(height: 10),
-
-                      if (imgCtrl.text.trim().isNotEmpty)
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: AspectRatio(
-                            aspectRatio: 16 / 7,
-                            child: Image.network(
-                              imgCtrl.text.trim(),
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => Container(
-                                color: Colors.grey.shade200,
-                                alignment: Alignment.center,
-                                child: const Icon(Icons.broken_image_outlined, color: Colors.grey),
-                              ),
-                            ),
-                          ),
-                        ),
-
-                      const SizedBox(height: 12),
-
-                      // 跳轉（route / productId 二擇一即可）
-                      TextField(
-                        controller: routeCtrl,
-                        decoration: const InputDecoration(
-                          labelText: '點擊導向路由（route，例如 /shop、/login）',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (_) => setLocal(updateFromCtrls),
-                      ),
-                      const SizedBox(height: 10),
-                      TextField(
-                        controller: pidCtrl,
-                        decoration: const InputDecoration(
-                          labelText: '點擊開商品（productId，優先於 route）',
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (_) => setLocal(updateFromCtrls),
-                      ),
-
-                      const SizedBox(height: 8),
-                      Text(
-                        '提示：productId 會在前台用商品列表的 id 尋找並開啟詳情；若找不到會提示。',
-                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
-                      ),
-                    ],
+    final preview = ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: 240,
+        height: 120,
+        color: _withOpacity(cs.onSurface, 0.05),
+        child: b.imageUrl.isEmpty
+            ? Center(
+                child: Text(
+                  '無圖片',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+              )
+            : Image.network(
+                b.imageUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Center(
+                  child: Text(
+                    '圖片載入失敗',
+                    style: TextStyle(color: cs.onSurfaceVariant),
                   ),
                 ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('取消'),
+      ),
+    );
+
+    final statusChip = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: statusBg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: _withOpacity(statusColor, 0.20)),
+      ),
+      child: Text(
+        b.enabled ? '啟用' : '停用',
+        style: TextStyle(color: statusFg, fontWeight: FontWeight.w900),
+      ),
+    );
+
+    final info = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 16,
                 ),
-                FilledButton.icon(
-                  onPressed: () {
-                    updateFromCtrls();
-                    Navigator.pop(context, true);
-                  },
-                  icon: const Icon(Icons.check),
-                  label: const Text('套用'),
-                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            statusChip,
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'id: ${b.id}  •  sort: ${b.sort}',
+          style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+        ),
+        const SizedBox(height: 6),
+        if (b.linkUrl.isNotEmpty) ...[
+          Text(
+            'link: ${b.linkUrl}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: cs.onSurfaceVariant),
+          ),
+          const SizedBox(height: 6),
+        ],
+        Text(
+          'created: ${_fmtTs(b.createdAt)}   updated: ${_fmtTs(b.updatedAt)}',
+          style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            FilledButton.tonalIcon(
+              onPressed: () => _editBanner(b),
+              icon: const Icon(Icons.edit),
+              label: const Text('編輯'),
+            ),
+            OutlinedButton.icon(
+              onPressed: () => _toggleEnabled(b),
+              icon: Icon(
+                b.enabled
+                    ? Icons.pause_circle_outline
+                    : Icons.play_circle_outline,
+              ),
+              label: Text(b.enabled ? '停用' : '啟用'),
+            ),
+            OutlinedButton.icon(
+              onPressed: () => _deleteBanner(b),
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('刪除'),
+              style: OutlinedButton.styleFrom(foregroundColor: cs.error),
+            ),
+          ],
+        ),
+      ],
+    );
+
+    return Card(
+      key: key,
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: LayoutBuilder(
+          builder: (context, c) {
+            final isNarrow = c.maxWidth < 760;
+
+            if (isNarrow) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(child: preview),
+                      dragHandle, // ✅ 使用 dragHandle
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  info,
+                ],
+              );
+            }
+
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                preview,
+                const SizedBox(width: 12),
+                Expanded(child: info),
+                dragHandle, // ✅ 使用 dragHandle
               ],
             );
           },
-        );
-      },
+        ),
+      ),
     );
+  }
 
-    if (ok != true) return;
-
-    setState(() {
-      _items[index] = editing;
-      _items.sort((a, b) => a.order.compareTo(b.order));
-    });
+  // =====================================================
+  // Dialog helpers
+  // =====================================================
+  Future<bool?> _confirm({
+    required String title,
+    required String message,
+    required String confirmText,
+    bool isDanger = false,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    return showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: isDanger ? cs.error : null,
+              foregroundColor: isDanger ? cs.onError : null,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmText),
+          ),
+        ],
+      ),
+    );
   }
 }
 
-// ============================================================
-// Model
-// ============================================================
+// =====================================================
+// Models / Enums / Dialogs / Views
+// =====================================================
+enum _BannerFilter {
+  all('全部'),
+  enabled('啟用'),
+  disabled('停用');
 
-class _BannerItem {
+  final String label;
+  const _BannerFilter(this.label);
+}
+
+class _BannerDoc {
   final String id;
-  final bool enabled;
-  final int order;
   final String title;
-  final String subtitle;
   final String imageUrl;
-  final String route;
-  final String productId;
+  final String linkUrl;
+  final bool enabled;
+  final int sort;
+  final dynamic createdAt;
+  final dynamic updatedAt;
 
-  const _BannerItem({
+  _BannerDoc({
     required this.id,
-    required this.enabled,
-    required this.order,
     required this.title,
-    required this.subtitle,
     required this.imageUrl,
-    required this.route,
-    required this.productId,
+    required this.linkUrl,
+    required this.enabled,
+    required this.sort,
+    required this.createdAt,
+    required this.updatedAt,
   });
 
-  factory _BannerItem.fromMap(Map<String, dynamic> m) {
-    String s(dynamic v) => (v ?? '').toString().trim();
-    int i(dynamic v, [int fb = 0]) {
+  static _BannerDoc fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final m = doc.data() ?? <String, dynamic>{};
+
+    int asInt(dynamic v) {
       if (v is int) return v;
       if (v is num) return v.toInt();
-      return int.tryParse(s(v)) ?? fb;
+      return int.tryParse((v ?? '').toString()) ?? 0;
     }
 
-    final id = s(m['id']);
-    return _BannerItem(
-      id: id.isEmpty ? 'b_${m.hashCode}' : id,
-      enabled: m['enabled'] != false,
-      order: i(m['order'], 0),
-      title: s(m['title']),
-      subtitle: s(m['subtitle']),
-      imageUrl: s(m['imageUrl']).isEmpty ? s(m['image']) : s(m['imageUrl']),
-      route: s(m['route']),
-      productId: s(m['productId']),
-    );
-  }
-
-  Map<String, dynamic> toMap() => {
-        'id': id,
-        'enabled': enabled,
-        'order': order,
-        'title': title,
-        'subtitle': subtitle,
-        'imageUrl': imageUrl,
-        'route': route,
-        'productId': productId,
-      };
-
-  _BannerItem copyWith({
-    bool? enabled,
-    int? order,
-    String? title,
-    String? subtitle,
-    String? imageUrl,
-    String? route,
-    String? productId,
-  }) {
-    return _BannerItem(
-      id: id,
-      enabled: enabled ?? this.enabled,
-      order: order ?? this.order,
-      title: title ?? this.title,
-      subtitle: subtitle ?? this.subtitle,
-      imageUrl: imageUrl ?? this.imageUrl,
-      route: route ?? this.route,
-      productId: productId ?? this.productId,
+    return _BannerDoc(
+      id: doc.id,
+      title: (m['title'] ?? '').toString(),
+      imageUrl: (m['imageUrl'] ?? '').toString(),
+      linkUrl: (m['linkUrl'] ?? '').toString(),
+      enabled: m['enabled'] == true,
+      sort: asInt(m['sort']),
+      createdAt: m['createdAt'],
+      updatedAt: m['updatedAt'],
     );
   }
 }
 
-// ============================================================
-// UI Widgets
-// ============================================================
+class _BannerEditResult {
+  final String title;
+  final String imageUrl;
+  final String linkUrl;
+  final bool enabled;
 
-class _BannerRow extends StatelessWidget {
-  final _BannerItem item;
-  final ValueChanged<bool> onToggle;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-
-  const _BannerRow({
-    super.key,
-    required this.item,
-    required this.onToggle,
-    required this.onEdit,
-    required this.onDelete,
+  _BannerEditResult({
+    required this.title,
+    required this.imageUrl,
+    required this.linkUrl,
+    required this.enabled,
   });
+}
+
+class _BannerEditDialog extends StatefulWidget {
+  final String title;
+
+  final String initialTitle;
+  final String initialImageUrl;
+  final String initialLinkUrl;
+  final bool initialEnabled;
+
+  const _BannerEditDialog({
+    required this.title,
+    this.initialTitle = '',
+    this.initialImageUrl = '',
+    this.initialLinkUrl = '',
+    this.initialEnabled = true,
+  });
+
+  @override
+  State<_BannerEditDialog> createState() => _BannerEditDialogState();
+}
+
+class _BannerEditDialogState extends State<_BannerEditDialog> {
+  late final TextEditingController _title = TextEditingController(
+    text: widget.initialTitle,
+  );
+  late final TextEditingController _imageUrl = TextEditingController(
+    text: widget.initialImageUrl,
+  );
+  late final TextEditingController _linkUrl = TextEditingController(
+    text: widget.initialLinkUrl,
+  );
+
+  bool _enabled = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.initialEnabled;
+  }
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _imageUrl.dispose();
+    _linkUrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        widget.title,
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
+      content: SizedBox(
+        width: 640,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('啟用'),
+                value: _enabled,
+                onChanged: (v) => setState(() => _enabled = v),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _title,
+                decoration: InputDecoration(
+                  labelText: '標題（可留空）',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _imageUrl,
+                decoration: InputDecoration(
+                  labelText: '圖片 URL（建議填）',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _linkUrl,
+                decoration: InputDecoration(
+                  labelText: '連結 URL（可留空）',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '提示：右側拖曳把手可調整排序（sort 越小越前）。',
+                  style: TextStyle(color: Colors.black54, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            Navigator.pop(
+              context,
+              _BannerEditResult(
+                title: _title.text,
+                imageUrl: _imageUrl.text,
+                linkUrl: _linkUrl.text,
+                enabled: _enabled,
+              ),
+            );
+          },
+          icon: const Icon(Icons.check),
+          label: const Text('套用'),
+        ),
+      ],
+    );
+  }
+}
+
+class _EmptyView extends StatelessWidget {
+  final String title;
+  final String message;
+  const _EmptyView({required this.title, required this.message});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final title = item.title.isEmpty ? '未命名 Banner' : item.title;
-
-    return Container(
-      key: key,
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: ListTile(
-        leading: ClipRRect(
-          borderRadius: BorderRadius.circular(10),
-          child: SizedBox(
-            width: 54,
-            height: 54,
-            child: item.imageUrl.trim().isEmpty
-                ? Container(
-                    color: Colors.grey.shade200,
-                    alignment: Alignment.center,
-                    child: const Icon(Icons.image_outlined, color: Colors.grey),
-                  )
-                : Image.network(
-                    item.imageUrl.trim(),
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(
-                      color: Colors.grey.shade200,
-                      alignment: Alignment.center,
-                      child: const Icon(Icons.broken_image_outlined, color: Colors.grey),
-                    ),
-                  ),
-          ),
-        ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-        subtitle: Text(
-          'order=${item.order} • ${item.productId.isNotEmpty ? 'productId=${item.productId}' : (item.route.isNotEmpty ? 'route=${item.route}' : '未設定跳轉')}',
-          style: TextStyle(color: cs.onSurfaceVariant),
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 40),
+        child: Column(
           children: [
-            Switch(value: item.enabled, onChanged: onToggle),
-            IconButton(icon: const Icon(Icons.edit_outlined), onPressed: onEdit),
-            IconButton(icon: const Icon(Icons.delete_outline), onPressed: onDelete),
-            const Icon(Icons.drag_handle),
+            Icon(Icons.photo_outlined, size: 44, color: cs.onSurfaceVariant),
+            const SizedBox(height: 10),
+            Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+            ),
+            const SizedBox(height: 6),
+            Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
           ],
         ),
       ),
@@ -711,66 +809,58 @@ class _BannerRow extends StatelessWidget {
   }
 }
 
-class _SectionTitle extends StatelessWidget {
-  final String title;
-  final String? subtitle;
-
-  const _SectionTitle({
-    required this.title,
-    this.subtitle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14)),
-        if (subtitle != null)
-          Text(
-            subtitle!,
-            style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600),
-          ),
-      ],
-    );
-  }
-}
-
 class _ErrorView extends StatelessWidget {
   final String title;
   final String message;
+  final String? hint;
   final VoidCallback onRetry;
 
   const _ErrorView({
     required this.title,
     required this.message,
     required this.onRetry,
+    this.hint,
   });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Center(
-      child: Card(
-        margin: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
         child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.error_outline, size: 44, color: cs.error),
-              const SizedBox(height: 8),
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
-              const SizedBox(height: 10),
-              Text(message, textAlign: TextAlign.center, style: TextStyle(color: cs.onSurfaceVariant)),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh),
-                label: const Text('重試'),
+          padding: const EdgeInsets.all(16),
+          child: Card(
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline, size: 44, color: cs.error),
+                  const SizedBox(height: 10),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
+                  if (hint != null) ...[
+                    const SizedBox(height: 10),
+                    Text(hint!, style: TextStyle(color: cs.onSurfaceVariant)),
+                  ],
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重試'),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),

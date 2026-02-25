@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'lottery_page.dart';
+import 'lottery/lottery_page.dart';
 
 class PromoPage extends StatelessWidget {
   const PromoPage({super.key});
@@ -10,12 +10,12 @@ class PromoPage extends StatelessWidget {
       {
         "title": "雙 11 購物節",
         "desc": "全館 85 折，滿 3000 再送 500 購物金",
-        "image": "assets/images/promo1.png"
+        "image": "assets/images/promo1.png",
       },
       {
         "title": "Osmile 健康週",
         "desc": "智慧手錶系列全面 9 折，限時 3 天！",
-        "image": "assets/images/promo2.png"
+        "image": "assets/images/promo2.png",
       },
     ];
 
@@ -33,7 +33,8 @@ class PromoPage extends StatelessWidget {
               margin: const EdgeInsets.only(bottom: 16),
               clipBehavior: Clip.hardEdge,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
+                borderRadius: BorderRadius.circular(16),
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -43,9 +44,13 @@ class PromoPage extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(p["title"]!,
-                            style: const TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.bold)),
+                        Text(
+                          p["title"]!,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                         const SizedBox(height: 4),
                         Text(p["desc"]!),
                         const SizedBox(height: 10),
@@ -53,20 +58,22 @@ class PromoPage extends StatelessWidget {
                           onPressed: () => Navigator.push(
                             context,
                             MaterialPageRoute(
-                                builder: (_) => const LotteryPage()),
+                              builder: (_) => const LotteryPage(),
+                            ),
                           ),
                           icon: const Icon(Icons.casino),
                           label: const Text("立即抽獎"),
                           style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF007BFF),
-                              foregroundColor: Colors.white),
+                            backgroundColor: const Color(0xFF007BFF),
+                            foregroundColor: Colors.white,
+                          ),
                         ),
                       ],
                     ),
                   ),
                 ],
               ),
-            )
+            ),
         ],
       ),
     );

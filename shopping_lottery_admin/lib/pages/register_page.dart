@@ -7,9 +7,10 @@
 // - 成功後導回 Login 或直接導向 afterRegisterRoute（預設回 /login）
 //
 // 依賴：
-// - services/auth_service.dart (AuthService, AuthException)
+// - services/auth_service.dart (AuthService)
 // - provider
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -89,11 +90,32 @@ class _RegisterPageState extends State<RegisterPage> {
     return null;
   }
 
+  String _friendlyAuthError(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'email-already-in-use':
+        return '此 Email 已被註冊';
+      case 'invalid-email':
+        return 'Email 格式不正確';
+      case 'weak-password':
+        return '密碼強度不足（至少 6 碼）';
+      case 'operation-not-allowed':
+        return '此登入方式未啟用（請到 Firebase Auth 設定啟用 Email/Password）';
+      case 'network-request-failed':
+        return '網路連線失敗，請稍後再試';
+      default:
+        return '註冊失敗（${e.code}）：${e.message ?? ""}';
+    }
+  }
+
   Future<void> _register() async {
+    if (_loading) return;
+
     final auth = context.read<AuthService>();
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+    final ok = _formKey.currentState?.validate() ?? false;
+    if (!ok) return;
 
     setState(() => _loading = true);
+
     try {
       await auth.signUp(
         email: _emailCtrl.text.trim(),
@@ -112,11 +134,14 @@ class _RegisterPageState extends State<RegisterPage> {
       if (!mounted) return;
 
       if (widget.sendVerifyEmail) {
-        await showDialog(
+        await showDialog<void>(
           context: context,
           builder: (_) => AlertDialog(
             title: const Text('註冊完成'),
-            content: const Text('已建立帳號。若你啟用 Email 驗證，請至信箱收取驗證信後再登入或使用完整功能。'),
+            content: const Text(
+              '已建立帳號。\n'
+              '若你啟用 Email 驗證，請至信箱收取驗證信後再登入或使用完整功能。',
+            ),
             actions: [
               FilledButton(
                 onPressed: () => Navigator.pop(context),
@@ -131,9 +156,10 @@ class _RegisterPageState extends State<RegisterPage> {
 
       if (!mounted) return;
       Navigator.pushReplacementNamed(context, widget.afterRegisterRoute);
+    } on FirebaseAuthException catch (e) {
+      _snack(_friendlyAuthError(e));
     } catch (e) {
-      final msg = (e is AuthException) ? e.message : '註冊失敗：$e';
-      _snack(msg);
+      _snack('註冊失敗：$e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -202,8 +228,14 @@ class _RegisterPageState extends State<RegisterPage> {
                           helperText: '至少 6 碼',
                           suffixIcon: IconButton(
                             tooltip: _showPwd ? '隱藏密碼' : '顯示密碼',
-                            onPressed: _loading ? null : () => setState(() => _showPwd = !_showPwd),
-                            icon: Icon(_showPwd ? Icons.visibility_off : Icons.visibility),
+                            onPressed: _loading
+                                ? null
+                                : () => setState(() => _showPwd = !_showPwd),
+                            icon: Icon(
+                              _showPwd
+                                  ? Icons.visibility_off
+                                  : Icons.visibility,
+                            ),
                           ),
                         ),
                         obscureText: !_showPwd,
@@ -220,8 +252,14 @@ class _RegisterPageState extends State<RegisterPage> {
                           border: const OutlineInputBorder(),
                           suffixIcon: IconButton(
                             tooltip: _showPwd2 ? '隱藏密碼' : '顯示密碼',
-                            onPressed: _loading ? null : () => setState(() => _showPwd2 = !_showPwd2),
-                            icon: Icon(_showPwd2 ? Icons.visibility_off : Icons.visibility),
+                            onPressed: _loading
+                                ? null
+                                : () => setState(() => _showPwd2 = !_showPwd2),
+                            icon: Icon(
+                              _showPwd2
+                                  ? Icons.visibility_off
+                                  : Icons.visibility,
+                            ),
                           ),
                         ),
                         obscureText: !_showPwd2,
@@ -237,7 +275,9 @@ class _RegisterPageState extends State<RegisterPage> {
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.person_add_alt_1),
                         label: Text(widget.sendVerifyEmail ? '註冊並寄送驗證信' : '註冊'),
@@ -245,7 +285,12 @@ class _RegisterPageState extends State<RegisterPage> {
 
                       const SizedBox(height: 12),
                       TextButton(
-                        onPressed: _loading ? null : () => Navigator.pushReplacementNamed(context, '/login'),
+                        onPressed: _loading
+                            ? null
+                            : () => Navigator.pushReplacementNamed(
+                                context,
+                                '/login',
+                              ),
                         child: const Text('已經有帳號？回登入'),
                       ),
                     ],

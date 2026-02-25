@@ -1,30 +1,25 @@
 // lib/main_admin.dart
-//
-// ✅ Osmile Admin 後台主程式（完整版）
-// 可直接 run Web / App，用於測試完整 Admin 後台流程。
-// 與 vendor 後台獨立運作，可部署在不同路由或執行環境。
-// ------------------------------------------------------------
-
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:provider/provider.dart';
 
-import 'services/admin_gate.dart';
-import 'pages/admin_shell_page.dart';
+// ✅ Firebase 若你有用，打開下面兩行
+// import 'package:firebase_core/firebase_core.dart';
+// import 'firebase_options.dart';
 
-void main() async {
+import 'services/auth_service.dart';
+import 'services/notification_service.dart';
+
+// ✅ 依你的專案實際頁面調整（這裡先用佔位）
+// import 'pages/admin/admin_gate.dart';
+// import 'pages/admin/admin_shell_page.dart';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await Firebase.initializeApp(
-    options: const FirebaseOptions(
-      apiKey: "YOUR_API_KEY_HERE",
-      authDomain: "YOUR_PROJECT.firebaseapp.com",
-      projectId: "YOUR_PROJECT_ID",
-      storageBucket: "YOUR_PROJECT.appspot.com",
-      messagingSenderId: "YOUR_SENDER_ID",
-      appId: "YOUR_APP_ID",
-    ),
-  );
+  // ✅ 若你後台有初始化 Firebase，請打開
+  // await Firebase.initializeApp(
+  //   options: DefaultFirebaseOptions.currentPlatform,
+  // );
 
   runApp(const AdminApp());
 }
@@ -34,119 +29,158 @@ class AdminApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Osmile Admin 後台',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueGrey),
-        useMaterial3: true,
+    return MultiProvider(
+      providers: [
+        /// ✅ FIX: AuthService 不是 ChangeNotifier → 用 Provider
+        Provider<AuthService>(create: (_) => AuthService()),
+
+        /// ✅ NotificationService 是 ChangeNotifier → 用 ChangeNotifierProvider
+        ChangeNotifierProvider<NotificationService>(
+          create: (_) => NotificationService(),
+        ),
+
+        // 你其他 Provider 照放（例）
+        // ChangeNotifierProvider<AdminModeController>(create: (_) => AdminModeController()),
+      ],
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: 'Osmile Admin',
+        theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
+
+        /// ✅ 這裡換成你的實際後台入口
+        /// 例如：home: const AdminGate(),
+        home: const _AdminBootstrapPage(),
       ),
-      debugShowCheckedModeBanner: false,
-      initialRoute: '/',
-      routes: {
-        '/': (_) => const _AdminEntryPage(),
-        '/admin': (_) => const AdminGate(),
-      },
     );
   }
 }
 
-/// ------------------------------------------------------------
-/// 登入檢查頁
-/// ------------------------------------------------------------
-class _AdminEntryPage extends StatefulWidget {
-  const _AdminEntryPage();
+/// ------------------------------------------------------------------
+/// ✅ 佔位入口頁：確保 Provider/AuthService 有正常工作（可刪）
+/// ------------------------------------------------------------------
+class _AdminBootstrapPage extends StatelessWidget {
+  const _AdminBootstrapPage();
 
   @override
-  State<_AdminEntryPage> createState() => _AdminEntryPageState();
+  Widget build(BuildContext context) {
+    // ✅ Provider<AuthService> 仍然可以用 watch/read
+    final auth = context.watch<AuthService>();
+    final user = auth.currentUser;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Admin Bootstrap'),
+        actions: [
+          if (user != null)
+            TextButton(
+              onPressed: () async {
+                await auth.signOut();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(const SnackBar(content: Text('已登出')));
+                }
+              },
+              child: const Text('Sign out'),
+            ),
+        ],
+      ),
+      body: Center(
+        child: user == null
+            ? _LoginPanel(
+                onLogin: (email, pw) async {
+                  try {
+                    await auth.signInWithEmailAndPassword(
+                      email: email,
+                      password: pw,
+                    );
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(const SnackBar(content: Text('登入成功')));
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('登入失敗：$e')));
+                    }
+                  }
+                },
+              )
+            : Text('Signed in as: ${user.email ?? user.uid}'),
+      ),
+    );
+  }
 }
 
-class _AdminEntryPageState extends State<_AdminEntryPage> {
-  final _auth = FirebaseAuth.instance;
-  bool _loading = true;
+class _LoginPanel extends StatefulWidget {
+  final Future<void> Function(String email, String password) onLogin;
+  const _LoginPanel({required this.onLogin});
 
   @override
-  void initState() {
-    super.initState();
-    _checkAuth();
+  State<_LoginPanel> createState() => _LoginPanelState();
+}
+
+class _LoginPanelState extends State<_LoginPanel> {
+  final _email = TextEditingController();
+  final _pw = TextEditingController();
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _pw.dispose();
+    super.dispose();
   }
 
-  Future<void> _checkAuth() async {
-    final user = _auth.currentUser;
-    await Future.delayed(const Duration(milliseconds: 400));
-    if (!mounted) return;
+  Future<void> _doLogin() async {
+    final email = _email.text.trim();
+    final pw = _pw.text;
+    if (email.isEmpty || pw.isEmpty) return;
 
-    if (user != null) {
-      Navigator.pushReplacementNamed(context, '/admin');
-    } else {
-      setState(() => _loading = false);
+    setState(() => _loading = true);
+    try {
+      await widget.onLogin(email, pw);
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Admin 後台登入')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Card(
-            margin: const EdgeInsets.all(20),
-            elevation: 0,
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('請登入以進入主後台',
-                      style:
-                          TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
-                  const SizedBox(height: 18),
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.admin_panel_settings),
-                    label: const Text('使用測試管理員登入'),
-                    onPressed: _loginTestAdmin,
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    '登入後會自動導向 AdminShellPage，\n'
-                    '請確認 users/{uid}.role == "admin"。',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-                  ),
-                ],
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _email,
+              decoration: const InputDecoration(labelText: 'Email'),
+              keyboardType: TextInputType.emailAddress,
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _pw,
+              decoration: const InputDecoration(labelText: 'Password'),
+              obscureText: true,
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: ElevatedButton(
+                onPressed: _loading ? null : _doLogin,
+                child: _loading
+                    ? const CircularProgressIndicator.adaptive()
+                    : const Text('Login'),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
-  }
-
-  /// 測試帳號登入
-  Future<void> _loginTestAdmin() async {
-    try {
-      const email = "admin@test.com";
-      const password = "123456";
-
-      await _auth.signInWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-
-      if (!mounted) return;
-      Navigator.pushReplacementNamed(context, '/admin');
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('登入失敗：$e')));
-    }
   }
 }

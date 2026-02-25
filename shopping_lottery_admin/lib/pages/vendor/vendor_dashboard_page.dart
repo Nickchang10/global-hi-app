@@ -1,6 +1,6 @@
 // lib/pages/vendor/vendor_dashboard_page.dart
 //
-// ✅ VendorDashboardPage（完整最終版）
+// ✅ VendorDashboardPage（完整最終版｜已修正 withOpacity deprecated → withValues）
 // ------------------------------------------------------------
 // - 今日營收 / 訂單數 / 熱銷商品摘要
 // - 庫存警示（顯示低於安全庫存的商品）
@@ -34,11 +34,16 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
 
   Future<void> _loadVendorId() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    final snap =
-        await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    if (uid == null) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
+    final snap = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .get();
     _vendorId = snap.data()?['vendorId'];
-    setState(() => _loading = false);
+    if (mounted) setState(() => _loading = false);
   }
 
   @override
@@ -46,13 +51,19 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    if (FirebaseAuth.instance.currentUser == null) {
+      return const Scaffold(body: Center(child: Text('請先登入')));
+    }
     if (_vendorId == null) {
       return const Scaffold(body: Center(child: Text('尚未綁定廠商帳號')));
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('廠商儀表板', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          '廠商儀表板',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
       ),
       body: RefreshIndicator(
         onRefresh: () async => setState(() {}),
@@ -79,9 +90,8 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
   // =====================================================
 
   Widget _buildTodaySummary() {
-    final todayStart = DateTime.now();
-    final startOfDay =
-        DateTime(todayStart.year, todayStart.month, todayStart.day);
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
 
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
@@ -103,7 +113,7 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
           final ts = data['createdAt'];
           if (ts is Timestamp) {
             final date = ts.toDate();
-            if (date.isAfter(startOfDay)) {
+            if (!date.isBefore(startOfDay)) {
               todayOrders++;
               todayRevenue += (data['finalAmount'] ?? 0) as num;
             }
@@ -135,11 +145,12 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
     );
   }
 
-  Widget _summaryCard(
-      {required String title,
-      required String value,
-      required Color color,
-      required IconData icon}) {
+  Widget _summaryCard({
+    required String title,
+    required String value,
+    required Color color,
+    required IconData icon,
+  }) {
     return Card(
       elevation: 2,
       child: Padding(
@@ -147,7 +158,8 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
         child: Row(
           children: [
             CircleAvatar(
-              backgroundColor: color.withOpacity(0.1),
+              // ✅ withOpacity deprecated → withValues(alpha: ...)
+              backgroundColor: color.withValues(alpha: 0.10),
               child: Icon(icon, color: color),
             ),
             const SizedBox(width: 12),
@@ -155,15 +167,21 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title,
-                      style: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w500)),
-                  Text(value,
-                      style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: color,
-                          fontSize: 18)),
+                  Text(
+                    title,
+                    style: TextStyle(
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    value,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: color,
+                      fontSize: 18,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -191,6 +209,7 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
 
         final docs = snap.data!.docs;
         final Map<String, num> dailyRevenue = {};
+
         for (final doc in docs) {
           final data = doc.data() as Map<String, dynamic>;
           final ts = data['createdAt'];
@@ -209,10 +228,7 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
 
         if (spots.isEmpty) {
           return const Card(
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('尚無營收資料'),
-            ),
+            child: Padding(padding: EdgeInsets.all(16), child: Text('尚無營收資料')),
           );
         }
 
@@ -223,9 +239,10 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('近期待營收趨勢',
-                    style:
-                        TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const Text(
+                  '近期營收趨勢',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
                 const SizedBox(height: 10),
                 SizedBox(
                   height: 180,
@@ -238,12 +255,13 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
                             showTitles: true,
                             interval: 1,
                             getTitlesWidget: (v, meta) {
-                              if (v.toInt() < 0 ||
-                                  v.toInt() >= keys.length) {
+                              if (v.toInt() < 0 || v.toInt() >= keys.length) {
                                 return const SizedBox.shrink();
                               }
-                              return Text(keys[v.toInt()],
-                                  style: const TextStyle(fontSize: 10));
+                              return Text(
+                                keys[v.toInt()],
+                                style: const TextStyle(fontSize: 10),
+                              );
                             },
                           ),
                         ),
@@ -259,7 +277,10 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
                           barWidth: 3,
                           dotData: const FlDotData(show: false),
                           belowBarData: BarAreaData(
-                              show: true, color: Colors.green.withOpacity(0.15)),
+                            show: true,
+                            // ✅ withOpacity deprecated → withValues(alpha: ...)
+                            color: Colors.green.withValues(alpha: 0.15),
+                          ),
                           spots: spots,
                         ),
                       ],
@@ -302,16 +323,19 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('庫存警示',
-                    style:
-                        TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const Text(
+                  '庫存警示',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
                 const SizedBox(height: 8),
                 ...docs.map((d) {
                   final data = d.data() as Map<String, dynamic>;
                   return ListTile(
                     dense: true,
-                    leading: const Icon(Icons.warning_amber_rounded,
-                        color: Colors.orange),
+                    leading: const Icon(
+                      Icons.warning_amber_rounded,
+                      color: Colors.orange,
+                    ),
                     title: Text(data['title'] ?? '-'),
                     subtitle: Text('目前庫存：${data['stock'] ?? 0}'),
                   );
@@ -344,10 +368,7 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
         final docs = snap.data!.docs;
         if (docs.isEmpty) {
           return const Card(
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('尚無銷售紀錄'),
-            ),
+            child: Padding(padding: EdgeInsets.all(16), child: Text('尚無銷售紀錄')),
           );
         }
 
@@ -358,17 +379,22 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('熱銷商品 TOP 5',
-                    style:
-                        TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const Text(
+                  '熱銷商品 TOP 5',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
                 const SizedBox(height: 8),
                 ...docs.map((doc) {
                   final data = doc.data() as Map<String, dynamic>;
                   return ListTile(
                     dense: true,
                     leading: data['image'] != null
-                        ? Image.network(data['image'],
-                            width: 50, height: 50, fit: BoxFit.cover)
+                        ? Image.network(
+                            data['image'],
+                            width: 50,
+                            height: 50,
+                            fit: BoxFit.cover,
+                          )
                         : const Icon(Icons.image_outlined),
                     title: Text(data['title'] ?? '-'),
                     subtitle: Text('銷售量：${data['sold'] ?? 0}'),
@@ -416,27 +442,34 @@ class _VendorDashboardPageState extends State<VendorDashboardPage> {
     );
   }
 
-  Widget _quickButton(
-      {required IconData icon,
-      required Color color,
-      required String label,
-      required VoidCallback onTap}) {
+  Widget _quickButton({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required VoidCallback onTap,
+  }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
         width: 110,
         padding: const EdgeInsets.symmetric(vertical: 14),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
+          // ✅ withOpacity deprecated → withValues(alpha: ...)
+          color: color.withValues(alpha: 0.10),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(
           children: [
             Icon(icon, color: color, size: 28),
             const SizedBox(height: 6),
-            Text(label,
-                style: TextStyle(
-                    color: color, fontWeight: FontWeight.bold, fontSize: 13)),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
           ],
         ),
       ),

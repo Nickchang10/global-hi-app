@@ -1,8 +1,13 @@
 // lib/pages/admin/members/admin_members_page.dart
 // =====================================================
-// ✅ AdminMembersPage（修正版完整版）
+// ✅ AdminMembersPage（修正版完整版｜可編譯）
 // - 修正 RenderFlex overflow（Row 超寬）
 // - 修正 DropdownButton assertion（value 不在 items / 重複）
+// - ✅ 修正 DropdownButtonFormField deprecated: value → initialValue
+// - ✅ 修正 withOpacity deprecated → withValues(alpha:)
+// - ✅ 修正 curly_braces_in_flow_control_structures（全部 if 都加大括號）
+// - ✅ 修正 uid_ undefined（字串插值 $uid_）
+// - ✅ 修正 unnecessary_brace_in_string_interps（role 插值多餘大括號）
 // - Firestore: users collection（role / vendorId）
 // =====================================================
 
@@ -11,6 +16,12 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+
+/// ✅ FIX: withOpacity deprecated → withValues(alpha: 0~1)
+Color _withOpacity(Color c, double opacity01) {
+  final o = opacity01.clamp(0.0, 1.0).toDouble();
+  return c.withValues(alpha: o);
+}
 
 class AdminMembersPage extends StatefulWidget {
   const AdminMembersPage({super.key});
@@ -41,23 +52,29 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
   void _onSearchChanged(String v) {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 250), () {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       setState(() => _keyword = v.trim().toLowerCase());
     });
   }
 
-  // ✅ Dropdown 防呆：value 必須存在於 items
+  /// ✅ Dropdown 防呆：value 必須存在於 items（否則回 null）
   T? _safeDropdownValue<T>(T? value, List<T> items) {
-    if (value == null) return null;
-    return items.contains(value) ? value : null;
+    if (value == null) {
+      return null;
+    }
+    if (!items.contains(value)) {
+      return null;
+    }
+    return value;
   }
 
   Query<Map<String, dynamic>> _usersQuery() {
-    // 你原本若有 createdAt/updatedAt index，可自行調整 orderBy
-    // 沒有的話建議用 __name__ 排序（保證存在）
-    var q = FirebaseFirestore.instance.collection('users').orderBy(FieldPath.documentId);
+    var q = FirebaseFirestore.instance
+        .collection('users')
+        .orderBy(FieldPath.documentId);
 
-    // role 篩選（後端建 index 或簡單用前端過濾也行）
     if (_roleFilter != 'all') {
       q = q.where('role', isEqualTo: _roleFilter);
     }
@@ -66,7 +83,9 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
   }
 
   bool _hitKeyword(Map<String, dynamic> m, String docId) {
-    if (_keyword.isEmpty) return true;
+    if (_keyword.isEmpty) {
+      return true;
+    }
 
     final name = (m['displayName'] ?? '').toString().toLowerCase();
     final email = (m['email'] ?? '').toString().toLowerCase();
@@ -87,7 +106,9 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
     required String uid,
     required String newRole,
   }) async {
-    if (!_roleOptions.contains(newRole)) return;
+    if (!_roleOptions.contains(newRole)) {
+      return;
+    }
 
     try {
       await FirebaseFirestore.instance.collection('users').doc(uid).update({
@@ -95,15 +116,19 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已更新 $uid role → $newRole')),
-      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已更新 $uid role → $newRole')));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('更新失敗：$e')),
-      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
@@ -117,15 +142,19 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已更新 vendorId')),
-      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已更新 vendorId')));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('更新失敗：$e')),
-      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
@@ -140,12 +169,13 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
         title: const Text('設定 vendorId'),
         content: TextField(
           controller: ctrl,
-          decoration: const InputDecoration(
-            hintText: '例如：vendor_001',
-          ),
+          decoration: const InputDecoration(hintText: '例如：vendor_001'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(context, ctrl.text),
             child: const Text('儲存'),
@@ -154,7 +184,9 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
       ),
     );
 
-    if (res == null) return;
+    if (res == null) {
+      return;
+    }
     await _updateVendorId(uid: uid, vendorId: res);
   }
 
@@ -170,7 +202,9 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
   }
 
   String _fmtTs(dynamic v) {
-    if (v is Timestamp) return _df.format(v.toDate());
+    if (v is Timestamp) {
+      return _df.format(v.toDate());
+    }
     return '-';
   }
 
@@ -189,14 +223,10 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
       ),
       body: Column(
         children: [
-          // =========================
-          // Filters
-          // =========================
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
             child: LayoutBuilder(
               builder: (context, c) {
-                // ✅ 小寬度時改成兩行，避免 Row overflow
                 final isNarrow = c.maxWidth < 520;
 
                 final search = TextField(
@@ -215,12 +245,15 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
                 );
 
                 final roleFilter = DropdownButtonFormField<String>(
-                  value: _safeDropdownValue(_roleFilter, _roleFilterOptions) ?? 'all',
+                  key: ValueKey('roleFilter_$_roleFilter'),
+                  initialValue:
+                      _safeDropdownValue(_roleFilter, _roleFilterOptions) ??
+                      'all',
                   items: _roleFilterOptions
                       .map((e) => DropdownMenuItem(value: e, child: Text(e)))
                       .toList(),
                   onChanged: (v) => setState(() => _roleFilter = v ?? 'all'),
-                  isExpanded: true, // ✅ 避免 dropdown 自己造成超寬
+                  isExpanded: true,
                   decoration: InputDecoration(
                     labelText: '角色',
                     isDense: true,
@@ -234,11 +267,7 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
 
                 if (isNarrow) {
                   return Column(
-                    children: [
-                      search,
-                      const SizedBox(height: 10),
-                      roleFilter,
-                    ],
+                    children: [search, const SizedBox(height: 10), roleFilter],
                   );
                 }
 
@@ -252,12 +281,7 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
               },
             ),
           ),
-
           const Divider(height: 1),
-
-          // =========================
-          // List
-          // =========================
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _usersQuery().snapshots(),
@@ -290,7 +314,9 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
                     final email = (m['email'] ?? '').toString().trim();
                     final phone = (m['phone'] ?? '').toString().trim();
                     final roleRaw = (m['role'] ?? 'user').toString().trim();
-                    final role = _roleOptions.contains(roleRaw) ? roleRaw : 'user'; // ✅ 防呆
+                    final role = _roleOptions.contains(roleRaw)
+                        ? roleRaw
+                        : 'user';
                     final vendorId = (m['vendorId'] ?? '').toString().trim();
 
                     final updatedAt = _fmtTs(m['updatedAt']);
@@ -298,7 +324,9 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
 
                     return Card(
                       elevation: 0,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: LayoutBuilder(
@@ -306,11 +334,16 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
                             final isNarrow = c.maxWidth < 560;
 
                             final roleChip = Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
                               decoration: BoxDecoration(
-                                color: _roleColor(role).withOpacity(0.10),
+                                color: _withOpacity(_roleColor(role), 0.10),
                                 borderRadius: BorderRadius.circular(999),
-                                border: Border.all(color: _roleColor(role).withOpacity(0.25)),
+                                border: Border.all(
+                                  color: _withOpacity(_roleColor(role), 0.25),
+                                ),
                               ),
                               child: Text(
                                 role,
@@ -327,8 +360,11 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
                                   child: Text(
                                     (name.isEmpty ? '(未命名)' : name),
                                     maxLines: 1,
-                                    overflow: TextOverflow.ellipsis, // ✅ 避免溢出
-                                    style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 16,
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(width: 8),
@@ -349,35 +385,56 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
 
                             final metaLine = Text(
                               'uid: $uid\ncreated: $createdAt   updated: $updatedAt',
-                              style: TextStyle(color: Colors.grey.shade600, fontSize: 12, height: 1.2),
-                            );
-
-                            final roleDropdown = DropdownButtonFormField<String>(
-                              value: _safeDropdownValue(role, _roleOptions) ?? 'user', // ✅ 防 assertion
-                              items: _roleOptions
-                                  .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                                  .toList(),
-                              onChanged: (v) {
-                                if (v == null) return;
-                                _updateUserRole(uid: uid, newRole: v);
-                              },
-                              isExpanded: true, // ✅ 避免 dropdown 造成 overflow
-                              decoration: InputDecoration(
-                                labelText: '變更角色',
-                                isDense: true,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 12,
+                                height: 1.2,
                               ),
                             );
 
+                            final roleDropdown =
+                                DropdownButtonFormField<String>(
+                                  // ✅ uid 需要 {}（避免 $uid_），role 不需要 {}（字串尾端）
+                                  key: ValueKey('role_${uid}_$role'),
+                                  initialValue:
+                                      _safeDropdownValue(role, _roleOptions) ??
+                                      'user',
+                                  items: _roleOptions
+                                      .map(
+                                        (e) => DropdownMenuItem(
+                                          value: e,
+                                          child: Text(e),
+                                        ),
+                                      )
+                                      .toList(),
+                                  onChanged: (v) {
+                                    if (v == null) {
+                                      return;
+                                    }
+                                    _updateUserRole(uid: uid, newRole: v);
+                                  },
+                                  isExpanded: true,
+                                  decoration: InputDecoration(
+                                    labelText: '變更角色',
+                                    isDense: true,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                  ),
+                                );
+
                             final vendorBtn = OutlinedButton.icon(
-                              onPressed: () => _openEditVendorDialog(uid: uid, currentVendorId: vendorId),
-                              icon: const Icon(Icons.store_mall_directory_outlined, size: 18),
+                              onPressed: () => _openEditVendorDialog(
+                                uid: uid,
+                                currentVendorId: vendorId,
+                              ),
+                              icon: const Icon(
+                                Icons.store_mall_directory_outlined,
+                                size: 18,
+                              ),
                               label: const Text('設定 vendorId'),
                             );
 
-                            // ✅ 窄寬：改 Column，完全避免 Row 超寬
                             if (isNarrow) {
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -395,13 +452,13 @@ class _AdminMembersPageState extends State<AdminMembersPage> {
                               );
                             }
 
-                            // ✅ 寬螢幕：右側操作區固定寬度，左側 Expanded
                             return Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       titleLine,
                                       const SizedBox(height: 6),

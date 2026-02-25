@@ -1,38 +1,34 @@
 // lib/pages/admin/app_center/admin_feature_flags_page.dart
 //
-// ✅ AdminFeatureFlagsPage（專業完整版｜可編譯）
+// ✅ AdminFeatureFlagsPage（完整版｜可編譯＋可用）
 // ------------------------------------------------------------
-// 目的：後台「App 功能開關」管理（讀寫 Firestore app_config/feature_flags）
+// ✅ 修正 deprecated：WillPopScope → PopScope
+// ✅ 修正 deprecated：PopScope.onPopInvoked → onPopInvokedWithResult
+// ✅ 修正 unused_field：移除 _pendingRemoteSig
+// ✅ 修正 unnecessary_non_null_assertion：移除多餘 '!'
+// ✅ 修正 control_flow_in_finally：finally 區塊不使用 return
+// ✅ 修正 lint：curly_braces_in_flow_control_structures（全檔單行 if 改成區塊）
 //
-// Firestore Doc：app_config/feature_flags
-// 建議欄位：
+// Firestore（前後台串接同一份 doc）：app_config/feature_flags
 // {
-//   checkoutEnabled: true,      // ✅ 下單/結帳流程
-//   lotteryEnabled: true,       // ✅ 活動抽獎
-//   couponsEnabled: true,       // 優惠券（可選）
-//   campaignsEnabled: true,     // 活動系統（可選）
-//   sosEnabled: true,           // SOS
-//   healthEnabled: true,        // 健康模組
-//   voiceAssistantEnabled: true,// 語音助理（可選）
-//   updatedAt: Timestamp,
-//   updatedBy: uid/email (可選)
+//   enabled: true,
+//   items: [
+//     { id: "sos", key: "sos", title: "SOS 求救", description: "...", enabled: true, order: 0 },
+//     ...
+//   ],
+//   updatedAt: Timestamp
 // }
-//
-// 功能：
-// - 讀取/顯示/修改 Switch
-// - 一鍵套用「最小可用（只保留：下單 + 抽獎）」
-// - 一鍵全開 / 全關（可選）
-// - 儲存至 Firestore（merge）
-// - 預覽「目前 App 啟用功能」摘要
-//
-// 依賴：cloud_firestore, flutter/material
 // ------------------------------------------------------------
 
+import 'dart:async';
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 class AdminFeatureFlagsPage extends StatefulWidget {
   const AdminFeatureFlagsPage({super.key});
+
+  static const String routeName = '/admin-feature-flags';
 
   @override
   State<AdminFeatureFlagsPage> createState() => _AdminFeatureFlagsPageState();
@@ -41,481 +37,886 @@ class AdminFeatureFlagsPage extends StatefulWidget {
 class _AdminFeatureFlagsPageState extends State<AdminFeatureFlagsPage> {
   final _db = FirebaseFirestore.instance;
 
+  /// ✅ 前後台串接固定同一份 doc
+  late final DocumentReference<Map<String, dynamic>> _docRef = _db
+      .collection('app_config')
+      .doc('feature_flags');
+
+  final _searchCtrl = TextEditingController();
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _sub;
+
   bool _loading = true;
-  String? _error;
+  bool _saving = false;
+
+  bool _enabled = true;
+  List<_FlagItem> _items = <_FlagItem>[];
+
+  /// 遠端基準（用來判斷 dirty / discard）
+  String _baselineSig = '';
   bool _dirty = false;
 
-  // ✅ Flags（保持 bool 非 null）
-  bool checkoutEnabled = true;
-  bool lotteryEnabled = true;
-
-  bool couponsEnabled = false;
-  bool campaignsEnabled = false;
-
-  bool sosEnabled = false;
-  bool healthEnabled = false;
-
-  bool voiceAssistantEnabled = false;
-
-  DocumentReference<Map<String, dynamic>> get _ref =>
-      _db.collection('app_config').doc('feature_flags');
+  /// 若你正在編輯（dirty=true），遠端又更新，先提示（不覆蓋你的草稿）
+  bool _remoteHasUpdateWhileDirty = false;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _boot();
   }
 
-  // ============================================================
-  // Load / Save
-  // ============================================================
+  Future<void> _boot() async {
+    await _ensureDefaults();
 
-  Future<void> _load() async {
-    if (!mounted) return;
-    setState(() {
-      _loading = true;
-      _error = null;
-      _dirty = false;
+    _sub = _docRef.snapshots().listen((snap) {
+      final data = snap.data() ?? <String, dynamic>{};
+      final parsedEnabled = (data['enabled'] as bool?) ?? true;
+
+      final raw = data['items'];
+      final parsedItems = _parseItems(raw);
+
+      final remoteSig = _computeSig(parsedEnabled, parsedItems);
+
+      if (_dirty) {
+        // 你正在編輯，就不要覆蓋草稿，只提示遠端有更新
+        if (remoteSig != _baselineSig) {
+          if (mounted) {
+            setState(() {
+              _remoteHasUpdateWhileDirty = true;
+            });
+          }
+        }
+        return;
+      }
+
+      // 非 dirty：直接同步到畫面
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _enabled = parsedEnabled;
+        _items = parsedItems;
+        _baselineSig = remoteSig;
+        _dirty = false;
+        _remoteHasUpdateWhileDirty = false;
+        _loading = false;
+      });
     });
+  }
 
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  // ---------- Defaults ----------
+
+  List<_FlagItem> _defaultItems() {
+    return <_FlagItem>[
+      _FlagItem(
+        id: 'sos',
+        key: 'sos',
+        title: 'SOS 求救',
+        description: '手錶求救通知／家長端推播',
+        enabled: true,
+        order: 0,
+      ),
+      _FlagItem(
+        id: 'coupon',
+        key: 'coupon',
+        title: '優惠券',
+        description: '結帳折扣／自動派發／領取',
+        enabled: true,
+        order: 1,
+      ),
+      _FlagItem(
+        id: 'lottery',
+        key: 'lottery',
+        title: '抽獎',
+        description: '付款後抽獎／活動抽獎',
+        enabled: true,
+        order: 2,
+      ),
+      _FlagItem(
+        id: 'notifications',
+        key: 'notifications',
+        title: '通知中心',
+        description: '站內通知／推播整合',
+        enabled: true,
+        order: 3,
+      ),
+      _FlagItem(
+        id: 'ble',
+        key: 'ble',
+        title: 'BLE 連線',
+        description: '手錶連線／設備同步',
+        enabled: true,
+        order: 4,
+      ),
+      _FlagItem(
+        id: 'voice_assistant',
+        key: 'voice_assistant',
+        title: '語音助理',
+        description: '語音互動／快速操作',
+        enabled: false,
+        order: 5,
+      ),
+      _FlagItem(
+        id: 'warranty',
+        key: 'warranty',
+        title: '保固服務',
+        description: '保固查詢／延長保固',
+        enabled: true,
+        order: 6,
+      ),
+      _FlagItem(
+        id: 'support',
+        key: 'support',
+        title: '客服支援',
+        description: '客服工單／即時客服',
+        enabled: true,
+        order: 7,
+      ),
+    ];
+  }
+
+  Future<void> _ensureDefaults() async {
     try {
-      final snap = await _ref.get();
-      final d = snap.data();
+      final snap = await _docRef.get();
+      final data = snap.data();
+      final enabled = (data?['enabled'] as bool?) ?? true;
+      final rawItems = data?['items'];
 
-      // 若尚未建立，採用預設（以「下單+抽獎」為核心）
-      final m = d ?? <String, dynamic>{};
+      final itemsEmpty = rawItems is! List || rawItems.isEmpty;
 
-      if (!mounted) return;
-      setState(() {
-        checkoutEnabled = _asBool(m['checkoutEnabled'], fallback: true);
-        lotteryEnabled = _asBool(m['lotteryEnabled'], fallback: true);
-
-        couponsEnabled = _asBool(m['couponsEnabled'], fallback: false);
-        campaignsEnabled = _asBool(m['campaignsEnabled'], fallback: false);
-
-        sosEnabled = _asBool(m['sosEnabled'], fallback: false);
-        healthEnabled = _asBool(m['healthEnabled'], fallback: false);
-
-        voiceAssistantEnabled = _asBool(m['voiceAssistantEnabled'], fallback: false);
-
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+      if (!snap.exists || itemsEmpty) {
+        final defaults = _defaultItems();
+        await _docRef.set(<String, dynamic>{
+          'enabled': enabled,
+          'items': defaults.map((e) => e.toMap()).toList(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+    } catch (_) {
+      // 不干擾畫面
     }
   }
+
+  // ---------- Parsing / Signature ----------
+
+  List<_FlagItem> _parseItems(dynamic raw) {
+    final list = <_FlagItem>[];
+
+    if (raw is List) {
+      for (final e in raw) {
+        if (e is Map<String, dynamic>) {
+          list.add(_FlagItem.fromMap(e));
+        } else if (e is Map) {
+          list.add(_FlagItem.fromMap(Map<String, dynamic>.from(e)));
+        }
+      }
+    }
+
+    list.sort((a, b) => a.order.compareTo(b.order));
+    return list;
+  }
+
+  String _computeSig(bool enabled, List<_FlagItem> items) {
+    final sorted = [...items]..sort((a, b) => a.order.compareTo(b.order));
+    final payload = <String, dynamic>{
+      'enabled': enabled,
+      'items': sorted.map((e) => e.toMap()).toList(),
+    };
+    return jsonEncode(payload);
+  }
+
+  void _markDirty() {
+    final sig = _computeSig(_enabled, _items);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _dirty = sig != _baselineSig;
+    });
+  }
+
+  // ---------- PopScope (onPopInvokedWithResult) ----------
+
+  void _onPopInvokedWithResult(bool didPop, Object? result) {
+    if (didPop) {
+      return;
+    }
+    _confirmDiscardAndPop();
+  }
+
+  Future<void> _confirmDiscardAndPop() async {
+    if (!_dirty || _saving) {
+      if (mounted) {
+        Navigator.of(context).maybePop();
+      }
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('尚未儲存'),
+        content: const Text('你有未儲存的變更，確定要放棄並離開嗎？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('放棄'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) {
+      return;
+    }
+
+    // 放棄：回到 baseline（安全做法：重新抓遠端一次）
+    try {
+      final snap = await _docRef.get();
+      final data = snap.data() ?? <String, dynamic>{};
+      final parsedEnabled = (data['enabled'] as bool?) ?? true;
+      final parsedItems = _parseItems(data['items']);
+      final remoteSig = _computeSig(parsedEnabled, parsedItems);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _enabled = parsedEnabled;
+        _items = parsedItems;
+        _baselineSig = remoteSig;
+        _dirty = false;
+        _remoteHasUpdateWhileDirty = false;
+      });
+
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    } catch (_) {
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    }
+  }
+
+  // ---------- Save ----------
 
   Future<void> _save() async {
+    if (_saving) {
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _saving = true;
+      });
+    }
+
     try {
-      final payload = <String, dynamic>{
-        'checkoutEnabled': checkoutEnabled,
-        'lotteryEnabled': lotteryEnabled,
-        'couponsEnabled': couponsEnabled,
-        'campaignsEnabled': campaignsEnabled,
-        'sosEnabled': sosEnabled,
-        'healthEnabled': healthEnabled,
-        'voiceAssistantEnabled': voiceAssistantEnabled,
+      final sorted = [..._items]..sort((a, b) => a.order.compareTo(b.order));
+
+      await _docRef.set(<String, dynamic>{
+        'enabled': _enabled,
+        'items': sorted.map((e) => e.toMap()).toList(),
         'updatedAt': FieldValue.serverTimestamp(),
-        'type': 'feature_flags',
-      };
+      }, SetOptions(merge: true));
 
-      await _ref.set(payload, SetOptions(merge: true));
+      final newSig = _computeSig(_enabled, sorted);
 
-      if (!mounted) return;
-      setState(() => _dirty = false);
+      if (!mounted) {
+        return;
+      }
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已儲存功能開關設定')));
+      setState(() {
+        _items = sorted;
+        _baselineSig = newSig;
+        _dirty = false;
+        _remoteHasUpdateWhileDirty = false;
+      });
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已儲存功能開關設定')));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+    } finally {
+      // ✅ finally 內不做 return
+      if (mounted) {
+        setState(() {
+          _saving = false;
+        });
+      }
     }
   }
 
-  // ============================================================
-  // Presets
-  // ============================================================
-
-  Future<void> _applyMinimalPreset() async {
-    final ok = await _confirm(
-      title: '套用最小可用（只保留：下單 + 抽獎）',
-      message: '將關閉其他模組（優惠券/活動系統/SOS/健康/語音助理）。是否繼續？',
-      confirmText: '套用',
-      isDanger: true,
-    );
-    if (ok != true) return;
-
+  void _applyDefaultsDraft() {
+    final defaults = _defaultItems();
+    if (!mounted) {
+      return;
+    }
     setState(() {
-      checkoutEnabled = true;
-      lotteryEnabled = true;
-
-      couponsEnabled = false;
-      campaignsEnabled = false;
-
-      sosEnabled = false;
-      healthEnabled = false;
-
-      voiceAssistantEnabled = false;
-      _dirty = true;
+      _items = defaults;
+      _enabled = true;
     });
+    _markDirty();
   }
 
-  Future<void> _setAll(bool v) async {
-    final ok = await _confirm(
-      title: v ? '一鍵全開' : '一鍵全關',
-      message: v ? '將啟用所有功能。是否繼續？' : '將關閉所有功能（含下單/抽獎）。是否繼續？',
-      confirmText: v ? '全開' : '全關',
-      isDanger: !v,
+  // ---------- Add/Edit/Delete ----------
+
+  Future<void> _addOrEdit({_FlagItem? initial}) async {
+    final isEdit = initial != null;
+
+    final keyCtrl = TextEditingController(text: initial?.key ?? '');
+    final titleCtrl = TextEditingController(text: initial?.title ?? '');
+    final descCtrl = TextEditingController(text: initial?.description ?? '');
+
+    bool enabled = initial?.enabled ?? true;
+
+    final formKey = GlobalKey<FormState>();
+
+    final result = await showDialog<_FlagItem?>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setStateDialog) {
+            return AlertDialog(
+              title: Text(isEdit ? '編輯功能' : '新增功能'),
+              content: SizedBox(
+                width: 560,
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextFormField(
+                        controller: keyCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Key（唯一識別）',
+                          hintText: '例如：sos / coupon / lottery',
+                        ),
+                        validator: (v) {
+                          final val = (v ?? '').trim();
+                          if (val.isEmpty) {
+                            return 'Key 不能為空';
+                          }
+                          final dup = _items.any(
+                            (e) => e.key == val && e.id != initial?.id,
+                          );
+                          if (dup) {
+                            return 'Key 已存在，請換一個';
+                          }
+                          return null;
+                        },
+                        enabled: !isEdit,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: titleCtrl,
+                        decoration: const InputDecoration(
+                          labelText: '名稱（顯示用）',
+                          hintText: '例如：SOS 求救',
+                        ),
+                        validator: (v) {
+                          if ((v ?? '').trim().isEmpty) {
+                            return '名稱不能為空';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: descCtrl,
+                        decoration: const InputDecoration(labelText: '描述（可空）'),
+                        maxLines: 2,
+                      ),
+                      const SizedBox(height: 6),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: enabled,
+                        onChanged: (v) => setStateDialog(() => enabled = v),
+                        title: const Text('啟用此功能'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(null),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    if (!(formKey.currentState?.validate() ?? false)) {
+                      return;
+                    }
+
+                    final key = keyCtrl.text.trim();
+                    final title = titleCtrl.text.trim();
+                    final desc = descCtrl.text.trim();
+
+                    Navigator.of(ctx).pop(
+                      _FlagItem(
+                        id: initial?.id ?? key,
+                        key: key,
+                        title: title,
+                        description: desc,
+                        enabled: enabled,
+                        order: initial?.order ?? 999,
+                      ),
+                    );
+                  },
+                  child: const Text('確定'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
-    if (ok != true) return;
 
+    keyCtrl.dispose();
+    titleCtrl.dispose();
+    descCtrl.dispose();
+
+    if (result == null) {
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
     setState(() {
-      checkoutEnabled = v;
-      lotteryEnabled = v;
+      // ✅ Dart 3 pattern promotion，不需要 initial!
+      if (initial case final init?) {
+        _items = _items.map((e) {
+          if (e.id == init.id) {
+            return result.copyWith(order: e.order);
+          }
+          return e;
+        }).toList();
+      } else {
+        final maxOrder = _items.isEmpty
+            ? -1
+            : _items.map((e) => e.order).reduce((a, b) => a > b ? a : b);
+        _items = [..._items, result.copyWith(order: maxOrder + 1)];
+      }
 
-      couponsEnabled = v;
-      campaignsEnabled = v;
-
-      sosEnabled = v;
-      healthEnabled = v;
-
-      voiceAssistantEnabled = v;
-      _dirty = true;
+      _items.sort((a, b) => a.order.compareTo(b.order));
+      for (int i = 0; i < _items.length; i++) {
+        _items[i] = _items[i].copyWith(order: i);
+      }
     });
+
+    _markDirty();
   }
 
-  // ============================================================
-  // UI
-  // ============================================================
+  Future<void> _deleteItem(_FlagItem item) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('刪除功能'),
+        content: Text('確定要刪除「${item.title}」？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('刪除'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) {
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _items = _items.where((e) => e.id != item.id).toList();
+      for (int i = 0; i < _items.length; i++) {
+        _items[i] = _items[i].copyWith(order: i);
+      }
+    });
+
+    _markDirty();
+  }
+
+  // ---------- UI ----------
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return WillPopScope(
-      onWillPop: () async {
-        if (!_dirty) return true;
-        final ok = await _confirm(
-          title: '尚未儲存變更',
-          message: '你有未儲存的修改，確定要離開嗎？',
-          confirmText: '離開',
-          isDanger: true,
-        );
-        return ok == true;
-      },
+    final keyword = _searchCtrl.text.trim().toLowerCase();
+    final visible = _items.where((e) {
+      if (keyword.isEmpty) {
+        return true;
+      }
+      return e.key.toLowerCase().contains(keyword) ||
+          e.title.toLowerCase().contains(keyword) ||
+          e.description.toLowerCase().contains(keyword);
+    }).toList()..sort((a, b) => a.order.compareTo(b.order));
+
+    return PopScope(
+      canPop: !_dirty && !_saving,
+      onPopInvokedWithResult: _onPopInvokedWithResult,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('App 功能開關', style: TextStyle(fontWeight: FontWeight.w900)),
+          title: const Text(
+            '功能開關管理',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
           actions: [
-            IconButton(
-              tooltip: '重新載入',
-              icon: const Icon(Icons.refresh),
-              onPressed: _loading ? null : _load,
+            TextButton.icon(
+              onPressed: _saving ? null : _applyDefaultsDraft,
+              icon: const Icon(Icons.auto_fix_high),
+              label: const Text('套用預設'),
             ),
             const SizedBox(width: 6),
             TextButton.icon(
-              onPressed: _loading ? null : () => _setAll(true),
-              icon: const Icon(Icons.done_all),
-              label: const Text('全開'),
-            ),
-            TextButton.icon(
-              onPressed: _loading ? null : () => _setAll(false),
-              icon: const Icon(Icons.block),
-              label: const Text('全關'),
+              onPressed: _saving ? null : () => _addOrEdit(),
+              icon: const Icon(Icons.add),
+              label: const Text('新增'),
             ),
             const SizedBox(width: 6),
             FilledButton.icon(
-              onPressed: (_loading || !_dirty) ? null : _save,
-              icon: const Icon(Icons.save_outlined),
+              onPressed: (_dirty && !_saving) ? _save : null,
+              icon: _saving
+                  ? SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: cs.onPrimary,
+                      ),
+                    )
+                  : const Icon(Icons.save),
               label: const Text('儲存'),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
           ],
         ),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
-            : (_error != null)
-                ? _ErrorView(
-                    title: '載入失敗',
-                    message: _error!,
-                    onRetry: _load,
-                    hint:
-                        '請確認 Firestore rules：/app_config/{id} 允許 admin write。\n你目前 rules 已 allow read: true、write: isAdmin（符合）。',
-                  )
-                : ListView(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-                    children: [
-                      _summaryCard(cs),
-                      const SizedBox(height: 10),
-
-                      _sectionTitle('核心（你目前要先完成）'),
-                      _flagTile(
-                        title: '下單 / 結帳（Checkout）',
-                        subtitle: '控制：商品加入購物車、結帳、建立訂單、付款流程是否顯示。',
-                        value: checkoutEnabled,
-                        onChanged: (v) => _setFlag(() => checkoutEnabled = v),
-                        leading: Icons.shopping_cart_checkout_outlined,
-                      ),
-                      _flagTile(
-                        title: '活動抽獎（Lottery）',
-                        subtitle: '控制：抽獎入口、抽獎頁與抽獎流程是否顯示。',
-                        value: lotteryEnabled,
-                        onChanged: (v) => _setFlag(() => lotteryEnabled = v),
-                        leading: Icons.campaign_outlined,
-                      ),
-                      const SizedBox(height: 6),
-                      FilledButton.tonalIcon(
-                        onPressed: _applyMinimalPreset,
-                        icon: const Icon(Icons.filter_alt_outlined),
-                        label: const Text('套用最小可用（只保留：下單 + 抽獎）'),
-                      ),
-
-                      const SizedBox(height: 18),
-                      _sectionTitle('商城延伸（可選）'),
-                      _flagTile(
-                        title: '優惠券（Coupons）',
-                        subtitle: '控制：結帳頁折扣/套用優惠券、優惠券中心入口。',
-                        value: couponsEnabled,
-                        onChanged: (v) => _setFlag(() => couponsEnabled = v),
-                        leading: Icons.confirmation_number_outlined,
-                      ),
-                      _flagTile(
-                        title: '活動系統（Campaigns）',
-                        subtitle: '控制：活動列表/活動詳情/報名或任務入口。',
-                        value: campaignsEnabled,
-                        onChanged: (v) => _setFlag(() => campaignsEnabled = v),
-                        leading: Icons.local_activity_outlined,
-                      ),
-
-                      const SizedBox(height: 18),
-                      _sectionTitle('安全 / 健康（可選）'),
-                      _flagTile(
-                        title: 'SOS 模組',
-                        subtitle: '控制：SOS 入口、SOS 設定、求救流程是否顯示。',
-                        value: sosEnabled,
-                        onChanged: (v) => _setFlag(() => sosEnabled = v),
-                        leading: Icons.sos_outlined,
-                      ),
-                      _flagTile(
-                        title: '健康模組',
-                        subtitle: '控制：健康入口、健康數據頁與同步功能是否顯示。',
-                        value: healthEnabled,
-                        onChanged: (v) => _setFlag(() => healthEnabled = v),
-                        leading: Icons.monitor_heart_outlined,
-                      ),
-
-                      const SizedBox(height: 18),
-                      _sectionTitle('其他（可選）'),
-                      _flagTile(
-                        title: '語音助理（Voice Assistant）',
-                        subtitle: '控制：語音助理入口與相關 UI 是否顯示。',
-                        value: voiceAssistantEnabled,
-                        onChanged: (v) => _setFlag(() => voiceAssistantEnabled = v),
-                        leading: Icons.record_voice_over_outlined,
-                      ),
-
-                      const SizedBox(height: 18),
-                      _noteCard(cs),
-                    ],
-                  ),
-      ),
-    );
-  }
-
-  Widget _sectionTitle(String text) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
-      child: Text(text, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14)),
-    );
-  }
-
-  Widget _summaryCard(ColorScheme cs) {
-    final enabled = <String>[];
-    if (checkoutEnabled) enabled.add('下單');
-    if (lotteryEnabled) enabled.add('抽獎');
-    if (couponsEnabled) enabled.add('優惠券');
-    if (campaignsEnabled) enabled.add('活動');
-    if (sosEnabled) enabled.add('SOS');
-    if (healthEnabled) enabled.add('健康');
-    if (voiceAssistantEnabled) enabled.add('語音');
-
-    return Card(
-      elevation: 0,
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('目前啟用功能摘要', style: TextStyle(fontWeight: FontWeight.w900)),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: enabled.isEmpty
-                  ? [
-                      Chip(
-                        label: const Text('（全部關閉）'),
-                        backgroundColor: cs.surfaceContainerHighest,
-                      )
-                    ]
-                  : [
-                      for (final e in enabled)
-                        Chip(
-                          label: Text(e, style: const TextStyle(fontWeight: FontWeight.w800)),
-                          backgroundColor: cs.primaryContainer.withOpacity(0.6),
+            : Column(
+                children: [
+                  if (_remoteHasUpdateWhileDirty)
+                    Material(
+                      color: cs.tertiaryContainer,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
                         ),
-                    ],
-            ),
-            const SizedBox(height: 10),
-            Text(
-              _dirty ? '狀態：尚未儲存變更' : '狀態：已同步（無未儲存變更）',
-              style: TextStyle(
-                color: _dirty ? cs.error : cs.onSurfaceVariant,
-                fontWeight: FontWeight.w800,
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              color: cs.onTertiaryContainer,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                '遠端設定已更新。你目前有未儲存變更，建議先儲存或放棄後再刷新。',
+                                style: TextStyle(color: cs.onTertiaryContainer),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _searchCtrl,
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(Icons.search),
+                              hintText: '搜尋 key / 名稱 / 描述',
+                              filled: true,
+                              fillColor: cs.surfaceContainerHighest.withValues(
+                                alpha: 0.6,
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide(
+                                  color: cs.outlineVariant.withValues(
+                                    alpha: 0.4,
+                                  ),
+                                ),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide(
+                                  color: cs.outlineVariant.withValues(
+                                    alpha: 0.4,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        SizedBox(
+                          width: 260,
+                          child: Card(
+                            elevation: 0,
+                            color: cs.surfaceContainerHighest.withValues(
+                              alpha: 0.35,
+                            ),
+                            child: SwitchListTile(
+                              value: _enabled,
+                              onChanged: _saving
+                                  ? null
+                                  : (v) {
+                                      setState(() {
+                                        _enabled = v;
+                                      });
+                                      _markDirty();
+                                    },
+                              title: const Text('啟用功能開關系統'),
+                              subtitle: const Text('關閉時前台可忽略本設定'),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Card(
+                      margin: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+                      child: visible.isEmpty
+                          ? const Center(child: Text('沒有符合條件的功能'))
+                          : ReorderableListView.builder(
+                              padding: const EdgeInsets.all(8),
+                              itemCount: visible.length,
+                              onReorder: (oldIndex, newIndex) {
+                                if (keyword.isNotEmpty) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('搜尋中不建議拖曳排序，請清空搜尋再排序'),
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                if (newIndex > oldIndex) {
+                                  newIndex -= 1;
+                                }
+
+                                final list = [..._items]
+                                  ..sort((a, b) => a.order.compareTo(b.order));
+                                final moved = list.removeAt(oldIndex);
+                                list.insert(newIndex, moved);
+
+                                for (int i = 0; i < list.length; i++) {
+                                  list[i] = list[i].copyWith(order: i);
+                                }
+
+                                setState(() {
+                                  _items = list;
+                                });
+                                _markDirty();
+                              },
+                              itemBuilder: (context, i) {
+                                final item = visible[i];
+
+                                return Card(
+                                  key: ValueKey(item.id),
+                                  elevation: 0,
+                                  child: ListTile(
+                                    leading: ReorderableDragStartListener(
+                                      index: i,
+                                      child: const Icon(Icons.drag_handle),
+                                    ),
+                                    title: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            item.title,
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        _KeyPill(text: item.key),
+                                      ],
+                                    ),
+                                    subtitle: Padding(
+                                      padding: const EdgeInsets.only(top: 6),
+                                      child: Text(
+                                        item.description.isEmpty
+                                            ? '—'
+                                            : item.description,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    trailing: Wrap(
+                                      spacing: 6,
+                                      crossAxisAlignment:
+                                          WrapCrossAlignment.center,
+                                      children: [
+                                        Switch(
+                                          value: item.enabled,
+                                          onChanged: _saving
+                                              ? null
+                                              : (v) {
+                                                  setState(() {
+                                                    _items = _items.map((e) {
+                                                      if (e.id == item.id) {
+                                                        return e.copyWith(
+                                                          enabled: v,
+                                                        );
+                                                      }
+                                                      return e;
+                                                    }).toList();
+                                                  });
+                                                  _markDirty();
+                                                },
+                                        ),
+                                        IconButton(
+                                          tooltip: '編輯',
+                                          icon: const Icon(Icons.edit_outlined),
+                                          onPressed: _saving
+                                              ? null
+                                              : () => _addOrEdit(initial: item),
+                                        ),
+                                        IconButton(
+                                          tooltip: '刪除',
+                                          icon: Icon(
+                                            Icons.delete_outline,
+                                            color: Colors.red.shade400,
+                                          ),
+                                          onPressed: _saving
+                                              ? null
+                                              : () => _deleteItem(item),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _noteCard(ColorScheme cs) {
-    return Card(
-      elevation: 0,
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Text(
-          '實作建議：App 端啟動時讀取 app_config/feature_flags，將結果放入 Provider/State（例如 AppConfigController）。\n'
-          '各頁面入口與底部導覽列渲染時，依對應 flag 決定是否顯示。\n'
-          '若你要「下單 + 抽獎」先上線，建議先固定 checkoutEnabled=true、lotteryEnabled=true，其他先關閉。',
-          style: TextStyle(color: cs.onSurfaceVariant, height: 1.35),
-        ),
-      ),
-    );
-  }
-
-  Widget _flagTile({
-    required String title,
-    required String subtitle,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-    required IconData leading,
-  }) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      child: SwitchListTile(
-        secondary: Icon(leading),
-        value: value,
-        onChanged: (v) => onChanged(v),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-        subtitle: Text(subtitle),
-      ),
-    );
-  }
-
-  void _setFlag(VoidCallback apply) {
-    setState(() {
-      apply();
-      _dirty = true;
-    });
-  }
-
-  bool _asBool(dynamic v, {required bool fallback}) {
-    if (v is bool) return v;
-    if (v is num) return v != 0;
-    final s = (v ?? '').toString().trim().toLowerCase();
-    if (s == 'true' || s == '1' || s == 'yes') return true;
-    if (s == 'false' || s == '0' || s == 'no') return false;
-    return fallback;
-  }
-
-  Future<bool?> _confirm({
-    required String title,
-    required String message,
-    required String confirmText,
-    bool isDanger = false,
-  }) {
-    final cs = Theme.of(context).colorScheme;
-    return showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-        content: Text(message),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: isDanger ? cs.error : null,
-              foregroundColor: isDanger ? cs.onError : null,
-            ),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(confirmText),
-          ),
-        ],
       ),
     );
   }
 }
 
-// ======================================================
-// Error View
-// ======================================================
-class _ErrorView extends StatelessWidget {
-  final String title;
-  final String message;
-  final VoidCallback onRetry;
-  final String? hint;
-
-  const _ErrorView({
-    required this.title,
-    required this.message,
-    required this.onRetry,
-    this.hint,
-  });
+class _KeyPill extends StatelessWidget {
+  final String text;
+  const _KeyPill({required this.text});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 680),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Card(
-            elevation: 0,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.error_outline, size: 44, color: cs.error),
-                  const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 10),
-                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
-                  if (hint != null) ...[
-                    const SizedBox(height: 10),
-                    Text(hint!, style: TextStyle(color: cs.onSurfaceVariant, height: 1.3)),
-                  ],
-                  const SizedBox(height: 14),
-                  FilledButton.icon(
-                    onPressed: onRetry,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('重試'),
-                  ),
-                ],
-              ),
-            ),
-          ),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: cs.primary.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.primary.withValues(alpha: 0.25)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: cs.primary,
+          fontWeight: FontWeight.w700,
+          fontSize: 12,
         ),
       ),
+    );
+  }
+}
+
+class _FlagItem {
+  final String id;
+  final String key;
+  final String title;
+  final String description;
+  final bool enabled;
+  final int order;
+
+  const _FlagItem({
+    required this.id,
+    required this.key,
+    required this.title,
+    required this.description,
+    required this.enabled,
+    required this.order,
+  });
+
+  _FlagItem copyWith({
+    String? id,
+    String? key,
+    String? title,
+    String? description,
+    bool? enabled,
+    int? order,
+  }) {
+    return _FlagItem(
+      id: id ?? this.id,
+      key: key ?? this.key,
+      title: title ?? this.title,
+      description: description ?? this.description,
+      enabled: enabled ?? this.enabled,
+      order: order ?? this.order,
+    );
+  }
+
+  Map<String, dynamic> toMap() => <String, dynamic>{
+    'id': id,
+    'key': key,
+    'title': title,
+    'description': description,
+    'enabled': enabled,
+    'order': order,
+  };
+
+  static _FlagItem fromMap(Map<String, dynamic> m) {
+    return _FlagItem(
+      id: (m['id'] ?? m['key'] ?? '').toString(),
+      key: (m['key'] ?? '').toString(),
+      title: (m['title'] ?? '').toString(),
+      description: (m['description'] ?? '').toString(),
+      enabled: (m['enabled'] as bool?) ?? true,
+      order: (m['order'] as int?) ?? 0,
     );
   }
 }

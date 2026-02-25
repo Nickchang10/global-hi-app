@@ -1,22 +1,21 @@
-import 'dart:math';
+// lib/pages/event_plaza_page.dart
+//
+// ✅ EventPlazaPage（活動廣場｜可編譯完整版）
+// - Firestore: campaigns
+//   欄位建議：title, description, isActive(bool), startAt, endAt, vendorId, createdAt
+// - 搜尋活動標題
+// - 只顯示啟用中（可切換）
+// - 右上角：進入通知中心（建議走 /notifications route；沒路由就 fallback 直接 push page）
+//
+// ✅ 修正：
+// - NotificationPage 不是 class -> 改用 NotificationsPage
+// - withOpacity -> withValues(alpha: ...)
+// - if 單行加大括號（避免 curly_braces_in_flow_control_structures）
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:percent_indicator/percent_indicator.dart';
-import 'package:provider/provider.dart';
 
-// Providers
-import '../providers/notification_provider.dart';
-import '../providers/friend_provider.dart';
-
-// Pages
-import 'notification_page.dart';
-import 'points_store_page.dart';
-import 'lucky_bag_event_page.dart';
-import 'leaderboard_page.dart';
-import 'friend_leaderboard_page.dart';
-import 'send_points_page.dart';
-
-// Widgets
-import '../widgets/coin_reward_popup.dart';
+import 'notifications/notifications_page.dart';
 
 class EventPlazaPage extends StatefulWidget {
   const EventPlazaPage({super.key});
@@ -25,380 +24,254 @@ class EventPlazaPage extends StatefulWidget {
   State<EventPlazaPage> createState() => _EventPlazaPageState();
 }
 
-class _EventPlazaPageState extends State<EventPlazaPage>
-    with SingleTickerProviderStateMixin {
-  int myPoints = 350;
-  int signInStreak = 0;
-  bool hasSignedInToday = false;
-  late AnimationController _controller;
+class _EventPlazaPageState extends State<EventPlazaPage> {
+  final _db = FirebaseFirestore.instance;
+  final _search = TextEditingController();
 
-  double get todayProgress => hasSignedInToday ? 1.0 : 0.6;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller =
-        AnimationController(vsync: this, duration: const Duration(seconds: 2));
-  }
+  bool _onlyActive = true;
 
   @override
   void dispose() {
-    _controller.dispose();
+    _search.dispose();
     super.dispose();
   }
 
-  void _signInToday() {
-    if (hasSignedInToday) return;
+  String _s(dynamic v) => (v ?? '').toString().trim();
 
-    setState(() {
-      hasSignedInToday = true;
-      signInStreak += 1;
-      // 每日 +20，第7天 +100 積分
-      if (signInStreak % 7 == 0) {
-        myPoints += 100;
-      } else {
-        myPoints += 20;
-      }
-    });
-
-    _controller.forward(from: 0);
-
-    String message;
-    if (signInStreak % 7 == 0) {
-      message = "🎉 已連續簽到 7 天！獲得『限時福袋 +100 積分』！";
-    } else {
-      final remain = 7 - (signInStreak % 7);
-      message = "已連續簽到 $signInStreak 天 🎯 再簽 $remain 天可領福袋 🎁";
-    }
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => CoinRewardPopup(
-        points: signInStreak % 7 == 0 ? 100 : 20,
-        message: message,
-      ),
-    );
+  Query<Map<String, dynamic>> _baseQuery() {
+    // 盡量用 createdAt 排序；若你 campaigns 沒 createdAt，可改成 startAt 或拿掉 orderBy
+    return _db.collection('campaigns').orderBy('createdAt', descending: true);
   }
 
-  void _openPage(Widget page) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  bool _match(Map<String, dynamic> d) {
+    final q = _search.text.trim().toLowerCase();
+    final title = _s(d['title']).toLowerCase();
+    final desc = _s(d['description']).toLowerCase();
+
+    final isActive = d['isActive'] == true;
+
+    if (_onlyActive && !isActive) {
+      return false;
+    }
+    if (q.isEmpty) {
+      return true;
+    }
+    return title.contains(q) || desc.contains(q);
+  }
+
+  DateTime? _toDate(dynamic v) {
+    if (v is Timestamp) {
+      return v.toDate();
+    }
+    if (v is DateTime) {
+      return v;
+    }
+    return null;
+  }
+
+  String _fmtDate(DateTime? d) {
+    if (d == null) {
+      return '-';
+    }
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y/$m/$day';
+  }
+
+  void _goNotifications() {
+    // ✅ 最穩：用 route（你 main.dart 若有 '/notifications' 就一定成功）
+    try {
+      Navigator.of(context).pushNamed('/notifications');
+      return;
+    } catch (_) {
+      // ignore and fallback below
+    }
+
+    // ✅ fallback：直接 push page（確保你 import 的 class 名稱正確：NotificationsPage）
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const NotificationsPage()));
   }
 
   @override
   Widget build(BuildContext context) {
-    final notify = Provider.of<NotificationProvider>(context);
-    final friends = Provider.of<FriendProvider>(context).friends;
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      backgroundColor: Colors.pink.shade50,
       appBar: AppBar(
-        title: const Text("🎡 活動廣場 Event Plaza"),
-        backgroundColor: Colors.pinkAccent,
-        centerTitle: true,
+        title: const Text(
+          '活動廣場',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
-          Stack(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.notifications),
-                onPressed: () => _openPage(const NotificationPage()),
-              ),
-              if (notify.unreadCount > 0)
-                Positioned(
-                  right: 10,
-                  top: 10,
-                  child: CircleAvatar(
-                    radius: 6,
-                    backgroundColor: Colors.yellowAccent,
-                    child: Text(
-                      notify.unreadCount.toString(),
-                      style:
-                          const TextStyle(fontSize: 9, color: Colors.black87),
+          IconButton(
+            tooltip: '通知中心',
+            icon: const Icon(Icons.notifications_outlined),
+            onPressed: _goNotifications,
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _search,
+                    onChanged: (_) => setState(() {}),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      hintText: '搜尋活動（標題/描述）',
+                      border: OutlineInputBorder(),
+                      isDense: true,
                     ),
                   ),
                 ),
-            ],
-          )
-        ],
-      ),
-      body: Stack(
-        children: [
-          ListView(
-            padding: const EdgeInsets.all(20),
-            children: [
-              _buildHeader(),
-              const SizedBox(height: 20),
-              _buildStreakBoard(),
-              const SizedBox(height: 20),
-              _buildGridButtons(context),
-              const SizedBox(height: 20),
-              _buildFriendSummary(friends),
-            ],
+                const SizedBox(width: 10),
+                FilterChip(
+                  label: const Text('只看啟用中'),
+                  selected: _onlyActive,
+                  onSelected: (v) => setState(() => _onlyActive = v),
+                ),
+              ],
+            ),
           ),
+          const Divider(height: 1),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _baseQuery().snapshots(),
+              builder: (context, snap) {
+                if (snap.hasError) {
+                  return Center(child: Text('讀取失敗：${snap.error}'));
+                }
+                if (!snap.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-          // ✨ 金幣動畫（簽到時觸發）
-          if (_controller.isAnimating)
-            AnimatedBuilder(
-              animation: _controller,
-              builder: (context, child) {
-                return Stack(
-                  children: List.generate(12, (i) {
-                    final random = Random(i);
-                    final dx =
-                        random.nextDouble() * MediaQuery.of(context).size.width;
-                    final dy =
-                        _controller.value * 500 * (0.5 + random.nextDouble());
-                    return Positioned(
-                      left: dx,
-                      top: dy,
-                      child: Opacity(
-                        opacity: 1 - _controller.value,
-                        child: const Icon(Icons.monetization_on,
-                            color: Colors.yellowAccent, size: 26),
+                final docs = snap.data!.docs
+                    .where((e) => _match(e.data()))
+                    .toList();
+
+                if (docs.isEmpty) {
+                  return Center(
+                    child: Text(
+                      _onlyActive ? '目前沒有啟用中的活動' : '目前沒有活動',
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  itemCount: docs.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final doc = docs[i];
+                    final d = doc.data();
+
+                    final rawTitle = _s(d['title']);
+                    final title = rawTitle.isEmpty ? '(未命名活動)' : rawTitle;
+
+                    final desc = _s(d['description']);
+                    final isActive = d['isActive'] == true;
+
+                    final startAt = _toDate(d['startAt']);
+                    final endAt = _toDate(d['endAt']);
+                    final vendorId = _s(d['vendorId']);
+
+                    return ListTile(
+                      leading: Icon(
+                        isActive
+                            ? Icons.local_activity_outlined
+                            : Icons.local_activity,
+                        color: isActive ? cs.primary : Colors.grey,
+                      ),
+                      title: Text(
+                        title,
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                      subtitle: Text(
+                        [
+                          '期間：${_fmtDate(startAt)} ~ ${_fmtDate(endAt)}',
+                          if (vendorId.isNotEmpty) 'vendorId: $vendorId',
+                          if (desc.isNotEmpty) desc,
+                        ].join('\n'),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: isActive
+                          ? Chip(
+                              label: const Text('啟用中'),
+                              backgroundColor: cs.primaryContainer.withValues(
+                                alpha: 0.55,
+                              ),
+                            )
+                          : const Chip(label: Text('未啟用')),
+                      onTap: () => _showDetail(
+                        context,
+                        title: title,
+                        data: d,
+                        id: doc.id,
                       ),
                     );
-                  }),
+                  },
                 );
               },
             ),
+          ),
         ],
       ),
     );
   }
 
-  /// 💰 積分與簽到頭部
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.pinkAccent,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.savings, color: Colors.white, size: 40),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("我的積分",
-                        style: TextStyle(color: Colors.white70, fontSize: 12)),
-                    Text("$myPoints 分",
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 26,
-                            fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ),
-              ElevatedButton(
-                onPressed: _signInToday,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      hasSignedInToday ? Colors.grey : Colors.orangeAccent,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-                child: Text(
-                  hasSignedInToday ? "已簽到" : "簽到領積分",
-                  style: const TextStyle(color: Colors.white),
-                ),
-              ),
+  void _showDetail(
+    BuildContext context, {
+    required String title,
+    required Map<String, dynamic> data,
+    required String id,
+  }) {
+    final desc = _s(data['description']);
+    final startAt = _toDate(data['startAt']);
+    final endAt = _toDate(data['endAt']);
+    final vendorId = _s(data['vendorId']);
+    final isActive = data['isActive'] == true;
+
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+            ),
+            const SizedBox(height: 8),
+            Text('活動ID：$id'),
+            const SizedBox(height: 6),
+            Text('狀態：${isActive ? '啟用中' : '未啟用'}'),
+            const SizedBox(height: 6),
+            Text('期間：${_fmtDate(startAt)} ~ ${_fmtDate(endAt)}'),
+            if (vendorId.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text('vendorId：$vendorId'),
             ],
-          ),
-          const SizedBox(height: 16),
-          LinearPercentIndicator(
-            lineHeight: 10.0,
-            percent: todayProgress,
-            backgroundColor: Colors.white24,
-            progressColor: Colors.yellowAccent,
-            animation: true,
-            barRadius: const Radius.circular(8),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            hasSignedInToday
-                ? "今日簽到完成 ✅"
-                : "再簽 ${7 - (signInStreak % 7)} 天可領福袋 🎁",
-            style: const TextStyle(color: Colors.white70, fontSize: 12),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 🗓️ 七天簽到進度板
-  Widget _buildStreakBoard() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        children: [
-          const Text("📅 本週簽到進度",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: List.generate(7, (i) {
-              final day = i + 1;
-              final signed = day <= (signInStreak % 7);
-              final isReward = day == 7;
-              return Column(
-                children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor:
-                        signed ? Colors.pinkAccent : Colors.grey.shade300,
-                    child: isReward
-                        ? const Icon(Icons.card_giftcard,
-                            color: Colors.white, size: 20)
-                        : Text(
-                            "Day\n$day",
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                fontSize: 10, color: Colors.white),
-                          ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    isReward ? "福袋" : signed ? "✔️" : "",
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: isReward
-                            ? Colors.orangeAccent
-                            : signed
-                                ? Colors.pinkAccent
-                                : Colors.grey),
-                  )
-                ],
-              );
-            }),
-          )
-        ],
-      ),
-    );
-  }
-
-  /// 🎯 主要活動功能卡
-  Widget _buildGridButtons(BuildContext context) {
-    final List<Map<String, dynamic>> cards = [
-      {
-        "title": "積分商城",
-        "icon": Icons.store,
-        "color": Colors.blueAccent,
-        "page": const PointsStorePage()
-      },
-      {
-        "title": "限時福袋",
-        "icon": Icons.card_giftcard,
-        "color": Colors.orangeAccent,
-        "page": LuckyBagEventPage(
-          currentPoints: myPoints,
-          onPointsUpdate: (add) => setState(() => myPoints += add),
-        )
-      },
-      {
-        "title": "排行榜",
-        "icon": Icons.emoji_events,
-        "color": Colors.purpleAccent,
-        "page": const LeaderboardPage(),
-      },
-      {
-        "title": "好友排行",
-        "icon": Icons.people_alt,
-        "color": Colors.teal,
-        "page": const FriendLeaderboardPage(),
-      },
-      {
-        "title": "積分互贈",
-        "icon": Icons.favorite,
-        "color": Colors.redAccent,
-        "page": const SendPointsPage(),
-      },
-    ];
-
-    return GridView.builder(
-      itemCount: cards.length,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 16,
-        crossAxisSpacing: 16,
-        childAspectRatio: 1,
-      ),
-      itemBuilder: (_, i) {
-        final c = cards[i];
-        return InkWell(
-          onTap: () => _openPage(c["page"]),
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            decoration: BoxDecoration(
-              color: c["color"],
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [
-                BoxShadow(
-                    color: c["color"].withOpacity(0.4),
-                    blurRadius: 8,
-                    offset: const Offset(0, 4))
-              ],
-            ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(c["icon"], size: 50, color: Colors.white),
-                const SizedBox(height: 8),
-                Text(
-                  c["title"],
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  /// 👥 好友積分摘要
-  Widget _buildFriendSummary(List friends) {
-    if (friends.isEmpty) return const SizedBox();
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("👥 好友積分狀況",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          const SizedBox(height: 10),
-          ...friends.take(3).map((f) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(f.name,
-                      style: const TextStyle(fontWeight: FontWeight.w500)),
-                  Text("${f.points} 分",
-                      style: const TextStyle(color: Colors.pinkAccent)),
-                ],
+            if (desc.isNotEmpty) ...[const SizedBox(height: 10), Text(desc)],
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('關閉'),
               ),
-            );
-          })
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }

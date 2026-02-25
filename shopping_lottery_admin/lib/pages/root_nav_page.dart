@@ -1,8 +1,8 @@
 // lib/pages/root_nav_page.dart
 import 'package:flutter/material.dart';
 import 'dashboard_page.dart';
-import 'admin_products_page.dart';
-import 'admin_orders_page.dart';
+import 'admin/products/admin_products_page.dart';
+import 'admin/orders/admin_orders_page.dart';
 import 'notifications_page.dart';
 
 class RootNavPage extends StatefulWidget {
@@ -78,31 +78,32 @@ class _RootNavPageState extends State<RootNavPage> {
 
     // 手機版 - BottomNavigationBar
     return Scaffold(
-      body: IndexedStack(
-        index: _current,
-        children: _pages,
-      ),
+      body: IndexedStack(index: _current, children: _pages),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _current,
         onDestinationSelected: (i) => setState(() => _current = i),
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         destinations: const [
           NavigationDestination(
-              icon: Icon(Icons.home_outlined),
-              selectedIcon: Icon(Icons.home),
-              label: '首頁'),
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: '首頁',
+          ),
           NavigationDestination(
-              icon: Icon(Icons.inventory_2_outlined),
-              selectedIcon: Icon(Icons.inventory),
-              label: '商品'),
+            icon: Icon(Icons.inventory_2_outlined),
+            selectedIcon: Icon(Icons.inventory),
+            label: '商品',
+          ),
           NavigationDestination(
-              icon: Icon(Icons.receipt_long_outlined),
-              selectedIcon: Icon(Icons.receipt_long),
-              label: '訂單'),
+            icon: Icon(Icons.receipt_long_outlined),
+            selectedIcon: Icon(Icons.receipt_long),
+            label: '訂單',
+          ),
           NavigationDestination(
-              icon: Icon(Icons.notifications_outlined),
-              selectedIcon: Icon(Icons.notifications),
-              label: '通知'),
+            icon: Icon(Icons.notifications_outlined),
+            selectedIcon: Icon(Icons.notifications),
+            label: '通知',
+          ),
         ],
       ),
     );

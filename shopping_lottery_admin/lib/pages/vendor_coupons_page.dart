@@ -1,47 +1,40 @@
 // lib/pages/vendor_coupons_page.dart
 //
-// ✅ VendorCouponsPage（完整版｜可編譯）
-// 功能：
-// - 只顯示自己 vendorId 的 coupons
-// - 搜尋（code/title/description/id）
-// - 狀態篩選（全部/啟用/停用）
-// - CRUD（新增/編輯/刪除）
-// - 啟用/停用切換
-// - 複製 couponId / code
-// - 查看 JSON
+// ✅ VendorCouponsPage（最終完整版｜可編譯｜修正 curly braces lint｜修正 use_build_context_synchronously｜移除 unnecessary_this｜避免 deprecated 色彩 API）
+// ------------------------------------------------------------
+// Firestore collection: coupons
 //
-// Firestore 建議結構：coupons/{couponId}
-//   - vendorId: String
-//   - code: String                // 例如 SAVE100 / NEW10
-//   - title: String               // 顯示名稱
-//   - description: String
-//   - discountType: String        // 'percent' | 'amount'
-//   - discountValue: num          // percent: 10 表示 10% ; amount: 100 表示折 100
-//   - minSpend: num               // 最低消費（可選）
-//   - maxDiscount: num            // 最高折抵（percent 時可選）
-//   - usageLimit: int             // 可用次數上限（可選）
-//   - usedCount: int              // 已使用次數（可選）
-//   - startAt: Timestamp          // 生效日（可選）
-//   - endAt: Timestamp            // 到期日（可選）
-//   - isActive: bool
-//   - createdAt: Timestamp
-//   - updatedAt: Timestamp
+// 建議 schema（彈性容錯）：
+// coupons/{id} {
+//   title: String
+//   code: String
+//   description: String?
+//   active: bool?
+//   vendorId: String?
+//   type: String?             // percent / fixed / free_shipping
+//   percentOff: num?
+//   amountOff: num?
+//   minSpend: num?
+//   maxDiscount: num?
+//   startAt: Timestamp|int|string?
+//   endAt: Timestamp|int|string?
+//   usageLimit: int?
+//   usedCount: int?
+//   createdAt: Timestamp?
+//   updatedAt: Timestamp?
+// }
 //
-// 依賴：cloud_firestore, flutter/material, flutter/services
+// 依賴：cloud_firestore, firebase_auth, flutter/services
 
 import 'dart:convert';
-
+import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class VendorCouponsPage extends StatefulWidget {
-  const VendorCouponsPage({
-    super.key,
-    required this.vendorId,
-  });
-
-  final String vendorId;
+  const VendorCouponsPage({super.key});
 
   @override
   State<VendorCouponsPage> createState() => _VendorCouponsPageState();
@@ -50,1048 +43,1016 @@ class VendorCouponsPage extends StatefulWidget {
 class _VendorCouponsPageState extends State<VendorCouponsPage> {
   final _db = FirebaseFirestore.instance;
 
-  final _searchCtrl = TextEditingController();
-  String _q = '';
-  bool? _isActive; // null=全部, true=啟用, false=停用
-
-  bool _busy = false;
-  String _busyLabel = '';
-
-  String get _vid => widget.vendorId.trim();
-
-  static const _discountTypes = <String>['percent', 'amount'];
+  final _qCtrl = TextEditingController();
+  bool _onlyActive = false;
+  bool _onlyInactive = false;
 
   @override
   void dispose() {
-    _searchCtrl.dispose();
+    _qCtrl.dispose();
     super.dispose();
   }
 
-  // -------------------------
+  // ----------------------------
   // Utils
-  // -------------------------
+  // ----------------------------
   String _s(dynamic v) => (v ?? '').toString().trim();
 
-  bool _isTrue(dynamic v) => v == true;
-
-  num _num(dynamic v, {num fallback = 0}) {
-    if (v == null) return fallback;
-    if (v is num) return v;
-    return num.tryParse(v.toString().trim()) ?? fallback;
+  num _n(dynamic v, {num fallback = 0}) {
+    if (v is num) {
+      return v;
+    }
+    return num.tryParse(_s(v)) ?? fallback;
   }
 
-  int _int(dynamic v, {int fallback = 0}) {
-    if (v == null) return fallback;
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    return int.tryParse(v.toString().trim()) ?? fallback;
+  int _i(dynamic v, {int fallback = 0}) {
+    if (v is int) {
+      return v;
+    }
+    if (v is num) {
+      return v.toInt();
+    }
+    return int.tryParse(_s(v)) ?? fallback;
+  }
+
+  bool _b(dynamic v, {bool fallback = false}) {
+    if (v is bool) {
+      return v;
+    }
+    final t = _s(v).toLowerCase();
+    if (t == 'true' || t == '1' || t == 'yes') {
+      return true;
+    }
+    if (t == 'false' || t == '0' || t == 'no') {
+      return false;
+    }
+    return fallback;
   }
 
   DateTime? _toDate(dynamic v) {
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
+    if (v == null) {
+      return null;
+    }
+    if (v is Timestamp) {
+      return v.toDate();
+    }
+    if (v is DateTime) {
+      return v;
+    }
+
+    if (v is int) {
+      try {
+        if (v < 10000000000) {
+          return DateTime.fromMillisecondsSinceEpoch(v * 1000);
+        }
+        return DateTime.fromMillisecondsSinceEpoch(v);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (v is String) {
+      final t = v.trim();
+      final asInt = int.tryParse(t);
+      if (asInt != null) {
+        try {
+          if (asInt < 10000000000) {
+            return DateTime.fromMillisecondsSinceEpoch(asInt * 1000);
+          }
+          return DateTime.fromMillisecondsSinceEpoch(asInt);
+        } catch (_) {
+          return null;
+        }
+      }
+      return DateTime.tryParse(t);
+    }
+
     return null;
   }
 
-  String _fmtDate(DateTime? d) {
-    if (d == null) return '-';
+  String _fmtDate(dynamic v) {
+    final d = _toDate(v);
+    if (d == null) {
+      return '';
+    }
     String two(int n) => n.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)}';
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
-  }
-
-  Future<void> _setBusy(bool v, {String label = ''}) async {
-    if (!mounted) return;
-    setState(() {
-      _busy = v;
-      _busyLabel = label;
-    });
+    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
   }
 
   Future<void> _copy(String text, {String done = '已複製'}) async {
     final t = text.trim();
-    if (t.isEmpty) return;
+    if (t.isEmpty) {
+      return;
+    }
     await Clipboard.setData(ClipboardData(text: t));
-    _snack(done);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(done), duration: const Duration(seconds: 2)),
+    );
   }
 
-  // -------------------------
-  // Query
-  // -------------------------
-  Stream<QuerySnapshot<Map<String, dynamic>>> _streamCoupons() {
-    // 若你 coupons 未存 createdAt，orderBy 會報錯；建議補上 createdAt
-    Query<Map<String, dynamic>> q = _db
+  String _resolveVendorId(User user) {
+    return user.uid;
+  }
+
+  String _randomCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    final r = Random();
+    final buf = StringBuffer('OSM');
+    for (int i = 0; i < 7; i++) {
+      buf.write(chars[r.nextInt(chars.length)]);
+    }
+    return buf.toString();
+  }
+
+  // ----------------------------
+  // Firestore
+  // ----------------------------
+  Query<Map<String, dynamic>> _baseQuery() {
+    return _db
         .collection('coupons')
-        .where('vendorId', isEqualTo: _vid)
-        .orderBy('createdAt', descending: true)
-        .limit(800);
-
-    if (_isActive != null) {
-      q = _db
-          .collection('coupons')
-          .where('vendorId', isEqualTo: _vid)
-          .where('isActive', isEqualTo: _isActive)
-          .orderBy('createdAt', descending: true)
-          .limit(800);
-    }
-
-    return q.snapshots();
+        .orderBy('updatedAt', descending: true)
+        .limit(1200);
   }
 
-  bool _match(String id, Map<String, dynamic> d) {
-    final q = _q.trim().toLowerCase();
-    if (q.isEmpty) return true;
+  bool _belongsToVendor(Map<String, dynamic> d, String vendorId) {
+    final v = _s(d['vendorId']);
+    if (v.isEmpty) {
+      return true; // 舊資料容錯：沒寫 vendorId 就先顯示
+    }
+    return v == vendorId;
+  }
 
-    final code = _s(d['code']).toLowerCase();
+  bool _matchesFilters(Map<String, dynamic> d) {
+    final active = _b(d['active'], fallback: true);
+
+    if (_onlyActive && !active) {
+      return false;
+    }
+    if (_onlyInactive && active) {
+      return false;
+    }
+
+    final q = _qCtrl.text.trim().toLowerCase();
+    if (q.isEmpty) {
+      return true;
+    }
+
     final title = _s(d['title']).toLowerCase();
+    final code = _s(d['code']).toLowerCase();
     final desc = _s(d['description']).toLowerCase();
+    final type = _s(d['type']).toLowerCase();
 
-    return id.toLowerCase().contains(q) ||
+    return title.contains(q) ||
         code.contains(q) ||
-        title.contains(q) ||
-        desc.contains(q);
+        desc.contains(q) ||
+        type.contains(q);
   }
 
-  // -------------------------
-  // Actions
-  // -------------------------
-  Future<void> _toggleActive(String couponId, bool active) async {
-    await _setBusy(true, label: active ? '啟用中...' : '停用中...');
-    try {
-      await _db.collection('coupons').doc(couponId).set(
-        <String, dynamic>{
-          'isActive': active,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
+  Future<void> _toggleActive(String id, bool active) async {
+    await _db.collection('coupons').doc(id).set({
+      'active': active,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> _deleteCoupon(String id) async {
+    await _db.collection('coupons').doc(id).delete();
+  }
+
+  // ----------------------------
+  // Editor dialog
+  // ----------------------------
+  Future<void> _openEditor({
+    required String vendorId,
+    required String docId,
+    required Map<String, dynamic> data,
+    required bool isNew,
+  }) async {
+    final titleCtrl = TextEditingController(text: _s(data['title']));
+    final codeCtrl = TextEditingController(text: _s(data['code']));
+    final descCtrl = TextEditingController(text: _s(data['description']));
+    final minSpendCtrl = TextEditingController(
+      text: data['minSpend'] == null ? '' : _n(data['minSpend']).toString(),
+    );
+    final maxDiscCtrl = TextEditingController(
+      text: data['maxDiscount'] == null
+          ? ''
+          : _n(data['maxDiscount']).toString(),
+    );
+    final usageLimitCtrl = TextEditingController(
+      text: data['usageLimit'] == null ? '' : _i(data['usageLimit']).toString(),
+    );
+    final usedCountCtrl = TextEditingController(
+      text: data['usedCount'] == null ? '' : _i(data['usedCount']).toString(),
+    );
+
+    String type = _s(data['type']).isEmpty ? 'percent' : _s(data['type']);
+    final percentCtrl = TextEditingController(
+      text: data['percentOff'] == null ? '' : _n(data['percentOff']).toString(),
+    );
+    final amountCtrl = TextEditingController(
+      text: data['amountOff'] == null ? '' : _n(data['amountOff']).toString(),
+    );
+
+    bool active = _b(data['active'], fallback: true);
+    DateTime? startAt = _toDate(data['startAt']);
+    DateTime? endAt = _toDate(data['endAt']);
+
+    Future<void> pickStart() async {
+      final now = DateTime.now();
+      final picked = await showDatePicker(
+        context: context,
+        initialDate: startAt ?? now,
+        firstDate: DateTime(now.year - 5),
+        lastDate: DateTime(now.year + 5),
       );
-      _snack(active ? '已啟用' : '已停用');
-    } catch (e) {
-      _snack('操作失敗：$e');
-    } finally {
-      await _setBusy(false);
+      if (picked == null) {
+        return;
+      }
+      startAt = DateTime(picked.year, picked.month, picked.day);
     }
+
+    Future<void> pickEnd() async {
+      final now = DateTime.now();
+      final picked = await showDatePicker(
+        context: context,
+        initialDate: endAt ?? now,
+        firstDate: DateTime(now.year - 5),
+        lastDate: DateTime(now.year + 5),
+      );
+      if (picked == null) {
+        return;
+      }
+      endAt = DateTime(picked.year, picked.month, picked.day, 23, 59, 59, 999);
+    }
+
+    bool ok = false;
+    try {
+      ok =
+          await showDialog<bool>(
+            context: context,
+            builder: (dialogCtx) {
+              final cs = Theme.of(dialogCtx).colorScheme;
+
+              return StatefulBuilder(
+                builder: (dialogCtx, setLocal) {
+                  return AlertDialog(
+                    title: Text(isNew ? '新增優惠券' : '編輯優惠券'),
+                    content: SizedBox(
+                      width: 560,
+                      child: SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            _field(titleCtrl, '名稱*'),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _field(
+                                    codeCtrl,
+                                    '優惠碼*（code）',
+                                    hint: '例如 OSMXXXXXXX',
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                OutlinedButton.icon(
+                                  onPressed: () {
+                                    codeCtrl.text = _randomCode();
+                                  },
+                                  icon: const Icon(Icons.auto_fix_high),
+                                  label: const Text('產生'),
+                                ),
+                              ],
+                            ),
+                            _field(descCtrl, '描述', maxLines: 3),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                const Text('類型：'),
+                                const SizedBox(width: 8),
+                                DropdownButton<String>(
+                                  value: type,
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 'percent',
+                                      child: Text('百分比折扣'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'fixed',
+                                      child: Text('固定折抵'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'free_shipping',
+                                      child: Text('免運（示範）'),
+                                    ),
+                                  ],
+                                  onChanged: (v) {
+                                    if (v == null) {
+                                      return;
+                                    }
+                                    setLocal(() => type = v);
+                                  },
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            if (type == 'percent') ...[
+                              _field(
+                                percentCtrl,
+                                '折扣百分比（percentOff，例如 10=10%）',
+                                keyboardType: TextInputType.number,
+                              ),
+                            ] else if (type == 'fixed') ...[
+                              _field(
+                                amountCtrl,
+                                '折抵金額（amountOff）',
+                                keyboardType: TextInputType.number,
+                              ),
+                            ] else ...[
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: cs.surfaceContainerHighest.withValues(
+                                    alpha: 36,
+                                  ),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: cs.outlineVariant),
+                                ),
+                                child: Text(
+                                  'free_shipping：示範類型，結帳計算時自行處理運費折扣。',
+                                  style: TextStyle(color: cs.onSurfaceVariant),
+                                ),
+                              ),
+                            ],
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _field(
+                                    minSpendCtrl,
+                                    '最低消費（minSpend）',
+                                    keyboardType: TextInputType.number,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: _field(
+                                    maxDiscCtrl,
+                                    '折扣上限（maxDiscount，可選）',
+                                    keyboardType: TextInputType.number,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _field(
+                                    usageLimitCtrl,
+                                    '可用次數上限（usageLimit，可選）',
+                                    keyboardType: TextInputType.number,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: _field(
+                                    usedCountCtrl,
+                                    '已使用次數（usedCount，可選）',
+                                    keyboardType: TextInputType.number,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: () async {
+                                      await pickStart();
+                                      setLocal(() {});
+                                    },
+                                    icon: const Icon(Icons.date_range),
+                                    label: Text(
+                                      startAt == null
+                                          ? '開始日'
+                                          : _fmtDate(startAt),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: () async {
+                                      await pickEnd();
+                                      setLocal(() {});
+                                    },
+                                    icon: const Icon(Icons.event),
+                                    label: Text(
+                                      endAt == null ? '結束日' : _fmtDate(endAt),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            SwitchListTile(
+                              value: active,
+                              onChanged: (v) => setLocal(() => active = v),
+                              title: const Text('上架（active）'),
+                              contentPadding: EdgeInsets.zero,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(dialogCtx, false),
+                        child: const Text('取消'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(dialogCtx, true),
+                        child: const Text('儲存'),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          ) ??
+          false;
+    } finally {
+      titleCtrl.dispose();
+      codeCtrl.dispose();
+      descCtrl.dispose();
+      minSpendCtrl.dispose();
+      maxDiscCtrl.dispose();
+      usageLimitCtrl.dispose();
+      usedCountCtrl.dispose();
+      percentCtrl.dispose();
+      amountCtrl.dispose();
+    }
+
+    if (!ok) {
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    final title = titleCtrl.text.trim();
+    final code = codeCtrl.text.trim().toUpperCase();
+
+    if (title.isEmpty || code.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('名稱與優惠碼不可空白')));
+      return;
+    }
+
+    final payload = <String, dynamic>{
+      'title': title,
+      'code': code,
+      'description': descCtrl.text.trim(),
+      'type': type,
+      'active': active,
+      'minSpend': minSpendCtrl.text.trim().isEmpty
+          ? null
+          : _n(minSpendCtrl.text),
+      'maxDiscount': maxDiscCtrl.text.trim().isEmpty
+          ? null
+          : _n(maxDiscCtrl.text),
+      'usageLimit': usageLimitCtrl.text.trim().isEmpty
+          ? null
+          : _i(usageLimitCtrl.text),
+      'usedCount': usedCountCtrl.text.trim().isEmpty
+          ? null
+          : _i(usedCountCtrl.text),
+      'startAt': startAt,
+      'endAt': endAt,
+      'vendorId': vendorId,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    if (type == 'percent') {
+      payload['percentOff'] = percentCtrl.text.trim().isEmpty
+          ? null
+          : _n(percentCtrl.text);
+      payload['amountOff'] = null;
+    } else if (type == 'fixed') {
+      payload['amountOff'] = amountCtrl.text.trim().isEmpty
+          ? null
+          : _n(amountCtrl.text);
+      payload['percentOff'] = null;
+    } else {
+      payload['percentOff'] = null;
+      payload['amountOff'] = null;
+    }
+
+    if (isNew) {
+      payload['createdAt'] = FieldValue.serverTimestamp();
+    }
+
+    await _db
+        .collection('coupons')
+        .doc(docId)
+        .set(payload, SetOptions(merge: true));
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已儲存')));
   }
 
-  Future<void> _delete(String couponId) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除優惠券'),
-        content: Text('確定要刪除 coupon：$couponId 嗎？（不可復原）'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-        ],
+  Widget _field(
+    TextEditingController c,
+    String label, {
+    String? hint,
+    int maxLines = 1,
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: c,
+        maxLines: maxLines,
+        keyboardType: keyboardType,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
       ),
     );
-    if (ok != true) return;
-
-    await _setBusy(true, label: '刪除中...');
-    try {
-      await _db.collection('coupons').doc(couponId).delete();
-      _snack('已刪除');
-    } catch (e) {
-      _snack('刪除失敗：$e');
-    } finally {
-      await _setBusy(false);
-    }
   }
 
   String _discountLabel(Map<String, dynamic> d) {
-    final type = _s(d['discountType']).isEmpty ? 'amount' : _s(d['discountType']);
-    final value = _num(d['discountValue']);
-    if (type == 'percent') return '${value.toString().replaceAll('.0', '')}% OFF';
-    return '折 ${value.toString().replaceAll('.0', '')}';
-  }
-
-  Future<void> _viewJson(String title, Map<String, dynamic> data) async {
-    await showDialog(
-      context: context,
-      builder: (_) => _JsonDialog(
-        title: title,
-        jsonText: const JsonEncoder.withIndent('  ').convert(data),
-      ),
-    );
-  }
-
-  DateTime? _tryParseDate(String s) {
-    final t = s.trim();
-    if (t.isEmpty) return null;
-    return DateTime.tryParse(t);
-  }
-
-  Future<void> _openEditor({String? couponId, Map<String, dynamic>? data}) async {
-    final isCreate = couponId == null || couponId.trim().isEmpty;
-
-    final codeCtrl = TextEditingController(text: _s(data?['code']));
-    final titleCtrl = TextEditingController(text: _s(data?['title']));
-    final descCtrl = TextEditingController(text: _s(data?['description']));
-
-    String discountType = _s(data?['discountType']);
-    if (!_discountTypes.contains(discountType)) discountType = 'amount';
-
-    final discountValueCtrl = TextEditingController(
-      text: _s(data?['discountValue']).isEmpty ? '' : _s(data?['discountValue']),
-    );
-    final minSpendCtrl = TextEditingController(
-      text: _s(data?['minSpend']).isEmpty ? '' : _s(data?['minSpend']),
-    );
-    final maxDiscountCtrl = TextEditingController(
-      text: _s(data?['maxDiscount']).isEmpty ? '' : _s(data?['maxDiscount']),
-    );
-    final usageLimitCtrl = TextEditingController(
-      text: _s(data?['usageLimit']).isEmpty ? '' : _s(data?['usageLimit']),
-    );
-
-    final startAt = _toDate(data?['startAt']);
-    final endAt = _toDate(data?['endAt']);
-    final startCtrl = TextEditingController(text: startAt == null ? '' : _fmtDate(startAt));
-    final endCtrl = TextEditingController(text: endAt == null ? '' : _fmtDate(endAt));
-
-    bool isActive = data == null ? true : _isTrue(data['isActive']);
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => StatefulBuilder(
-        builder: (context, setInner) => AlertDialog(
-          title: Text(isCreate ? '新增優惠券' : '編輯優惠券'),
-          content: SizedBox(
-            width: 640,
-            child: SingleChildScrollView(
-              child: Column(
-                children: [
-                  TextField(
-                    controller: codeCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Code（兌換碼）',
-                      hintText: '例如：SAVE100 / NEW10',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: titleCtrl,
-                    decoration: const InputDecoration(
-                      labelText: '標題（顯示用）',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: descCtrl,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: '描述',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          value: discountType,
-                          isExpanded: true,
-                          decoration: const InputDecoration(
-                            labelText: '折扣型態',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                          items: const [
-                            DropdownMenuItem(value: 'amount', child: Text('固定金額（amount）')),
-                            DropdownMenuItem(value: 'percent', child: Text('百分比（percent）')),
-                          ],
-                          onChanged: (v) => setInner(() => discountType = (v ?? 'amount')),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: discountValueCtrl,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: '折扣值（discountValue）',
-                            hintText: 'amount=100 / percent=10',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: minSpendCtrl,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: '最低消費（minSpend，可空）',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: maxDiscountCtrl,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: '最高折抵（maxDiscount，可空）',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: usageLimitCtrl,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: '使用上限（usageLimit，可空）',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('啟用 isActive'),
-                          value: isActive,
-                          onChanged: (v) => setInner(() => isActive = v),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: startCtrl,
-                          decoration: const InputDecoration(
-                            labelText: '生效日 startAt（YYYY-MM-DD，可空）',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: endCtrl,
-                          decoration: const InputDecoration(
-                            labelText: '到期日 endAt（YYYY-MM-DD，可空）',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 10),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '提示：此頁與主後台共用 coupons 集合；主後台更新會即時反映。',
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('儲存')),
-          ],
-        ),
-      ),
-    );
-
-    if (ok != true) {
-      codeCtrl.dispose();
-      titleCtrl.dispose();
-      descCtrl.dispose();
-      discountValueCtrl.dispose();
-      minSpendCtrl.dispose();
-      maxDiscountCtrl.dispose();
-      usageLimitCtrl.dispose();
-      startCtrl.dispose();
-      endCtrl.dispose();
-      return;
-    }
-
-    final code = codeCtrl.text.trim();
-    final title = titleCtrl.text.trim();
-    if (code.isEmpty) {
-      _snack('Code 不可為空');
-      return;
-    }
-    if (title.isEmpty) {
-      _snack('標題不可為空');
-      return;
-    }
-
-    final discountValue = _num(discountValueCtrl.text.trim(), fallback: 0);
-    if (discountValue <= 0) {
-      _snack('折扣值 discountValue 必須大於 0');
-      return;
-    }
-    if (discountType == 'percent' && discountValue > 100) {
-      _snack('percent 折扣值建議 1~100');
-      // 仍允許儲存（有些會用 110 代表特殊規則），你若要強制可 return
-    }
-
-    final minSpend = minSpendCtrl.text.trim().isEmpty ? null : _num(minSpendCtrl.text.trim());
-    final maxDiscount = maxDiscountCtrl.text.trim().isEmpty ? null : _num(maxDiscountCtrl.text.trim());
-    final usageLimit = usageLimitCtrl.text.trim().isEmpty ? null : _int(usageLimitCtrl.text.trim());
-
-    final startAtDt = _tryParseDate(startCtrl.text);
-    final endAtDt = _tryParseDate(endCtrl.text);
-
-    if (startAtDt != null && endAtDt != null && endAtDt.isBefore(startAtDt)) {
-      _snack('到期日不可早於生效日');
-      return;
-    }
-
-    await _setBusy(true, label: '儲存中...');
-    try {
-      final payload = <String, dynamic>{
-        'vendorId': _vid,
-        'code': code,
-        'title': title,
-        'description': descCtrl.text.trim(),
-        'discountType': discountType,
-        'discountValue': discountValue,
-        'minSpend': minSpend,
-        'maxDiscount': maxDiscount,
-        'usageLimit': usageLimit,
-        'isActive': isActive,
-        'startAt': startAtDt == null ? null : Timestamp.fromDate(startAtDt),
-        'endAt': endAtDt == null ? null : Timestamp.fromDate(endAtDt),
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-
-      // 清掉 null，避免寫入 null（你若希望保留 null 可移除此段）
-      payload.removeWhere((k, v) => v == null);
-
-      if (isCreate) {
-        await _db.collection('coupons').add({
-          ...payload,
-          'createdAt': FieldValue.serverTimestamp(),
-          'usedCount': 0,
-        });
-        _snack('已新增優惠券');
-      } else {
-        await _db.collection('coupons').doc(couponId!).set(payload, SetOptions(merge: true));
-        _snack('已更新優惠券');
+    final type = _s(d['type']).isEmpty ? 'percent' : _s(d['type']);
+    if (type == 'percent') {
+      final p = _n(d['percentOff'], fallback: 0);
+      if (p <= 0) {
+        return '折扣（未設定）';
       }
-    } catch (e) {
-      _snack('儲存失敗：$e');
-    } finally {
-      await _setBusy(false);
+      return '${p.toStringAsFixed(p % 1 == 0 ? 0 : 2)}% OFF';
     }
-
-    codeCtrl.dispose();
-    titleCtrl.dispose();
-    descCtrl.dispose();
-    discountValueCtrl.dispose();
-    minSpendCtrl.dispose();
-    maxDiscountCtrl.dispose();
-    usageLimitCtrl.dispose();
-    startCtrl.dispose();
-    endCtrl.dispose();
+    if (type == 'fixed') {
+      final a = _n(d['amountOff'], fallback: 0);
+      if (a <= 0) {
+        return '折抵（未設定）';
+      }
+      return '折抵 NT\$${a.toStringAsFixed(a % 1 == 0 ? 0 : 2)}';
+    }
+    if (type == 'free_shipping') {
+      return '免運';
+    }
+    return type;
   }
 
-  // -------------------------
+  // ----------------------------
   // UI
-  // -------------------------
+  // ----------------------------
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    if (_vid.isEmpty) {
-      return const Center(child: Text('vendorId 不可為空'));
-    }
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, authSnap) {
+        final user = authSnap.data;
 
-    return Stack(
-      children: [
-        Column(
-          children: [
-            _CouponFilters(
-              searchCtrl: _searchCtrl,
-              isActive: _isActive,
-              onQueryChanged: (v) => setState(() => _q = v),
-              onClearQuery: () {
-                _searchCtrl.clear();
-                setState(() => _q = '');
-              },
-              onActiveChanged: (v) => setState(() => _isActive = v),
-              onAdd: _busy ? null : () => _openEditor(),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: _streamCoupons(),
-                builder: (context, snap) {
-                  if (snap.hasError) {
-                    return Center(child: Text('讀取錯誤：${snap.error}'));
-                  }
-                  if (!snap.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
+        if (authSnap.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (user == null) {
+          return const Scaffold(body: Center(child: Text('請先登入')));
+        }
 
-                  final docs = snap.data!.docs
-                      .map((e) => (id: e.id, data: e.data()))
-                      .where((e) => _match(e.id, e.data))
-                      .toList();
+        final vendorId = _resolveVendorId(user);
 
-                  if (docs.isEmpty) {
-                    return Center(
-                      child: Text('目前沒有資料', style: TextStyle(color: cs.onSurfaceVariant)),
-                    );
-                  }
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('我的優惠券'),
+            actions: [
+              IconButton(
+                tooltip: _onlyActive ? '顯示全部' : '只看上架',
+                onPressed: () {
+                  setState(() {
+                    _onlyActive = !_onlyActive;
+                    if (_onlyActive) {
+                      _onlyInactive = false;
+                    }
+                  });
+                },
+                icon: Icon(
+                  _onlyActive ? Icons.check_circle : Icons.check_circle_outline,
+                ),
+              ),
+              IconButton(
+                tooltip: _onlyInactive ? '顯示全部' : '只看下架',
+                onPressed: () {
+                  setState(() {
+                    _onlyInactive = !_onlyInactive;
+                    if (_onlyInactive) {
+                      _onlyActive = false;
+                    }
+                  });
+                },
+                icon: Icon(
+                  _onlyInactive
+                      ? Icons.remove_circle
+                      : Icons.remove_circle_outline,
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
+          ),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () async {
+              final newId = _db.collection('coupons').doc().id;
+              await _openEditor(
+                vendorId: vendorId,
+                docId: newId,
+                data: const <String, dynamic>{},
+                isNew: true,
+              );
+            },
+            icon: const Icon(Icons.add),
+            label: const Text('新增'),
+          ),
+          body: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+                child: TextField(
+                  controller: _qCtrl,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search),
+                    hintText: '搜尋：名稱 / code / 描述 / 類型',
+                    filled: true,
+                    fillColor: cs.surfaceContainerHighest.withValues(alpha: 36),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: cs.outlineVariant),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: cs.outlineVariant),
+                    ),
+                    suffixIcon: IconButton(
+                      tooltip: '清除',
+                      onPressed: () {
+                        _qCtrl.clear();
+                        FocusScope.of(context).unfocus();
+                        setState(() {});
+                      },
+                      icon: const Icon(Icons.clear),
+                    ),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _baseQuery().snapshots(),
+                  builder: (context, snap) {
+                    if (snap.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (snap.hasError) {
+                      return Center(child: Text('讀取失敗：${snap.error}'));
+                    }
 
-                  return ListView.separated(
-                    itemCount: docs.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final id = docs[i].id;
-                      final d = docs[i].data;
+                    final docs = snap.data?.docs ?? const [];
+                    final filtered = docs
+                        .map((d) => _DocRow(id: d.id, data: d.data()))
+                        .where((r) => _belongsToVendor(r.data, vendorId))
+                        .where((r) => _matchesFilters(r.data))
+                        .toList();
 
-                      final code = _s(d['code']).isEmpty ? '（無 code）' : _s(d['code']);
-                      final title = _s(d['title']).isEmpty ? '（未命名）' : _s(d['title']);
-                      final active = _isTrue(d['isActive']);
-
-                      final label = _discountLabel(d);
-                      final minSpend = d.containsKey('minSpend') ? _num(d['minSpend'], fallback: 0) : null;
-                      final usedCount = _int(d['usedCount'], fallback: 0);
-                      final usageLimit = d.containsKey('usageLimit') ? _int(d['usageLimit']) : null;
-
-                      final startAt = _toDate(d['startAt']);
-                      final endAt = _toDate(d['endAt']);
-
-                      return ListTile(
-                        leading: Icon(active ? Icons.confirmation_num_outlined : Icons.confirmation_num),
-                        title: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                '$code  ·  $title',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontWeight: FontWeight.w900),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            _Pill(
-                              label: active ? '啟用' : '停用',
-                              color: active ? cs.primary : cs.error,
-                            ),
-                          ],
+                    if (filtered.isEmpty) {
+                      return Center(
+                        child: Text(
+                          '沒有符合的優惠券',
+                          style: TextStyle(color: cs.onSurfaceVariant),
                         ),
-                        subtitle: Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Wrap(
-                                spacing: 10,
-                                runSpacing: 4,
+                      );
+                    }
+
+                    return ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (context, i) {
+                        final r = filtered[i];
+                        final d = r.data;
+
+                        final title = _s(d['title']).isEmpty
+                            ? '（未命名）'
+                            : _s(d['title']);
+                        final code = _s(d['code']);
+                        final desc = _s(d['description']);
+                        final active = _b(d['active'], fallback: true);
+
+                        final minSpend = d['minSpend'] == null
+                            ? null
+                            : _n(d['minSpend']);
+                        final maxDisc = d['maxDiscount'] == null
+                            ? null
+                            : _n(d['maxDiscount']);
+                        final usageLimit = d['usageLimit'] == null
+                            ? null
+                            : _i(d['usageLimit']);
+                        final usedCount = d['usedCount'] == null
+                            ? null
+                            : _i(d['usedCount']);
+
+                        final startAt = _fmtDate(d['startAt']);
+                        final endAt = _fmtDate(d['endAt']);
+
+                        final badgeBg = active
+                            ? cs.primary.withValues(alpha: 26)
+                            : cs.surfaceContainerHighest.withValues(alpha: 70);
+                        final badgeFg = active
+                            ? cs.primary
+                            : cs.onSurfaceVariant;
+
+                        return Card(
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: BorderSide(color: cs.outlineVariant),
+                          ),
+                          child: ListTile(
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: badgeBg,
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(
+                                      color: cs.outlineVariant,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    active ? '上架' : '下架',
+                                    style: TextStyle(
+                                      color: badgeFg,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            subtitle: Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                                  if (minSpend != null)
-                                    Text('低消：${minSpend.toString().replaceAll('.0', '')}',
-                                        style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                                  Text('使用：$usedCount${usageLimit == null ? '' : '/$usageLimit'}',
-                                      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
+                                  Wrap(
+                                    spacing: 10,
+                                    runSpacing: 8,
+                                    crossAxisAlignment:
+                                        WrapCrossAlignment.center,
+                                    children: [
+                                      _Chip(
+                                        icon:
+                                            Icons.confirmation_number_outlined,
+                                        text: code.isEmpty ? '（無 code）' : code,
+                                        onTap: code.isEmpty
+                                            ? null
+                                            : () => _copy(code, done: '已複製優惠碼'),
+                                      ),
+                                      _Chip(
+                                        icon: Icons.discount_outlined,
+                                        text: _discountLabel(d),
+                                      ),
+                                      if (minSpend != null)
+                                        _Chip(
+                                          icon: Icons.payments_outlined,
+                                          text: '低消 $minSpend',
+                                        ),
+                                      if (maxDisc != null)
+                                        _Chip(
+                                          icon: Icons.shield_outlined,
+                                          text: '上限 $maxDisc',
+                                        ),
+                                      if (usageLimit != null)
+                                        _Chip(
+                                          icon: Icons.all_inclusive,
+                                          text: '上限 $usageLimit 次',
+                                        ),
+                                      if (usedCount != null)
+                                        _Chip(
+                                          icon: Icons.check,
+                                          text: '已用 $usedCount 次',
+                                        ),
+                                    ],
+                                  ),
+                                  if (startAt.isNotEmpty ||
+                                      endAt.isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      '期間：${startAt.isEmpty ? '未設定' : startAt} ～ ${endAt.isEmpty ? '未設定' : endAt}',
+                                      style: TextStyle(
+                                        color: cs.onSurfaceVariant,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                  if (desc.isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      desc,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
                                 ],
                               ),
-                              const SizedBox(height: 4),
-                              Text(
-                                '期間：${_fmtDate(startAt)} ~ ${_fmtDate(endAt)}',
-                                style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-                              ),
-                            ],
-                          ),
-                        ),
-                        trailing: PopupMenuButton<String>(
-                          tooltip: '更多',
-                          onSelected: _busy
-                              ? null
-                              : (v) async {
-                                  if (v == 'copy_id') {
-                                    await _copy(id, done: '已複製 couponId');
-                                  } else if (v == 'copy_code') {
-                                    await _copy(code, done: '已複製 code');
-                                  } else if (v == 'edit') {
-                                    await _openEditor(couponId: id, data: d);
-                                  } else if (v == 'toggle') {
-                                    await _toggleActive(id, !active);
-                                  } else if (v == 'json') {
-                                    await _viewJson('Coupon JSON', d);
-                                  } else if (v == 'delete') {
-                                    await _delete(id);
-                                  }
-                                },
-                          itemBuilder: (_) => [
-                            const PopupMenuItem(value: 'copy_id', child: Text('複製 couponId')),
-                            const PopupMenuItem(value: 'copy_code', child: Text('複製 code')),
-                            const PopupMenuItem(value: 'edit', child: Text('編輯')),
-                            PopupMenuItem(value: 'toggle', child: Text(active ? '停用' : '啟用')),
-                            const PopupMenuItem(value: 'json', child: Text('查看 JSON')),
-                            const PopupMenuDivider(),
-                            const PopupMenuItem(value: 'delete', child: Text('刪除')),
-                          ],
-                        ),
-                        onTap: () async {
-                          await showDialog(
-                            context: context,
-                            builder: (_) => _CouponDetailDialog(
-                              couponId: id,
-                              data: d,
-                              fmtDate: _fmtDate,
-                              toDate: _toDate,
-                              discountLabel: _discountLabel,
-                              onCopyId: () => _copy(id, done: '已複製 couponId'),
-                              onCopyCode: () => _copy(code, done: '已複製 code'),
-                              onEdit: () => _openEditor(couponId: id, data: d),
-                              onToggle: () => _toggleActive(id, !active),
-                              onJson: () => _viewJson('Coupon JSON', d),
-                              onDelete: () => _delete(id),
                             ),
-                          );
-                        },
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-        if (_busy)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _BusyBar(label: _busyLabel.isEmpty ? '處理中...' : _busyLabel),
-          ),
-      ],
-    );
-  }
-}
+                            trailing: PopupMenuButton<String>(
+                              onSelected: (v) async {
+                                if (v == 'copy') {
+                                  await _copy(code, done: '已複製優惠碼');
+                                } else if (v == 'edit') {
+                                  await _openEditor(
+                                    vendorId: vendorId,
+                                    docId: r.id,
+                                    data: d,
+                                    isNew: false,
+                                  );
+                                } else if (v == 'toggle') {
+                                  await _toggleActive(r.id, !active);
+                                } else if (v == 'delete') {
+                                  final ok =
+                                      await showDialog<bool>(
+                                        context: context,
+                                        builder: (dialogCtx) => AlertDialog(
+                                          title: const Text('刪除優惠券？'),
+                                          content: Text('將刪除：「$title」'),
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () => Navigator.pop(
+                                                dialogCtx,
+                                                false,
+                                              ),
+                                              child: const Text('取消'),
+                                            ),
+                                            FilledButton(
+                                              onPressed: () => Navigator.pop(
+                                                dialogCtx,
+                                                true,
+                                              ),
+                                              child: const Text('刪除'),
+                                            ),
+                                          ],
+                                        ),
+                                      ) ??
+                                      false;
 
-// ------------------------------------------------------------
-// Filters UI
-// ------------------------------------------------------------
-class _CouponFilters extends StatelessWidget {
-  const _CouponFilters({
-    required this.searchCtrl,
-    required this.isActive,
-    required this.onQueryChanged,
-    required this.onClearQuery,
-    required this.onActiveChanged,
-    required this.onAdd,
-  });
-
-  final TextEditingController searchCtrl;
-  final bool? isActive;
-
-  final ValueChanged<String> onQueryChanged;
-  final VoidCallback onClearQuery;
-  final ValueChanged<bool?> onActiveChanged;
-  final VoidCallback? onAdd;
-
-  @override
-  Widget build(BuildContext context) {
-    final dd = DropdownButtonFormField<bool?>(
-      value: isActive,
-      isExpanded: true,
-      decoration: const InputDecoration(
-        isDense: true,
-        border: OutlineInputBorder(),
-        labelText: '狀態',
-      ),
-      items: const [
-        DropdownMenuItem(value: null, child: Text('全部')),
-        DropdownMenuItem(value: true, child: Text('啟用')),
-        DropdownMenuItem(value: false, child: Text('停用')),
-      ],
-      onChanged: onActiveChanged,
-    );
-
-    final search = TextField(
-      controller: searchCtrl,
-      decoration: InputDecoration(
-        isDense: true,
-        prefixIcon: const Icon(Icons.search),
-        border: const OutlineInputBorder(),
-        hintText: '搜尋：code / title / description / id',
-        suffixIcon: searchCtrl.text.trim().isEmpty
-            ? null
-            : IconButton(
-                tooltip: '清除',
-                onPressed: onClearQuery,
-                icon: const Icon(Icons.clear),
-              ),
-      ),
-      onChanged: onQueryChanged,
-    );
-
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: LayoutBuilder(
-        builder: (context, c) {
-          final isNarrow = c.maxWidth < 980;
-
-          if (isNarrow) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                search,
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(child: dd),
-                    const SizedBox(width: 10),
-                    FilledButton.icon(
-                      onPressed: onAdd,
-                      icon: const Icon(Icons.add),
-                      label: const Text('新增'),
-                    ),
-                  ],
-                ),
-              ],
-            );
-          }
-
-          return Row(
-            children: [
-              Expanded(flex: 3, child: search),
-              const SizedBox(width: 10),
-              SizedBox(width: 220, child: dd),
-              const SizedBox(width: 10),
-              FilledButton.icon(
-                onPressed: onAdd,
-                icon: const Icon(Icons.add),
-                label: const Text('新增優惠券'),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// Detail Dialog
-// ------------------------------------------------------------
-class _CouponDetailDialog extends StatelessWidget {
-  const _CouponDetailDialog({
-    required this.couponId,
-    required this.data,
-    required this.fmtDate,
-    required this.toDate,
-    required this.discountLabel,
-    required this.onCopyId,
-    required this.onCopyCode,
-    required this.onEdit,
-    required this.onToggle,
-    required this.onJson,
-    required this.onDelete,
-  });
-
-  final String couponId;
-  final Map<String, dynamic> data;
-
-  final String Function(DateTime?) fmtDate;
-  final DateTime? Function(dynamic) toDate;
-  final String Function(Map<String, dynamic>) discountLabel;
-
-  final VoidCallback onCopyId;
-  final VoidCallback onCopyCode;
-  final VoidCallback onEdit;
-  final VoidCallback onToggle;
-  final VoidCallback onJson;
-  final VoidCallback onDelete;
-
-  String _s(dynamic v) => (v ?? '').toString().trim();
-  bool _isTrue(dynamic v) => v == true;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    final code = _s(data['code']);
-    final title = _s(data['title']);
-    final desc = _s(data['description']);
-    final active = _isTrue(data['isActive']);
-
-    final startAt = toDate(data['startAt']);
-    final endAt = toDate(data['endAt']);
-
-    return Dialog(
-      insetPadding: const EdgeInsets.all(18),
-      child: SizedBox(
-        width: 640,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title.isEmpty ? '優惠券詳情' : '優惠券：$title',
-                      style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
-                    ),
-                  ),
-                  _Pill(
-                    label: active ? '啟用' : '停用',
-                    color: active ? cs.primary : cs.error,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-
-              _InfoRow(label: 'couponId', value: couponId, onCopy: onCopyId),
-              const SizedBox(height: 6),
-              _InfoRow(label: 'code', value: code, onCopy: onCopyCode),
-              const SizedBox(height: 6),
-              _InfoRow(label: '折扣', value: discountLabel(data)),
-              const SizedBox(height: 6),
-              _InfoRow(label: '期間', value: '${fmtDate(startAt)} ~ ${fmtDate(endAt)}'),
-              const SizedBox(height: 10),
-
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text('描述', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w900)),
-              ),
-              const SizedBox(height: 6),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: cs.surfaceContainerHighest.withOpacity(0.25),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: cs.outline.withOpacity(0.18)),
-                ),
-                child: Text(desc.isEmpty ? '（無描述）' : desc),
-              ),
-              const SizedBox(height: 12),
-
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      onEdit();
-                    },
-                    icon: const Icon(Icons.edit_outlined),
-                    label: const Text('編輯'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      onToggle();
-                    },
-                    icon: Icon(active ? Icons.pause_circle_outline : Icons.play_circle_outline),
-                    label: Text(active ? '停用' : '啟用'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      onJson();
-                    },
-                    icon: const Icon(Icons.code),
-                    label: const Text('查看 JSON'),
-                  ),
-                  TextButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      onDelete();
-                    },
-                    icon: const Icon(Icons.delete_outline),
-                    label: const Text('刪除'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// Shared Widgets
-// ------------------------------------------------------------
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.color});
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.25)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(color: color, fontWeight: FontWeight.w900, fontSize: 12),
-      ),
-    );
-  }
-}
-
-class _InfoRow extends StatelessWidget {
-  const _InfoRow({required this.label, required this.value, this.onCopy});
-  final String label;
-  final String value;
-  final VoidCallback? onCopy;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(width: 92, child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12))),
-        Expanded(
-          child: Text(
-            value.isEmpty ? '-' : value,
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
-        ),
-        if (onCopy != null)
-          IconButton(
-            tooltip: '複製',
-            onPressed: onCopy,
-            icon: const Icon(Icons.copy, size: 18),
-          ),
-      ],
-    );
-  }
-}
-
-class _BusyBar extends StatelessWidget {
-  const _BusyBar({required this.label});
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Material(
-      elevation: 8,
-      color: cs.surface,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Row(
-          children: [
-            const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _JsonDialog extends StatelessWidget {
-  const _JsonDialog({required this.title, required this.jsonText});
-  final String title;
-  final String jsonText;
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      insetPadding: const EdgeInsets.all(18),
-      child: SizedBox(
-        width: 760,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w900))),
-                  IconButton(
-                    tooltip: '複製 JSON',
-                    onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: jsonText));
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('已複製 JSON')),
+                                  if (ok) {
+                                    await _deleteCoupon(r.id);
+                                  }
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'copy',
+                                  child: Text('複製優惠碼'),
+                                ),
+                                PopupMenuItem(value: 'edit', child: Text('編輯')),
+                                PopupMenuItem(
+                                  value: 'toggle',
+                                  child: Text('上/下架切換'),
+                                ),
+                                PopupMenuDivider(),
+                                PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text('刪除'),
+                                ),
+                              ],
+                            ),
+                            onTap: () async {
+                              if (!mounted) {
+                                return;
+                              }
+                              await showDialog<void>(
+                                context: context,
+                                builder: (dialogCtx) => AlertDialog(
+                                  title: Text(title),
+                                  content: SizedBox(
+                                    width: 560,
+                                    child: SingleChildScrollView(
+                                      child: SelectableText(
+                                        const JsonEncoder.withIndent(
+                                          '  ',
+                                        ).convert(d),
+                                      ),
+                                    ),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(dialogCtx),
+                                      child: const Text('關閉'),
+                                    ),
+                                    FilledButton(
+                                      onPressed: () =>
+                                          _copy(code, done: '已複製優惠碼'),
+                                      child: const Text('複製 code'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
                         );
-                      }
-                    },
-                    icon: const Icon(Icons.copy),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Flexible(
-                child: SingleChildScrollView(
-                  child: SelectableText(
-                    jsonText,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('關閉'),
+                      },
+                    );
+                  },
                 ),
               ),
             ],
           ),
-        ),
+        );
+      },
+    );
+  }
+}
+
+class _DocRow {
+  final String id;
+  final Map<String, dynamic> data;
+  _DocRow({required this.id, required this.data});
+}
+
+class _Chip extends StatelessWidget {
+  const _Chip({required this.icon, required this.text, this.onTap});
+
+  final IconData icon;
+  final String text;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    final child = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withValues(alpha: 30),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outlineVariant),
       ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: cs.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Text(
+            text.isEmpty ? '-' : text,
+            style: TextStyle(
+              fontSize: 12,
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (onTap == null) {
+      return child;
+    }
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: onTap,
+      child: child,
     );
   }
 }

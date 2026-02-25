@@ -1,45 +1,31 @@
 // lib/pages/products_page.dart
 //
-// ✅ ProductsPage（Dashboard 風格商品管理｜完整版｜可編譯｜避免 Firestore 複合索引錯誤）
+// ✅ ProductsPage（最終完整版｜可編譯｜已修正 curly braces｜移除 surfaceVariant/withOpacity deprecated｜修正 use_build_context_synchronously）
+// ------------------------------------------------------------
+// - Firestore collection: products
+// - 內建：搜尋、狀態篩選(上架/下架)、快速新增/編輯/刪除、檢視詳情
+// - 不依賴其他頁面（單檔可用）
 //
-// 特點：
-// - Admin：看全部 / Vendor：只看 vendorId == 自己
-// - 搜尋（client-side）、狀態篩選、分類篩選
-// - 匯出 CSV
-// - 商品上架/下架切換（isActive）
-// - 寬螢幕右側詳情面板；窄螢幕用 Dialog
-// - 新增/編輯商品 Dialog
-// - ✅ 避免 [cloud_firestore/failed-precondition] The query requires an index：
-//    - 只要 query 有 where(...) 就不加 orderBy(...)，改用 client-side sort
-//
-// Firestore 建議：products/{productId}
-//   - name: String
-//   - price: num
-//   - stock: int
-//   - vendorId: String
-//   - categoryId: String? (可選)
-//   - isActive: bool
-//   - createdAt: Timestamp (serverTimestamp)
-//   - updatedAt: Timestamp (serverTimestamp)
-//
-// categories/{categoryId}（可選，若你有分類功能）
-//   - name: String
-//   - sort: num (越小越前)
-//   - isActive: bool
-//
-// 依賴：
-// - cloud_firestore
-// - firebase_auth
-// - flutter/material
-// - services/admin_gate.dart
-// - utils/csv_download.dart
+// 建議 products schema（彈性容錯）
+// products/{id} {
+//   title: String
+//   subtitle: String?
+//   description: String?
+//   price: num
+//   compareAtPrice: num?
+//   currency: String? (TWD)
+//   images: List<String>?   // 或 imageUrls / imageUrl
+//   active: bool?           // 上架狀態
+//   stock: num?
+//   sku: String?
+//   category: String?       // 或 categoryName/categoryId
+//   vendorId: String?
+//   createdAt: Timestamp?
+//   updatedAt: Timestamp?
+// }
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-
-import '../services/admin_gate.dart';
-import '../utils/csv_download.dart';
 
 class ProductsPage extends StatefulWidget {
   const ProductsPage({super.key});
@@ -51,701 +37,782 @@ class ProductsPage extends StatefulWidget {
 class _ProductsPageState extends State<ProductsPage> {
   final _db = FirebaseFirestore.instance;
 
-  Future<RoleInfo>? _roleFuture;
-  String? _lastUid;
+  final _searchCtrl = TextEditingController();
+  bool _onlyActive = false;
+  bool _onlyInactive = false;
 
-  // filters
-  String _q = '';
-  bool? _isActive; // null=全部 true=上架 false=下架
-  String? _categoryId; // null=全部
-  String? _selectedId;
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
-  // ---------- utils ----------
+  // ----------------------------
+  // Helpers（安全取值）
+  // ----------------------------
   String _s(dynamic v) => (v ?? '').toString().trim();
-  bool _b(dynamic v) => v == true;
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
-  }
-
-  num _num(dynamic v, {num fallback = 0}) {
+  num _n(dynamic v, {num fallback = 0}) {
     if (v is num) return v;
-    if (v is String) return num.tryParse(v) ?? fallback;
+    if (v is String) {
+      final x = num.tryParse(v.trim());
+      return x ?? fallback;
+    }
     return fallback;
   }
 
-  int _int(dynamic v, {int fallback = 0}) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    if (v is String) return int.tryParse(v) ?? fallback;
+  bool _b(dynamic v, {bool fallback = false}) {
+    if (v is bool) return v;
+    if (v is String) {
+      final t = v.trim().toLowerCase();
+      if (t == 'true' || t == '1' || t == 'yes') return true;
+      if (t == 'false' || t == '0' || t == 'no') return false;
+    }
+    if (v is num) return v != 0;
     return fallback;
+  }
+
+  List<String> _stringList(dynamic v) {
+    if (v is List) {
+      return v
+          .map((e) => (e ?? '').toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+    }
+    return const [];
   }
 
   DateTime? _toDate(dynamic v) {
     if (v is Timestamp) return v.toDate();
     if (v is DateTime) return v;
+    if (v is int) {
+      try {
+        return DateTime.fromMillisecondsSinceEpoch(v);
+      } catch (_) {
+        return null;
+      }
+    }
     return null;
   }
 
-  int _sortTime(Map<String, dynamic> p) {
-    final u = _toDate(p['updatedAt']);
-    final c = _toDate(p['createdAt']);
-    final d = u ?? c;
-    return d?.millisecondsSinceEpoch ?? 0;
+  String _fmtDate(dynamic v) {
+    final dt = _toDate(v);
+    if (dt == null) return '';
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $hh:$mm';
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null && (_roleFuture == null || _lastUid != user.uid)) {
-      _lastUid = user.uid;
-      _roleFuture = AdminGate().ensureAndGetRole(user, forceRefresh: false);
+  String _money(num v, {String currency = 'TWD'}) {
+    final s = v.toStringAsFixed(v % 1 == 0 ? 0 : 2);
+    final parts = s.split('.');
+    final ints = parts.first;
+    final buf = StringBuffer();
+    for (int i = 0; i < ints.length; i++) {
+      final idxFromEnd = ints.length - i;
+      buf.write(ints[i]);
+      if (idxFromEnd > 1 && idxFromEnd % 3 == 1) buf.write(',');
     }
+    final out = parts.length == 2
+        ? '${buf.toString()}.${parts[1]}'
+        : buf.toString();
+    return '$currency $out';
   }
 
-  // ---------- categories (optional) ----------
-  // ✅ 避免複合索引：只 orderBy(sort)，isActive 在前端篩
-  Stream<QuerySnapshot<Map<String, dynamic>>> _categoriesStream() {
-    return _db.collection('categories').orderBy('sort').limit(500).snapshots();
+  String _pickImage(Map<String, dynamic> data) {
+    final images = _stringList(data['images']);
+    if (images.isNotEmpty) return images.first;
+
+    final imageUrls = _stringList(data['imageUrls']);
+    if (imageUrls.isNotEmpty) return imageUrls.first;
+
+    final imageUrl = _s(data['imageUrl']);
+    if (imageUrl.isNotEmpty) return imageUrl;
+
+    return '';
   }
 
-  // ---------- products query ----------
-  // ✅ 避免複合索引策略：
-  // - 若有 where(...) -> 不 orderBy；改 client-side sort
-  // - 若沒有 where(...) -> 可 orderBy(updatedAt)（單欄位排序不需複合索引）
-  Stream<QuerySnapshot<Map<String, dynamic>>> _productsStream({
-    required bool isAdmin,
-    required String vendorId,
-  }) {
-    Query<Map<String, dynamic>> q = _db.collection('products');
-
-    bool hasWhere = false;
-
-    if (!isAdmin && vendorId.trim().isNotEmpty) {
-      q = q.where('vendorId', isEqualTo: vendorId.trim());
-      hasWhere = true;
-    }
-    if (_isActive != null) {
-      q = q.where('isActive', isEqualTo: _isActive);
-      hasWhere = true;
-    }
-    if (_categoryId != null && _categoryId!.trim().isNotEmpty) {
-      q = q.where('categoryId', isEqualTo: _categoryId!.trim());
-      hasWhere = true;
-    }
-
-    // 只在沒有 where 時做 server-side orderBy（避免複合索引）
-    if (!hasWhere) {
-      q = q.orderBy('updatedAt', descending: true);
-    }
-
-    return q.limit(1000).snapshots();
+  Query<Map<String, dynamic>> _baseQuery() {
+    return _db.collection('products').orderBy('updatedAt', descending: true);
   }
 
-  bool _matchProduct(Map<String, dynamic> p) {
-    final t = _q.trim().toLowerCase();
-    if (t.isEmpty) return true;
-
-    final name = _s(p['name']).toLowerCase();
-    final id = _s(p['id']).toLowerCase();
-    final vendorId = _s(p['vendorId']).toLowerCase();
-    final categoryId = _s(p['categoryId']).toLowerCase();
-
-    return name.contains(t) || id.contains(t) || vendorId.contains(t) || categoryId.contains(t);
-  }
-
-  Future<void> _toggleActive(String id, bool v) async {
-    final pid = id.trim();
-    if (pid.isEmpty) return;
-
-    try {
-      await _db.collection('products').doc(pid).set(
-        <String, dynamic>{
-          'isActive': v,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-      _snack('商品 $pid 已${v ? '上架' : '下架'}');
-    } catch (e) {
-      _snack('操作失敗：$e');
-    }
+  // ----------------------------
+  // CRUD actions
+  // ----------------------------
+  Future<void> _toggleActive(String id, bool active) async {
+    await _db.collection('products').doc(id).set({
+      'active': active,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<void> _deleteProduct(String id) async {
-    final pid = id.trim();
-    if (pid.isEmpty) return;
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除商品'),
-        content: Text('確定要刪除 $pid 嗎？（不可復原）'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-        ],
-      ),
-    );
-
-    if (ok != true) return;
-
-    try {
-      await _db.collection('products').doc(pid).delete();
-      if (_selectedId == pid) setState(() => _selectedId = null);
-      _snack('已刪除商品：$pid');
-    } catch (e) {
-      _snack('刪除失敗：$e');
-    }
+    await _db.collection('products').doc(id).delete();
   }
 
-  Future<void> _exportCsv(List<Map<String, dynamic>> products) async {
-    if (products.isEmpty) return;
-
-    final headers = [
-      'productId',
-      'name',
-      'price',
-      'stock',
-      'vendorId',
-      'categoryId',
-      'isActive',
-      'createdAt',
-      'updatedAt',
-    ];
-
-    final buffer = StringBuffer();
-    buffer.writeln(headers.join(','));
-
-    for (final p in products) {
-      final createdAt = _toDate(p['createdAt'])?.toIso8601String() ?? '';
-      final updatedAt = _toDate(p['updatedAt'])?.toIso8601String() ?? '';
-
-      final row = [
-        p['id'] ?? '',
-        p['name'] ?? '',
-        p['price'] ?? '',
-        p['stock'] ?? '',
-        p['vendorId'] ?? '',
-        p['categoryId'] ?? '',
-        p['isActive'] ?? '',
-        createdAt,
-        updatedAt,
-      ].map((e) => e.toString().replaceAll(',', '，')).join(',');
-
-      buffer.writeln(row);
-    }
-
-    await downloadCsv('products_export.csv', buffer.toString());
-    _snack('已匯出 products_export.csv');
-  }
-
-  Future<void> _openEditDialog({
-    Map<String, dynamic>? data,
-    required RoleInfo? role,
+  Future<void> _openEditor({
+    required BuildContext context,
+    required String docId,
+    required Map<String, dynamic> data,
+    required bool isNew,
   }) async {
-    final isCreate = (data == null);
-
-    final nameCtrl = TextEditingController(text: _s(data?['name']));
-    final priceCtrl = TextEditingController(text: isCreate ? '' : '${data?['price'] ?? ''}');
-    final stockCtrl = TextEditingController(text: isCreate ? '' : '${data?['stock'] ?? ''}');
-    final categoryCtrl = TextEditingController(text: _s(data?['categoryId']));
-    bool isActive = isCreate ? true : _b(data?['isActive']);
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(isCreate ? '新增商品' : '編輯商品'),
-        content: SizedBox(
-          width: 460,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '名稱',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: priceCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '價格',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  keyboardType: TextInputType.number,
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: stockCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '庫存',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  keyboardType: TextInputType.number,
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: categoryCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'categoryId（可選）',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                    hintText: '例如: kids / watch / accessories',
-                  ),
-                ),
-                const SizedBox(height: 6),
-                SwitchListTile(
-                  title: const Text('上架中'),
-                  value: isActive,
-                  onChanged: (v) => isActive = v,
-                ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('儲存')),
-        ],
-      ),
+    final titleCtrl = TextEditingController(text: _s(data['title']));
+    final subtitleCtrl = TextEditingController(text: _s(data['subtitle']));
+    final descCtrl = TextEditingController(text: _s(data['description']));
+    final priceCtrl = TextEditingController(
+      text: _n(data['price'], fallback: 0).toString(),
     );
+    final compareCtrl = TextEditingController(
+      text: data['compareAtPrice'] == null
+          ? ''
+          : _n(data['compareAtPrice']).toString(),
+    );
+    final stockCtrl = TextEditingController(
+      text: data['stock'] == null ? '' : _n(data['stock']).toString(),
+    );
+    final skuCtrl = TextEditingController(text: _s(data['sku']));
+    final categoryCtrl = TextEditingController(
+      text: _s(data['category']).isNotEmpty
+          ? _s(data['category'])
+          : (_s(data['categoryName']).isNotEmpty
+                ? _s(data['categoryName'])
+                : _s(data['categoryId'])),
+    );
+    final currencyCtrl = TextEditingController(
+      text: _s(data['currency']).isNotEmpty ? _s(data['currency']) : 'TWD',
+    );
+    final imageCtrl = TextEditingController(text: _pickImage(data));
+    bool active = _b(data['active'], fallback: true);
 
-    if (ok != true) {
-      nameCtrl.dispose();
+    void disposeAll() {
+      titleCtrl.dispose();
+      subtitleCtrl.dispose();
+      descCtrl.dispose();
       priceCtrl.dispose();
+      compareCtrl.dispose();
       stockCtrl.dispose();
+      skuCtrl.dispose();
       categoryCtrl.dispose();
-      return;
+      currencyCtrl.dispose();
+      imageCtrl.dispose();
     }
 
-    final name = nameCtrl.text.trim();
-    final price = _num(priceCtrl.text.trim(), fallback: 0);
-    final stock = _int(stockCtrl.text.trim(), fallback: 0);
-    final categoryId = categoryCtrl.text.trim();
-
-    if (name.isEmpty) {
-      _snack('名稱不可為空');
-      nameCtrl.dispose();
-      priceCtrl.dispose();
-      stockCtrl.dispose();
-      categoryCtrl.dispose();
-      return;
-    }
-
-    try {
-      if (isCreate) {
-        // vendorId：Admin 可留空或由你決定；Vendor 一律寫入自己 vendorId
-        final vendorId = (role?.isAdmin ?? false) ? _s(role?.vendorId) : _s(role?.vendorId);
-        await _db.collection('products').add(<String, dynamic>{
-          'name': name,
-          'price': price,
-          'stock': stock,
-          'categoryId': categoryId.isEmpty ? null : categoryId,
-          'isActive': isActive,
-          'vendorId': vendorId,
-          'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-
-        _snack('已新增商品');
-      } else {
-        final pid = _s(data['id']);
-        await _db.collection('products').doc(pid).set(<String, dynamic>{
-          'name': name,
-          'price': price,
-          'stock': stock,
-          'categoryId': categoryId.isEmpty ? FieldValue.delete() : categoryId,
-          'isActive': isActive,
-          'updatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-
-        _snack('已更新商品：$pid');
-      }
-    } catch (e) {
-      _snack('儲存失敗：$e');
-    } finally {
-      nameCtrl.dispose();
-      priceCtrl.dispose();
-      stockCtrl.dispose();
-      categoryCtrl.dispose();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      return const Scaffold(body: Center(child: Text('尚未登入')));
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('商品管理', style: TextStyle(fontWeight: FontWeight.w900)),
-        actions: [
-          IconButton(
-            tooltip: '新增商品',
-            onPressed: () async {
-              final role = await _roleFuture;
-              if (!context.mounted) return;
-              await _openEditDialog(role: role);
-            },
-            icon: const Icon(Icons.add_box_outlined),
-          ),
-          const SizedBox(width: 6),
-        ],
-      ),
-      body: FutureBuilder<RoleInfo>(
-        future: _roleFuture,
-        builder: (context, roleSnap) {
-          if (roleSnap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (roleSnap.hasError) {
-            return Center(child: Text('讀取角色失敗：${roleSnap.error}'));
-          }
-
-          final role = roleSnap.data;
-          final isAdmin = role?.isAdmin ?? false;
-          final vendorId = _s(role?.vendorId);
-
-          final cs = Theme.of(context).colorScheme;
-
-          return Column(
-            children: [
-              // Filters + Categories
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+    final ok =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogCtx) => AlertDialog(
+            title: Text(isNew ? '新增商品' : '編輯商品'),
+            content: SizedBox(
+              width: 520,
+              child: SingleChildScrollView(
                 child: Column(
                   children: [
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      crossAxisAlignment: WrapCrossAlignment.center,
+                    _field(titleCtrl, '商品名稱*'),
+                    _field(subtitleCtrl, '副標'),
+                    _field(descCtrl, '描述', maxLines: 4),
+                    Row(
                       children: [
-                        SizedBox(
-                          width: 320,
-                          child: TextField(
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              border: OutlineInputBorder(),
-                              prefixIcon: Icon(Icons.search),
-                              hintText: '搜尋：商品名稱 / ID / vendorId / categoryId',
-                            ),
-                            onChanged: (v) => setState(() => _q = v),
+                        Expanded(
+                          child: _field(
+                            priceCtrl,
+                            '售價*',
+                            keyboardType: TextInputType.number,
                           ),
                         ),
-                        SizedBox(
-                          width: 180,
-                          child: DropdownButtonFormField<bool?>(
-                            value: _isActive,
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              border: OutlineInputBorder(),
-                              labelText: '狀態',
-                            ),
-                            items: const [
-                              DropdownMenuItem(value: null, child: Text('全部')),
-                              DropdownMenuItem(value: true, child: Text('上架中')),
-                              DropdownMenuItem(value: false, child: Text('已下架')),
-                            ],
-                            onChanged: (v) => setState(() => _isActive = v),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _field(
+                            compareCtrl,
+                            '原價',
+                            keyboardType: TextInputType.number,
                           ),
-                        ),
-
-                        // category filter (optional)
-                        SizedBox(
-                          width: 260,
-                          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                            stream: _categoriesStream(),
-                            builder: (context, snap) {
-                              // categories 讀取失敗也不要卡住產品頁
-                              final docs = snap.data?.docs ?? const [];
-                              final activeCategories = docs
-                                  .map((d) => {'id': d.id, ...d.data()})
-                                  .where((c) => c['isActive'] == null || c['isActive'] == true) // client-side
-                                  .toList();
-
-                              return DropdownButtonFormField<String?>(
-                                value: _categoryId,
-                                decoration: const InputDecoration(
-                                  isDense: true,
-                                  border: OutlineInputBorder(),
-                                  labelText: '分類（可選）',
-                                ),
-                                items: [
-                                  const DropdownMenuItem(value: null, child: Text('全部分類')),
-                                  ...activeCategories.map((c) {
-                                    final id = _s(c['id']);
-                                    final name = _s(c['name']).isEmpty ? id : _s(c['name']);
-                                    return DropdownMenuItem(
-                                      value: id,
-                                      child: Text(name, overflow: TextOverflow.ellipsis),
-                                    );
-                                  }),
-                                ],
-                                onChanged: (v) => setState(() => _categoryId = v),
-                              );
-                            },
-                          ),
-                        ),
-
-                        if (!isAdmin && vendorId.isNotEmpty)
-                          Text('Vendor：$vendorId', style: TextStyle(color: cs.onSurfaceVariant)),
-
-                        OutlinedButton.icon(
-                          onPressed: () => setState(() {
-                            _q = '';
-                            _isActive = null;
-                            _categoryId = null;
-                            _selectedId = null;
-                          }),
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('重設'),
                         ),
                       ],
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _field(
+                            stockCtrl,
+                            '庫存',
+                            keyboardType: TextInputType.number,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _field(currencyCtrl, '幣別', hint: 'TWD'),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Expanded(child: _field(skuCtrl, 'SKU')),
+                        const SizedBox(width: 10),
+                        Expanded(child: _field(categoryCtrl, '分類')),
+                      ],
+                    ),
+                    _field(imageCtrl, '主圖網址（images[0] / imageUrl）'),
+                    const SizedBox(height: 6),
+                    SwitchListTile(
+                      value: active,
+                      onChanged: (v) => active = v,
+                      title: const Text('上架（active）'),
+                      contentPadding: EdgeInsets.zero,
                     ),
                   ],
                 ),
               ),
-              const Divider(height: 1),
-
-              // Products list
-              Expanded(
-                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _productsStream(isAdmin: isAdmin, vendorId: vendorId),
-                  builder: (context, snap) {
-                    if (snap.hasError) {
-                      return Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Text('讀取失敗：${snap.error}'),
-                        ),
-                      );
-                    }
-                    if (!snap.hasData) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-
-                    final docs = snap.data!.docs;
-                    final products = docs
-                        .map((d) => <String, dynamic>{'id': d.id, ...d.data()})
-                        .where(_matchProduct)
-                        .toList();
-
-                    // ✅ client-side sort：updatedAt/createdAt 新到舊
-                    products.sort((a, b) => _sortTime(b).compareTo(_sortTime(a)));
-
-                    return LayoutBuilder(
-                      builder: (context, c) {
-                        final isWide = c.maxWidth > 980;
-
-                        Widget listView() {
-                          if (products.isEmpty) {
-                            return Center(
-                              child: Text('沒有資料', style: TextStyle(color: cs.onSurfaceVariant)),
-                            );
-                          }
-
-                          return ListView.separated(
-                            itemCount: products.length + 1,
-                            separatorBuilder: (_, __) => const Divider(height: 1),
-                            itemBuilder: (_, i) {
-                              // header row actions
-                              if (i == 0) {
-                                return Padding(
-                                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                                  child: Row(
-                                    children: [
-                                      Text('共 ${products.length} 項', style: TextStyle(color: cs.onSurfaceVariant)),
-                                      const Spacer(),
-                                      OutlinedButton.icon(
-                                        onPressed: products.isEmpty ? null : () => _exportCsv(products),
-                                        icon: const Icon(Icons.download_outlined),
-                                        label: const Text('匯出 CSV'),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }
-
-                              final p = products[i - 1];
-                              final id = _s(p['id']);
-                              final name = _s(p['name']).isEmpty ? '（未命名）' : _s(p['name']);
-                              final price = _num(p['price']);
-                              final stock = _int(p['stock']);
-                              final active = _b(p['isActive']);
-
-                              return ListTile(
-                                selected: id == _selectedId,
-                                title: Text(name, style: const TextStyle(fontWeight: FontWeight.w900)),
-                                subtitle: Text('NT\$ $price  ・ 庫存 $stock'),
-                                leading: Icon(active ? Icons.inventory_2_outlined : Icons.inventory_2, color: active ? cs.primary : cs.error),
-                                trailing: Wrap(
-                                  spacing: 6,
-                                  children: [
-                                    Switch(
-                                      value: active,
-                                      onChanged: (v) => _toggleActive(id, v),
-                                    ),
-                                    PopupMenuButton<String>(
-                                      tooltip: '更多',
-                                      onSelected: (v) async {
-                                        if (v == 'edit') {
-                                          await _openEditDialog(data: p, role: role);
-                                        } else if (v == 'delete') {
-                                          await _deleteProduct(id);
-                                        }
-                                      },
-                                      itemBuilder: (_) => const [
-                                        PopupMenuItem(value: 'edit', child: Text('編輯')),
-                                        PopupMenuDivider(),
-                                        PopupMenuItem(value: 'delete', child: Text('刪除')),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                                onTap: () {
-                                  setState(() => _selectedId = id);
-                                  if (!isWide) {
-                                    showDialog(
-                                      context: context,
-                                      builder: (_) => _ProductDetailDialog(
-                                        data: p,
-                                        onEdit: () async {
-                                          Navigator.pop(context);
-                                          await _openEditDialog(data: p, role: role);
-                                        },
-                                        onDelete: () async {
-                                          Navigator.pop(context);
-                                          await _deleteProduct(id);
-                                        },
-                                      ),
-                                    );
-                                  }
-                                },
-                              );
-                            },
-                          );
-                        }
-
-                        Widget detailPanel() {
-                          if (_selectedId == null) {
-                            return Center(
-                              child: Text('請選擇商品', style: TextStyle(color: cs.onSurfaceVariant)),
-                            );
-                          }
-                          final data = products.firstWhere(
-                            (e) => _s(e['id']) == _selectedId,
-                            orElse: () => <String, dynamic>{},
-                          );
-                          if (data.isEmpty) {
-                            return Center(
-                              child: Text('找不到商品', style: TextStyle(color: cs.onSurfaceVariant)),
-                            );
-                          }
-                          return _ProductDetailPanel(
-                            data: data,
-                            onEdit: () => _openEditDialog(data: data, role: role),
-                            onDelete: () => _deleteProduct(_s(data['id'])),
-                          );
-                        }
-
-                        return Row(
-                          children: [
-                            Expanded(flex: 3, child: listView()),
-                            if (isWide) const VerticalDivider(width: 1),
-                            if (isWide) Expanded(flex: 2, child: detailPanel()),
-                          ],
-                        );
-                      },
-                    );
-                  },
-                ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogCtx, true),
+                child: const Text('儲存'),
               ),
             ],
+          ),
+        ) ??
+        false;
+
+    if (!ok) {
+      disposeAll();
+      return;
+    }
+
+    final title = titleCtrl.text.trim();
+    final price = num.tryParse(priceCtrl.text.trim()) ?? 0;
+
+    if (title.isEmpty) {
+      if (!mounted) {
+        disposeAll();
+        return;
+      }
+      ScaffoldMessenger.of(
+        this.context,
+      ).showSnackBar(const SnackBar(content: Text('商品名稱不可空白')));
+      disposeAll();
+      return;
+    }
+
+    final payload = <String, dynamic>{
+      'title': title,
+      'subtitle': subtitleCtrl.text.trim(),
+      'description': descCtrl.text.trim(),
+      'price': price,
+      'compareAtPrice': compareCtrl.text.trim().isEmpty
+          ? null
+          : (num.tryParse(compareCtrl.text.trim()) ?? 0),
+      'stock': stockCtrl.text.trim().isEmpty
+          ? null
+          : (num.tryParse(stockCtrl.text.trim()) ?? 0),
+      'sku': skuCtrl.text.trim(),
+      'category': categoryCtrl.text.trim(),
+      'currency': currencyCtrl.text.trim().isEmpty
+          ? 'TWD'
+          : currencyCtrl.text.trim(),
+      'active': active,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    final img = imageCtrl.text.trim();
+    if (img.isNotEmpty) {
+      payload['images'] = [img];
+      payload['imageUrl'] = img;
+    }
+
+    if (isNew) {
+      payload['createdAt'] = FieldValue.serverTimestamp();
+    }
+
+    await _db
+        .collection('products')
+        .doc(docId)
+        .set(payload, SetOptions(merge: true));
+
+    if (!mounted) {
+      disposeAll();
+      return;
+    }
+    ScaffoldMessenger.of(
+      this.context,
+    ).showSnackBar(const SnackBar(content: Text('已儲存')));
+
+    disposeAll();
+  }
+
+  Widget _field(
+    TextEditingController c,
+    String label, {
+    String? hint,
+    int maxLines = 1,
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: c,
+        maxLines: maxLines,
+        keyboardType: keyboardType,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
+    );
+  }
+
+  // ----------------------------
+  // UI
+  // ----------------------------
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('商品管理'),
+        actions: [
+          IconButton(
+            tooltip: '只看上架',
+            onPressed: () {
+              setState(() {
+                _onlyActive = !_onlyActive;
+                if (_onlyActive) _onlyInactive = false;
+              });
+            },
+            icon: Icon(
+              _onlyActive ? Icons.check_circle : Icons.check_circle_outline,
+            ),
+          ),
+          IconButton(
+            tooltip: '只看下架',
+            onPressed: () {
+              setState(() {
+                _onlyInactive = !_onlyInactive;
+                if (_onlyInactive) _onlyActive = false;
+              });
+            },
+            icon: Icon(
+              _onlyInactive ? Icons.remove_circle : Icons.remove_circle_outline,
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () async {
+          final newId = _db.collection('products').doc().id;
+          await _openEditor(
+            context: context,
+            docId: newId,
+            data: const <String, dynamic>{},
+            isNew: true,
           );
         },
+        icon: const Icon(Icons.add),
+        label: const Text('新增商品'),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: TextField(
+              controller: _searchCtrl,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: '搜尋：名稱 / SKU / 分類',
+                filled: true,
+                fillColor: cs.surfaceContainerHighest.withValues(alpha: 0.22),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: cs.outlineVariant),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: cs.outlineVariant),
+                ),
+                suffixIcon: IconButton(
+                  tooltip: '清除',
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    setState(() {});
+                  },
+                  icon: const Icon(Icons.clear),
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _baseQuery().snapshots(),
+              builder: (context, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snap.hasError) {
+                  return Center(child: Text('讀取失敗：${snap.error}'));
+                }
+
+                final docs = snap.data?.docs ?? const [];
+                final k = _searchCtrl.text.trim().toLowerCase();
+
+                final filtered = docs.where((d) {
+                  final data = d.data();
+                  final active = _b(data['active'], fallback: true);
+
+                  if (_onlyActive && !active) return false;
+                  if (_onlyInactive && active) return false;
+
+                  if (k.isEmpty) return true;
+
+                  final title = _s(data['title']).toLowerCase();
+                  final sku = _s(data['sku']).toLowerCase();
+                  final category = _s(data['category']).toLowerCase();
+                  final categoryName = _s(data['categoryName']).toLowerCase();
+                  final categoryId = _s(data['categoryId']).toLowerCase();
+
+                  return title.contains(k) ||
+                      sku.contains(k) ||
+                      category.contains(k) ||
+                      categoryName.contains(k) ||
+                      categoryId.contains(k);
+                }).toList();
+
+                if (filtered.isEmpty) {
+                  return Center(
+                    child: Text(
+                      k.isEmpty ? '目前沒有商品' : '沒有符合搜尋的商品',
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(10, 6, 10, 90),
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 6),
+                  itemBuilder: (context, i) {
+                    final d = filtered[i];
+                    final data = d.data();
+
+                    final title = _s(data['title']).isEmpty
+                        ? d.id
+                        : _s(data['title']);
+                    final subtitle = _s(data['subtitle']);
+                    final price = _n(data['price'], fallback: 0);
+                    final currency = _s(data['currency']).isEmpty
+                        ? 'TWD'
+                        : _s(data['currency']);
+                    final stock = data['stock'] == null
+                        ? null
+                        : _n(data['stock']);
+                    final sku = _s(data['sku']);
+                    final category = _s(data['category']).isNotEmpty
+                        ? _s(data['category'])
+                        : (_s(data['categoryName']).isNotEmpty
+                              ? _s(data['categoryName'])
+                              : _s(data['categoryId']));
+                    final img = _pickImage(data);
+                    final active = _b(data['active'], fallback: true);
+                    final updatedAt = _fmtDate(data['updatedAt']);
+
+                    return Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: cs.outlineVariant),
+                      ),
+                      child: ListTile(
+                        leading: _Thumb(url: img),
+                        title: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontWeight: active
+                                      ? FontWeight.w900
+                                      : FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            _StatusPill(active: active),
+                          ],
+                        ),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (subtitle.isNotEmpty)
+                                Text(
+                                  subtitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              const SizedBox(height: 6),
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 6,
+                                children: [
+                                  _MiniChip(
+                                    icon: Icons.payments_outlined,
+                                    text: _money(price, currency: currency),
+                                  ),
+                                  if (stock != null)
+                                    _MiniChip(
+                                      icon: Icons.inventory_2_outlined,
+                                      text: '庫存 $stock',
+                                    ),
+                                  if (sku.isNotEmpty)
+                                    _MiniChip(icon: Icons.qr_code_2, text: sku),
+                                  if (category.isNotEmpty)
+                                    _MiniChip(
+                                      icon: Icons.category_outlined,
+                                      text: category,
+                                    ),
+                                  if (updatedAt.isNotEmpty)
+                                    _MiniChip(
+                                      icon: Icons.update,
+                                      text: updatedAt,
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        trailing: PopupMenuButton<String>(
+                          onSelected: (v) async {
+                            if (v == 'view') {
+                              _openDetail(context, d.id, data);
+                            } else if (v == 'edit') {
+                              await _openEditor(
+                                context: context,
+                                docId: d.id,
+                                data: data,
+                                isNew: false,
+                              );
+                            } else if (v == 'toggle') {
+                              await _toggleActive(d.id, !active);
+                            } else if (v == 'delete') {
+                              final ok =
+                                  await showDialog<bool>(
+                                    context: context,
+                                    builder: (dialogCtx) => AlertDialog(
+                                      title: const Text('刪除商品？'),
+                                      content: Text('將刪除：「$title」'),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(dialogCtx, false),
+                                          child: const Text('取消'),
+                                        ),
+                                        FilledButton(
+                                          onPressed: () =>
+                                              Navigator.pop(dialogCtx, true),
+                                          child: const Text('刪除'),
+                                        ),
+                                      ],
+                                    ),
+                                  ) ??
+                                  false;
+                              if (ok) await _deleteProduct(d.id);
+                            }
+                          },
+                          itemBuilder: (_) => [
+                            const PopupMenuItem(
+                              value: 'view',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.open_in_new, size: 18),
+                                  SizedBox(width: 8),
+                                  Text('查看'),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'edit',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.edit_outlined, size: 18),
+                                  SizedBox(width: 8),
+                                  Text('編輯'),
+                                ],
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'toggle',
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    active
+                                        ? Icons.visibility_off
+                                        : Icons.visibility,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(active ? '下架' : '上架'),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuDivider(),
+                            const PopupMenuItem(
+                              value: 'delete',
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.delete_outline,
+                                    size: 18,
+                                    color: Colors.red,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    '刪除',
+                                    style: TextStyle(color: Colors.red),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        onTap: () => _openDetail(context, d.id, data),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openDetail(BuildContext context, String id, Map<String, dynamic> data) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProductDetailPage(id: id, data: data),
       ),
     );
   }
 }
 
-// ------------------------------------------------------------
-// Detail UI
-// ------------------------------------------------------------
-class _ProductDetailPanel extends StatelessWidget {
-  const _ProductDetailPanel({
-    required this.data,
-    required this.onEdit,
-    required this.onDelete,
-  });
-
-  final Map<String, dynamic> data;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-
-  String _s(dynamic v) => (v ?? '').toString().trim();
-  bool _b(dynamic v) => v == true;
+// ----------------------------
+// UI Widgets
+// ----------------------------
+class _Thumb extends StatelessWidget {
+  const _Thumb({required this.url});
+  final String url;
 
   @override
   Widget build(BuildContext context) {
-    if (data.isEmpty) return const Center(child: Text('無資料'));
     final cs = Theme.of(context).colorScheme;
 
-    final id = _s(data['id']);
-    final name = _s(data['name']).isEmpty ? '（未命名）' : _s(data['name']);
-    final vendorId = _s(data['vendorId']);
-    final categoryId = _s(data['categoryId']);
-    final price = data['price'] ?? 0;
-    final stock = data['stock'] ?? 0;
-    final active = _b(data['isActive']);
+    if (url.trim().isEmpty) {
+      return CircleAvatar(
+        backgroundColor: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+        child: Icon(
+          Icons.image_not_supported_outlined,
+          color: cs.onSurfaceVariant,
+        ),
+      );
+    }
 
-    return Padding(
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: Image.network(
+          url,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+            child: Icon(
+              Icons.broken_image_outlined,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+          loadingBuilder: (_, child, ev) => ev == null
+              ? child
+              : Container(
+                  color: cs.surfaceContainerHighest.withValues(alpha: 0.20),
+                  child: const Center(
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.active});
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final bg = active
+        ? cs.primary.withValues(alpha: 0.12)
+        : cs.surfaceContainerHighest.withValues(alpha: 0.35);
+    final fg = active ? cs.primary : cs.onSurfaceVariant;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Text(
+        active ? '上架' : '下架',
+        style: TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 12),
+      ),
+    );
+  }
+}
+
+class _MiniChip extends StatelessWidget {
+  const _MiniChip({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.22),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(name, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
-          const SizedBox(height: 10),
-          Text('ID：$id', style: TextStyle(color: cs.onSurfaceVariant)),
-          const SizedBox(height: 6),
-          Text('價格：NT\$ $price'),
-          Text('庫存：$stock'),
-          const SizedBox(height: 6),
-          Text('Vendor：${vendorId.isEmpty ? '-' : vendorId}', style: TextStyle(color: cs.onSurfaceVariant)),
-          Text('分類：${categoryId.isEmpty ? '-' : categoryId}', style: TextStyle(color: cs.onSurfaceVariant)),
-          const SizedBox(height: 6),
-          Text('狀態：${active ? '上架中' : '已下架'}', style: TextStyle(color: active ? cs.primary : cs.error)),
-          const Spacer(),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: onDelete,
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('刪除'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: onEdit,
-                  icon: const Icon(Icons.edit_outlined),
-                  label: const Text('編輯'),
-                ),
-              ),
-            ],
+          Icon(icon, size: 14, color: cs.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
           ),
         ],
       ),
@@ -753,29 +820,101 @@ class _ProductDetailPanel extends StatelessWidget {
   }
 }
 
-class _ProductDetailDialog extends StatelessWidget {
-  const _ProductDetailDialog({
-    required this.data,
-    required this.onEdit,
-    required this.onDelete,
-  });
+// ----------------------------
+// Detail page (standalone)
+// ----------------------------
+class ProductDetailPage extends StatelessWidget {
+  const ProductDetailPage({super.key, required this.id, required this.data});
 
+  final String id;
   final Map<String, dynamic> data;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      insetPadding: const EdgeInsets.all(18),
-      child: SizedBox(
-        width: 520,
-        height: 520,
-        child: _ProductDetailPanel(
-          data: data,
-          onEdit: onEdit,
-          onDelete: onDelete,
-        ),
+    final title = _s(data['title']).isEmpty ? '商品詳細' : _s(data['title']);
+    final subtitle = _s(data['subtitle']);
+    final desc = _s(data['description']);
+    final sku = _s(data['sku']);
+    final category = _s(data['category']).isNotEmpty
+        ? _s(data['category'])
+        : (_s(data['categoryName']).isNotEmpty
+              ? _s(data['categoryName'])
+              : _s(data['categoryId']));
+    final img = (() {
+      final imgs = (data['images'] is List)
+          ? (data['images'] as List)
+                .map((e) => (e ?? '').toString().trim())
+                .toList()
+          : <String>[];
+      if (imgs.isNotEmpty && imgs.first.isNotEmpty) return imgs.first;
+      final url = _s(data['imageUrl']);
+      return url;
+    })();
+
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: ListView(
+        padding: const EdgeInsets.all(14),
+        children: [
+          if (img.trim().isNotEmpty)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.network(
+                img,
+                height: 240,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+              ),
+            ),
+          if (img.trim().isNotEmpty) const SizedBox(height: 12),
+          if (subtitle.isNotEmpty)
+            Text(
+              subtitle,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          const SizedBox(height: 10),
+          if (desc.isNotEmpty)
+            SelectableText(
+              desc,
+              style: const TextStyle(fontSize: 15, height: 1.5),
+            )
+          else
+            Text(
+              '（無描述）',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          const SizedBox(height: 16),
+          Card(
+            elevation: 0,
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.tag),
+                  title: const Text('Doc ID'),
+                  subtitle: Text(id),
+                ),
+                if (sku.isNotEmpty)
+                  ListTile(
+                    leading: const Icon(Icons.qr_code_2),
+                    title: const Text('SKU'),
+                    subtitle: Text(sku),
+                  ),
+                if (category.isNotEmpty)
+                  ListTile(
+                    leading: const Icon(Icons.category_outlined),
+                    title: const Text('分類'),
+                    subtitle: Text(category),
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

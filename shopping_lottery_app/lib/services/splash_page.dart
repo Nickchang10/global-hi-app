@@ -1,95 +1,156 @@
+// lib/services/splash_page.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:osmile_shopping_app/pages/login_page.dart';
-import 'package:osmile_shopping_app/pages/home_page.dart';
-import 'package:osmile_shopping_app/services/auth_service.dart';
-import 'package:osmile_shopping_app/services/firestore_mock_service.dart';
 
-/// 🚀 啟動畫面（自動登入判斷版）
-///
-/// 功能：
-/// ✅ 啟動時顯示 LOGO 與動畫
-/// ✅ 自動檢查是否登入過
-/// ✅ 已登入 → 進入首頁
-/// ✅ 未登入 → 前往登入頁
+/// ✅ SplashPage（啟動畫面｜完整版｜可編譯｜已修正 withOpacity deprecated）
+/// ------------------------------------------------------------
+/// - 使用 withValues(alpha: ...) 取代 withOpacity(...)
+/// - 支援自動跳轉到 nextRoute（預設 /）
 class SplashPage extends StatefulWidget {
-  const SplashPage({super.key});
+  const SplashPage({
+    super.key,
+    this.nextRoute = '/',
+    this.delay = const Duration(milliseconds: 900),
+    this.title = 'Osmile',
+    this.subtitle = '啟動中…',
+    this.background = const Color(0xFFF6F8FB),
+    this.logoIcon = Icons.watch,
+  });
+
+  final String nextRoute;
+  final Duration delay;
+  final String title;
+  final String subtitle;
+  final Color background;
+  final IconData logoIcon;
 
   @override
   State<SplashPage> createState() => _SplashPageState();
 }
 
-class _SplashPageState extends State<SplashPage>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _fadeAnimation;
+class _SplashPageState extends State<SplashPage> {
+  Timer? _timer;
 
   @override
   void initState() {
     super.initState();
-    _controller =
-        AnimationController(vsync: this, duration: const Duration(seconds: 2));
-    _fadeAnimation = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
-    _controller.forward();
-
-    _initApp();
+    _timer = Timer(widget.delay, _goNext);
   }
 
-  Future<void> _initApp() async {
-    await Future.delayed(const Duration(milliseconds: 800)); // 模擬啟動畫面時間
-
-    final auth = AuthService.instance;
-    final firestore = FirestoreMockService.instance;
-
-    await auth.init();
-    await firestore.init();
-
-    final loggedIn = auth.isLoggedIn || await firestore.isLoggedIn();
-
-    await Future.delayed(const Duration(milliseconds: 600)); // 美觀過場
+  void _goNext() {
     if (!mounted) return;
-
-    Navigator.pushReplacement(
+    // 防止 splash 被重複 push（避免 back stack 一堆 splash）
+    Navigator.of(
       context,
-      MaterialPageRoute(
-        builder: (_) => loggedIn ? const HomePage() : const LoginPage(),
-      ),
-    );
+    ).pushNamedAndRemoveUntil(widget.nextRoute, (r) => false);
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _timer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      backgroundColor: Colors.blueAccent,
-      body: FadeTransition(
-        opacity: _fadeAnimation,
+      backgroundColor: widget.background,
+      body: SafeArea(
         child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: const [
-              Icon(Icons.watch, color: Colors.white, size: 100),
-              SizedBox(height: 20),
-              Text(
-                "Osmile 智慧生活",
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                  letterSpacing: 1.5,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _logoCard(theme),
+                  const SizedBox(height: 18),
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 14),
+                  Text(
+                    widget.subtitle,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Powered by Osmile',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _logoCard(ThemeData theme) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+        child: Row(
+          children: [
+            Container(
+              width: 54,
+              height: 54,
+              decoration: BoxDecoration(
+                color: Colors.blueAccent.withValues(alpha: 0.10), // ✅ 修正
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: Colors.blueAccent.withValues(alpha: 0.18), // ✅ 修正
                 ),
               ),
-              SizedBox(height: 12),
-              Text(
-                "Smart • Health • Safe",
-                style: TextStyle(color: Colors.white70, fontSize: 16),
+              child: Icon(widget.logoIcon, color: Colors.blueAccent, size: 30),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.title,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Shopping • Lottery • Health',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.06), // ✅ 修正
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                'v1',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  color: Colors.grey.shade800,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

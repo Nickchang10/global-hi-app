@@ -79,13 +79,21 @@ class AdminDashboardSimplePage extends StatelessWidget {
                   const SizedBox(height: 20),
                   _buildSummaryRow(provider),
                   const SizedBox(height: 28),
-                  const Text('快速入口', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const Text(
+                    '快速入口',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
                   const SizedBox(height: 12),
                   _buildModuleGrid(context),
                   const SizedBox(height: 28),
                   _buildLatestOrders(provider),
                   const SizedBox(height: 40),
-                  const Center(child: Text('© Osmile Admin', style: TextStyle(color: Colors.black45))),
+                  const Center(
+                    child: Text(
+                      '© Osmile Admin',
+                      style: TextStyle(color: Colors.black45),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -98,9 +106,21 @@ class AdminDashboardSimplePage extends StatelessWidget {
       spacing: 12,
       runSpacing: 12,
       children: [
-        _SummaryCard(title: '全部訂單', value: '${p.totalOrders}', icon: Icons.receipt_long),
-        _SummaryCard(title: '商品數', value: '${p.totalProducts}', icon: Icons.inventory_2_outlined),
-        _SummaryCard(title: '本月營收', value: 'NT\$${p.monthlyRevenue.toStringAsFixed(0)}', icon: Icons.payments),
+        _SummaryCard(
+          title: '全部訂單',
+          value: '${p.totalOrders}',
+          icon: Icons.receipt_long,
+        ),
+        _SummaryCard(
+          title: '商品數',
+          value: '${p.totalProducts}',
+          icon: Icons.inventory_2_outlined,
+        ),
+        _SummaryCard(
+          title: '本月營收',
+          value: 'NT\$${p.monthlyRevenue.toStringAsFixed(0)}',
+          icon: Icons.payments,
+        ),
       ],
     );
   }
@@ -128,7 +148,10 @@ class AdminDashboardSimplePage extends StatelessWidget {
       ),
       itemBuilder: (_, i) {
         final m = modules[i];
-        return _ModuleCard(title: m['title'] as String, icon: m['icon'] as IconData);
+        return _ModuleCard(
+          title: m['title'] as String,
+          icon: m['icon'] as IconData,
+        );
       },
     );
   }
@@ -138,14 +161,19 @@ class AdminDashboardSimplePage extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('最近訂單', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        const Text(
+          '最近訂單',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
         const SizedBox(height: 10),
         if (p.latestOrders.isEmpty)
           const Text('目前沒有訂單', style: TextStyle(color: Colors.black54))
         else
           Card(
             elevation: 0.5,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
             child: ListView.separated(
               itemCount: p.latestOrders.length,
               shrinkWrap: true,
@@ -154,11 +182,16 @@ class AdminDashboardSimplePage extends StatelessWidget {
               itemBuilder: (_, i) {
                 final o = p.latestOrders[i];
                 return ListTile(
-                  leading: Icon(Icons.shopping_cart_outlined, color: Colors.blue.shade700),
+                  leading: Icon(
+                    Icons.shopping_cart_outlined,
+                    color: Colors.blue.shade700,
+                  ),
                   title: Text('${o['id']}'),
                   subtitle: Text('${o['status']}｜${o['buyer']}'),
-                  trailing: Text('NT\$${o['amount']}',
-                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                  trailing: Text(
+                    'NT\$${o['amount']}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 );
               },
             ),
@@ -173,15 +206,22 @@ class _SummaryCard extends StatelessWidget {
   final String title;
   final String value;
   final IconData icon;
-  const _SummaryCard({required this.title, required this.value, required this.icon});
+  const _SummaryCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+  });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: cs.surfaceVariant.withOpacity(0.4),
+      // ✅ surfaceVariant deprecated → surfaceContainerHighest
+      // ✅ withOpacity deprecated → withValues(alpha: ...)
+      color: cs.surfaceContainerHighest.withValues(alpha: 0.4),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Row(
@@ -189,7 +229,7 @@ class _SummaryCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: cs.primary.withOpacity(0.15),
+                color: cs.primary.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(icon, color: cs.primary),
@@ -199,10 +239,18 @@ class _SummaryCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: const TextStyle(color: Colors.black54, fontSize: 13)),
+                  Text(
+                    title,
+                    style: const TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
                   const SizedBox(height: 4),
-                  Text(value,
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  Text(
+                    value,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -221,13 +269,18 @@ class _ModuleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+
     return Material(
-      color: cs.surfaceVariant.withOpacity(0.2),
+      // ✅ surfaceVariant deprecated → surfaceContainerHighest
+      // ✅ withOpacity deprecated → withValues(alpha: ...)
+      color: cs.surfaceContainerHighest.withValues(alpha: 0.2),
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: () {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('開啟 $title')));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('開啟 $title')));
         },
         child: Padding(
           padding: const EdgeInsets.all(14),
@@ -235,7 +288,12 @@ class _ModuleCard extends StatelessWidget {
             children: [
               Icon(icon, color: cs.primary),
               const SizedBox(width: 10),
-              Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w600))),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
               const Icon(Icons.chevron_right, color: Colors.black38),
             ],
           ),

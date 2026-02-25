@@ -1,16 +1,22 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:osmile_shopping_app/services/auth_service.dart';
-import 'package:osmile_shopping_app/services/firestore_mock_service.dart';
-import 'package:osmile_shopping_app/pages/register_page.dart';
-import 'package:osmile_shopping_app/pages/home_page.dart';
+// lib/services/login_page.dart
+//
+// ✅ LoginPage（正式版｜完整版｜可直接編譯）
+// ----------------------------------------------------
+// ✅ 移除 FirestoreMockService.instance（你目前錯誤來源）
+// ✅ 使用 FirebaseAuth.instance / FirebaseFirestore.instance
+// ✅ 功能：
+//   - Email/Password 登入
+//   - Email/Password 註冊
+//   - 忘記密碼（寄重設信）
+//   - 成功後確保 users/{uid} 文件存在（points/role/displayName...）
+//
+// 需要套件：firebase_auth, cloud_firestore, flutter material
+// ----------------------------------------------------
 
-/// 🔐 登入頁（完整版）
-///
-/// 功能：
-/// ✅ 電子郵件 + 密碼登入  
-/// ✅ 登入成功導向首頁  
-/// ✅ 提示註冊入口
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
@@ -19,125 +25,280 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _formKey = GlobalKey<FormState>();
+  final _auth = FirebaseAuth.instance;
+  final _db = FirebaseFirestore.instance;
+
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
-  bool _loading = false;
+  final _displayNameCtrl = TextEditingController();
 
-  Future<void> _onLogin() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+  bool _isRegister = false;
+  bool _busy = false;
+  bool _obscure = true;
 
-    final auth = AuthService.instance;
-    final firestore = FirestoreMockService.instance;
-    setState(() => _loading = true);
+  @override
+  void dispose() {
+    _emailCtrl.dispose();
+    _passwordCtrl.dispose();
+    _displayNameCtrl.dispose();
+    super.dispose();
+  }
 
-    final success =
-        await auth.login(_emailCtrl.text.trim(), _passwordCtrl.text.trim());
-    if (success) {
-      await firestore.login(_emailCtrl.text.trim());
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const HomePage()),
-        );
-      }
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("登入失敗，請檢查帳號或密碼")),
-      );
+  String _clean(String s) => s.trim();
+
+  Future<void> _ensureUserDoc(User u, {String? displayName}) async {
+    final ref = _db.collection('users').doc(u.uid);
+    final snap = await ref.get();
+    if (snap.exists) {
+      // 順便補齊欄位（merge）
+      await ref.set({
+        'uid': u.uid,
+        'email': u.email,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      return;
     }
 
-    setState(() => _loading = false);
+    final now = FieldValue.serverTimestamp();
+    await ref.set({
+      'uid': u.uid,
+      'email': u.email,
+      'displayName': displayName ?? u.displayName ?? 'Osmile 會員',
+      'photoUrl': u.photoURL,
+      'role': 'user',
+      'points': 0,
+      'createdAt': now,
+      'updatedAt': now,
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> _submit() async {
+    if (_busy) return;
+
+    final email = _clean(_emailCtrl.text);
+    final password = _passwordCtrl.text;
+
+    if (email.isEmpty || !email.contains('@')) {
+      _toast('請輸入正確 Email');
+      return;
+    }
+    if (password.length < 6) {
+      _toast('密碼至少 6 碼');
+      return;
+    }
+    if (_isRegister && _clean(_displayNameCtrl.text).isEmpty) {
+      _toast('請輸入暱稱');
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      UserCredential cred;
+
+      if (_isRegister) {
+        cred = await _auth.createUserWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+
+        final name = _clean(_displayNameCtrl.text);
+        if (name.isNotEmpty) {
+          await cred.user?.updateDisplayName(name);
+        }
+
+        final user = cred.user;
+        if (user != null) {
+          await _ensureUserDoc(user, displayName: name);
+        }
+
+        _toast('註冊成功');
+      } else {
+        cred = await _auth.signInWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+
+        final user = cred.user;
+        if (user != null) {
+          await _ensureUserDoc(user, displayName: user.displayName);
+        }
+
+        _toast('登入成功');
+      }
+
+      if (!mounted) return;
+
+      // 登入成功：回上一頁或回首頁
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(true);
+      } else {
+        Navigator.of(context).pushReplacementNamed('/');
+      }
+    } on FirebaseAuthException catch (e) {
+      _toast(_friendlyAuthError(e));
+    } catch (e) {
+      _toast('操作失敗：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _resetPassword() async {
+    if (_busy) return;
+
+    final email = _clean(_emailCtrl.text);
+    if (email.isEmpty || !email.contains('@')) {
+      _toast('請先輸入要重設的 Email');
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      await _auth.sendPasswordResetEmail(email: email);
+      _toast('已寄出重設密碼信');
+    } on FirebaseAuthException catch (e) {
+      _toast(_friendlyAuthError(e));
+    } catch (e) {
+      _toast('寄送失敗：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String _friendlyAuthError(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'invalid-email':
+        return 'Email 格式不正確';
+      case 'user-disabled':
+        return '此帳號已停用';
+      case 'user-not-found':
+        return '找不到此帳號';
+      case 'wrong-password':
+        return '密碼錯誤';
+      case 'email-already-in-use':
+        return '此 Email 已被註冊';
+      case 'weak-password':
+        return '密碼強度不足（至少 6 碼）';
+      case 'too-many-requests':
+        return '嘗試次數過多，請稍後再試';
+      case 'network-request-failed':
+        return '網路連線失敗';
+      default:
+        return '登入/註冊失敗：${e.message ?? e.code}';
+    }
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
   Widget build(BuildContext context) {
+    final title = _isRegister ? '註冊' : '登入';
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F8FB),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Card(
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            elevation: 4,
+      appBar: AppBar(
+        title: Text(title),
+        actions: [
+          TextButton(
+            onPressed: _busy
+                ? null
+                : () {
+                    setState(() {
+                      _isRegister = !_isRegister;
+                    });
+                  },
+            child: Text(
+              _isRegister ? '我有帳號' : '我要註冊',
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+            ),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const SizedBox(height: 8),
+          Card(
+            elevation: 0,
             child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.lock_outline,
-                        color: Colors.blueAccent, size: 60),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  if (_isRegister) ...[
+                    TextField(
+                      controller: _displayNameCtrl,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(
+                        labelText: '暱稱',
+                        prefixIcon: Icon(Icons.badge_outlined),
+                      ),
+                    ),
                     const SizedBox(height: 12),
-                    const Text("登入 Osmile 帳號",
-                        style: TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 24),
-                    TextFormField(
-                      controller: _emailCtrl,
-                      decoration: const InputDecoration(
-                        labelText: "電子郵件",
-                        prefixIcon: Icon(Icons.email),
-                      ),
-                      validator: (v) =>
-                          v == null || v.isEmpty ? "請輸入電子郵件" : null,
+                  ],
+                  TextField(
+                    controller: _emailCtrl,
+                    keyboardType: TextInputType.emailAddress,
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(
+                      labelText: 'Email',
+                      prefixIcon: Icon(Icons.mail_outline),
                     ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _passwordCtrl,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                        labelText: "密碼",
-                        prefixIcon: Icon(Icons.lock),
-                      ),
-                      validator: (v) =>
-                          v == null || v.isEmpty ? "請輸入密碼" : null,
-                    ),
-                    const SizedBox(height: 24),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _loading ? null : _onLogin,
-                        icon: _loading
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.login),
-                        label: Text(_loading ? "登入中..." : "登入"),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blueAccent,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _passwordCtrl,
+                    obscureText: _obscure,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => _submit(),
+                    decoration: InputDecoration(
+                      labelText: '密碼（至少 6 碼）',
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      suffixIcon: IconButton(
+                        onPressed: _busy
+                            ? null
+                            : () => setState(() => _obscure = !_obscure),
+                        icon: Icon(
+                          _obscure ? Icons.visibility : Icons.visibility_off,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    TextButton(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const RegisterPage()),
-                        );
-                      },
-                      child: const Text("還沒有帳號？立即註冊"),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _busy ? null : _submit,
+                      icon: _busy
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.login),
+                      label: Text(_busy ? '處理中...' : title),
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (!_isRegister)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: _busy ? null : _resetPassword,
+                        child: const Text('忘記密碼？'),
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
-        ),
+          const SizedBox(height: 12),
+          const Text(
+            '提示：登入/註冊成功後會自動建立 users/{uid} 文件（role/points 等欄位）。',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ],
       ),
     );
   }

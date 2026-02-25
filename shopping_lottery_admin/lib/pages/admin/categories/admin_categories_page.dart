@@ -58,7 +58,10 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('分類管理', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '分類管理',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           if (_selectionMode) ...[
             IconButton(
@@ -103,7 +106,8 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
                   return _ErrorView(
                     title: '載入失敗',
                     message: snap.error.toString(),
-                    hint: '請確認 Firestore rules、categories 集合、以及 sortOrder 欄位存在或可排序。',
+                    hint:
+                        '請確認 Firestore rules、categories 集合、以及 sortOrder 欄位存在或可排序。',
                     onRetry: () => setState(() {}),
                   );
                 }
@@ -121,8 +125,11 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
                     ? docs
                     : docs.where((d) {
                         final data = d.data();
-                        final name = (data['name'] ?? '').toString().toLowerCase();
-                        return name.contains(q) || d.id.toLowerCase().contains(q);
+                        final name = (data['name'] ?? '')
+                            .toString()
+                            .toLowerCase();
+                        return name.contains(q) ||
+                            d.id.toLowerCase().contains(q);
                       }).toList();
 
                 if (filtered.isEmpty) {
@@ -140,14 +147,23 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
                         children: [
                           Text(
                             '共 ${filtered.length} 筆',
-                            style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800),
+                            style: TextStyle(
+                              color: cs.onSurfaceVariant,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
                           const SizedBox(width: 10),
                           if (_isFiltering)
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
                               decoration: BoxDecoration(
-                                color: cs.secondaryContainer.withOpacity(0.55),
+                                // ✅ withOpacity deprecated → withValues(alpha: ...)
+                                color: cs.secondaryContainer.withValues(
+                                  alpha: 0.55,
+                                ),
                                 borderRadius: BorderRadius.circular(999),
                               ),
                               child: Text(
@@ -172,7 +188,9 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
                     ),
                     const Divider(height: 1),
                     Expanded(
-                      child: _isFiltering ? _buildNormalList(filtered) : _buildReorderableList(filtered),
+                      child: _isFiltering
+                          ? _buildNormalList(filtered)
+                          : _buildReorderableList(filtered),
                     ),
                   ],
                 );
@@ -206,7 +224,9 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
   // ============================================================
   // Lists
   // ============================================================
-  Widget _buildReorderableList(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  Widget _buildReorderableList(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
     return ReorderableListView.builder(
       padding: const EdgeInsets.only(bottom: 90),
       buildDefaultDragHandles: false,
@@ -214,12 +234,19 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
       onReorder: (oldIndex, newIndex) => _onReorder(docs, oldIndex, newIndex),
       itemBuilder: (context, i) {
         final doc = docs[i];
-        return _tile(doc, index: i, key: ValueKey(doc.id), allowReorder: !_selectionMode);
+        return _tile(
+          doc,
+          index: i,
+          key: ValueKey(doc.id),
+          allowReorder: !_selectionMode,
+        );
       },
     );
   }
 
-  Widget _buildNormalList(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  Widget _buildNormalList(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
     return ListView.builder(
       padding: const EdgeInsets.only(bottom: 90),
       itemCount: docs.length,
@@ -248,12 +275,16 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
 
     return ListTile(
       key: key,
-      tileColor: selected ? cs.primaryContainer.withOpacity(0.35) : null,
+      // ✅ withOpacity deprecated → withValues(alpha: ...)
+      tileColor: selected ? cs.primaryContainer.withValues(alpha: 0.35) : null,
       leading: CircleAvatar(
         backgroundColor: cs.primaryContainer,
         child: Text(
           (name.isEmpty ? '?' : name.characters.first).toUpperCase(),
-          style: TextStyle(color: cs.onPrimaryContainer, fontWeight: FontWeight.w900),
+          style: TextStyle(
+            color: cs.onPrimaryContainer,
+            fontWeight: FontWeight.w900,
+          ),
         ),
       ),
       title: Text(
@@ -289,10 +320,7 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  Switch(
-                    value: active,
-                    onChanged: (v) => _setActive(doc, v),
-                  ),
+                  Switch(value: active, onChanged: (v) => _setActive(doc, v)),
                   const SizedBox(width: 6),
                   IconButton(
                     tooltip: '編輯',
@@ -337,21 +365,22 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
   Future<void> _openCreate() async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => _CategoryEditDialog(
-        title: '新增分類',
-        initial: const {},
-      ),
+      builder: (_) => _CategoryEditDialog(title: '新增分類', initial: const {}),
     );
     if (ok != true) return;
 
-    // Create
     final payload = (_CategoryEditDialog.result ?? <String, dynamic>{});
     final name = (payload['name'] ?? '').toString().trim();
     if (name.isEmpty) return;
 
-    // Compute next sortOrder
-    final snap = await _db.collection('categories').orderBy('sortOrder', descending: true).limit(1).get();
-    final maxOrder = snap.docs.isEmpty ? -1 : ((snap.docs.first.data()['sortOrder'] ?? -1) as num).toInt();
+    final snap = await _db
+        .collection('categories')
+        .orderBy('sortOrder', descending: true)
+        .limit(1)
+        .get();
+    final maxOrder = snap.docs.isEmpty
+        ? -1
+        : ((snap.docs.first.data()['sortOrder'] ?? -1) as num).toInt();
     final nextOrder = maxOrder + 1;
 
     await _db.collection('categories').add({
@@ -365,17 +394,18 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
     });
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('分類已新增')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('分類已新增')));
   }
 
-  Future<void> _openEdit(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _openEdit(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     final initial = doc.data();
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => _CategoryEditDialog(
-        title: '編輯分類',
-        initial: initial,
-      ),
+      builder: (_) => _CategoryEditDialog(title: '編輯分類', initial: initial),
     );
     if (ok != true) return;
 
@@ -392,20 +422,29 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
     });
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('分類已更新')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('分類已更新')));
   }
 
-  Future<void> _setActive(QueryDocumentSnapshot<Map<String, dynamic>> doc, bool active) async {
+  Future<void> _setActive(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+    bool active,
+  ) async {
     try {
       await doc.reference.update({
         'active': active,
         'updatedAt': FieldValue.serverTimestamp(),
       });
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(active ? '已上架分類' : '已下架分類')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(active ? '已上架分類' : '已下架分類')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     }
   }
 
@@ -413,10 +452,16 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('確認刪除選取分類？', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '確認刪除選取分類？',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         content: Text('共選取 ${_selected.length} 筆，刪除後無法復原。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
@@ -438,7 +483,9 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
       _selected.clear();
       _selectionMode = false;
     });
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刪除選取分類')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已刪除選取分類')));
   }
 
   // ============================================================
@@ -451,9 +498,9 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
   ) async {
     if (_isFiltering) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('搜尋中不允許排序，請先清除搜尋後再拖曳。')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('搜尋中不允許排序，請先清除搜尋後再拖曳。')));
       return;
     }
 
@@ -472,7 +519,9 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
     await batch.commit();
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('分類排序已更新')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('分類排序已更新')));
   }
 
   // ============================================================
@@ -494,9 +543,19 @@ class _AdminCategoriesPageState extends State<AdminCategoriesPage> {
                 children: [
                   Icon(Icons.category_outlined, size: 44, color: cs.primary),
                   const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                   const SizedBox(height: 8),
-                  Text(subtitle, textAlign: TextAlign.center, style: TextStyle(color: cs.onSurfaceVariant)),
+                  Text(
+                    subtitle,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: cs.onSurfaceVariant),
+                  ),
                 ],
               ),
             ),
@@ -516,10 +575,7 @@ class _CategoryEditDialog extends StatefulWidget {
 
   static Map<String, dynamic>? result;
 
-  const _CategoryEditDialog({
-    required this.title,
-    required this.initial,
-  });
+  const _CategoryEditDialog({required this.title, required this.initial});
 
   @override
   State<_CategoryEditDialog> createState() => _CategoryEditDialogState();
@@ -536,9 +592,15 @@ class _CategoryEditDialogState extends State<_CategoryEditDialog> {
     super.initState();
     _CategoryEditDialog.result = null;
 
-    _name = TextEditingController(text: (widget.initial['name'] ?? '').toString());
-    _desc = TextEditingController(text: (widget.initial['description'] ?? '').toString());
-    _icon = TextEditingController(text: (widget.initial['icon'] ?? '').toString());
+    _name = TextEditingController(
+      text: (widget.initial['name'] ?? '').toString(),
+    );
+    _desc = TextEditingController(
+      text: (widget.initial['description'] ?? '').toString(),
+    );
+    _icon = TextEditingController(
+      text: (widget.initial['icon'] ?? '').toString(),
+    );
 
     final a = widget.initial['active'];
     _active = a is bool ? a : true;
@@ -557,7 +619,10 @@ class _CategoryEditDialogState extends State<_CategoryEditDialog> {
     final cs = Theme.of(context).colorScheme;
 
     return AlertDialog(
-      title: Text(widget.title, style: const TextStyle(fontWeight: FontWeight.w900)),
+      title: Text(
+        widget.title,
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
       content: SizedBox(
         width: 520,
         child: SingleChildScrollView(
@@ -591,7 +656,10 @@ class _CategoryEditDialogState extends State<_CategoryEditDialog> {
               SwitchListTile(
                 value: _active,
                 onChanged: (v) => setState(() => _active = v),
-                title: const Text('上架（active）', style: TextStyle(fontWeight: FontWeight.w800)),
+                title: const Text(
+                  '上架（active）',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
                 subtitle: const Text('關閉代表分類下架（App 可不顯示）'),
               ),
             ],
@@ -599,7 +667,10 @@ class _CategoryEditDialogState extends State<_CategoryEditDialog> {
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('取消'),
+        ),
         FilledButton(
           style: FilledButton.styleFrom(backgroundColor: cs.primary),
           onPressed: () {
@@ -654,7 +725,13 @@ class _ErrorView extends StatelessWidget {
                 children: [
                   Icon(Icons.error_outline, size: 44, color: cs.error),
                   const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                   const SizedBox(height: 10),
                   Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
                   if (hint != null) ...[

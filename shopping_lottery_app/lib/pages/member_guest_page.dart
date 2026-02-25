@@ -1,318 +1,334 @@
 // lib/pages/member_guest_page.dart
-// =====================================================
-// ✅ MemberGuestPage（未登入狀態｜我的｜精簡版｜最終可編譯）
-// -----------------------------------------------------
-// - 僅保留一組「註冊 / 登入」按鈕（在藍色區塊）
-// - 未登入可逛商城 / 任務 / 互動；需登入功能會導去 /login
-// - 高質感 UI、Web/Android/iOS 可用
-// =====================================================
+//
+// ✅ MemberGuestPage（最終完整版）
+// - 修正：withOpacity deprecated → 改用 withValues(alpha: ...)
+// - 用於「未登入 / 訪客」狀態的會員頁提示：導向登入、註冊、回商城
+// - Web/App 可用（不使用 dart:io）
 
 import 'package:flutter/material.dart';
 
 class MemberGuestPage extends StatelessWidget {
   const MemberGuestPage({super.key});
 
-  static const Color _bg = Color(0xFFF7F8FA);
   static const Color _brand = Color(0xFF3B82F6);
-
-  void _go(BuildContext context, String route) {
-    try {
-      Navigator.pushNamed(context, route);
-    } catch (_) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('尚未設定路由：$route'),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(milliseconds: 1600),
-        ),
-      );
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final topPad = media.padding.top;
+
     return Scaffold(
-      backgroundColor: _bg,
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
-          children: [
-            _header(context),
-            const SizedBox(height: 12),
-            _benefits(),
-            const SizedBox(height: 12),
-            _shortcuts(context),
-            const SizedBox(height: 14),
-            Text(
-              '登入後可使用購物車、收藏、通知中心、訂單與會員福利（模板）。',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.grey.shade600,
-                fontWeight: FontWeight.w600,
-                height: 1.35,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // =====================================================
-  // ✅ 頂部頭像 + 登入註冊按鈕
-  // =====================================================
-  Widget _header(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF3B82F6), Color(0xFF60A5FA)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          )
-        ],
-      ),
-      child: Column(
+      body: Stack(
         children: [
-          Row(
-            children: [
-              CircleAvatar(
-                radius: 26,
-                backgroundColor: Colors.white.withOpacity(0.18),
-                child: const Icon(
-                  Icons.person_outline,
-                  color: Colors.white,
-                  size: 28,
-                ),
+          // 背景漸層
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Color(0xFFF6F8FF), Color(0xFFF7F8FA)],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
               ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '尚未登入',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 16,
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      '登入後可使用訂單、收藏、購物車與通知等功能',
-                      style: TextStyle(color: Colors.white70, height: 1.35),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            ),
+            child: SizedBox.expand(),
           ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => _go(context, '/register'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    side: const BorderSide(color: Colors.white),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  child: const Text(
-                    '註冊',
-                    style: TextStyle(fontWeight: FontWeight.w900),
+
+          // 裝飾圓（✅ withOpacity -> withValues）
+          Positioned(
+            top: -120 + topPad,
+            right: -80,
+            child: _BlurCircle(
+              color: _brand.withValues(alpha: 0.18),
+              size: 240,
+            ),
+          ),
+          const Positioned(
+            bottom: -140,
+            left: -90,
+            child: _BlurCircle(
+              color: Color(0x1A3B82F6), // 0.10 alpha 等效
+              size: 260,
+            ),
+          ),
+
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 440),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 6),
+                      const _Header(
+                        title: '會員中心',
+                        subtitle: '登入後可查看訂單、優惠券、抽獎與健康資料',
+                      ),
+                      const SizedBox(height: 16),
+
+                      // 主卡片
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: Colors.grey.shade200),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.06),
+                              blurRadius: 18,
+                              offset: const Offset(0, 10),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            Container(
+                              width: 64,
+                              height: 64,
+                              decoration: BoxDecoration(
+                                color: _brand.withValues(alpha: 0.10),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: const Icon(
+                                Icons.lock_outline,
+                                size: 34,
+                                color: _brand,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            const Text(
+                              '你目前是訪客狀態',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 18,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '登入後才能使用會員功能（訂單 / 優惠券 / 抽獎 / 任務等）',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.grey.shade700,
+                                height: 1.35,
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+
+                            SizedBox(
+                              width: double.infinity,
+                              height: 48,
+                              child: ElevatedButton(
+                                onPressed: () =>
+                                    Navigator.pushNamed(context, '/login'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _brand,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: const Text(
+                                  '前往登入',
+                                  style: TextStyle(fontWeight: FontWeight.w900),
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 10),
+
+                            SizedBox(
+                              width: double.infinity,
+                              height: 48,
+                              child: OutlinedButton(
+                                onPressed: () =>
+                                    Navigator.pushNamed(context, '/register'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: _brand,
+                                  side: const BorderSide(color: _brand),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: const Text(
+                                  '註冊新帳號',
+                                  style: TextStyle(fontWeight: FontWeight.w900),
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 10),
+
+                            TextButton(
+                              onPressed: () {
+                                // 回主框架或商城（依你路由）
+                                const candidates = <String>[
+                                  '/main',
+                                  '/shop',
+                                  '/home',
+                                  '/',
+                                ];
+                                for (final r in candidates) {
+                                  try {
+                                    Navigator.pushNamedAndRemoveUntil(
+                                      context,
+                                      r,
+                                      (route) => false,
+                                    );
+                                    return;
+                                  } catch (_) {}
+                                }
+                              },
+                              child: Text(
+                                '先逛逛商城',
+                                style: TextStyle(
+                                  color: Colors.grey.shade800,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // 功能提示（✅ 改成 const）
+                      const _HintCard(
+                        icon: Icons.local_offer_outlined,
+                        title: '優惠券 / 抽獎',
+                        subtitle: '登入後可領券、套用折扣並參與抽獎活動',
+                      ),
+                      const SizedBox(height: 10),
+                      const _HintCard(
+                        icon: Icons.support_agent_outlined,
+                        title: '客服與支援',
+                        subtitle: '可查看工單、常見問題與通知中心',
+                      ),
+                      const SizedBox(height: 22),
+                    ],
                   ),
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => _go(context, '/login'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    foregroundColor: _brand,
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                  child: const Text(
-                    '登入',
-                    style: TextStyle(fontWeight: FontWeight.w900),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         ],
       ),
     );
   }
+}
 
-  // =====================================================
-  // ✅ 登入後可用功能說明卡片（無按鈕）
-  // =====================================================
-  Widget _benefits() {
-    Widget tile(IconData icon, String title, String sub) {
-      return Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF7F8FA),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.grey.shade200),
+class _Header extends StatelessWidget {
+  final String title;
+  final String subtitle;
+
+  const _Header({required this.title, required this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            color: const Color(0xFF3B82F6).withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: const Icon(Icons.person_outline, color: Color(0xFF3B82F6)),
         ),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: _brand.withOpacity(0.12),
-              child: Icon(icon, color: _brand, size: 18),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      style: const TextStyle(fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 2),
-                  Text(
-                    sub,
-                    style: TextStyle(
-                      color: Colors.grey.shade700,
-                      fontSize: 12,
-                      height: 1.25,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: TextStyle(color: Colors.grey.shade700, height: 1.25),
+              ),
+            ],
+          ),
         ),
-      );
-    }
+      ],
+    );
+  }
+}
 
+class _HintCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  const _HintCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.03),
-            blurRadius: 10,
-            offset: const Offset(0, 6),
-          )
-        ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          const Text(
-            '登入後可用',
-            style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Colors.blueAccent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(icon, color: Colors.blueAccent),
           ),
-          const SizedBox(height: 10),
-          tile(Icons.receipt_long_outlined, '訂單管理', '查看訂單狀態、物流與保固'),
-          const SizedBox(height: 10),
-          tile(Icons.favorite_border, '收藏清單', '保存喜歡的商品與活動'),
-          const SizedBox(height: 10),
-          tile(Icons.notifications_none_rounded, '通知中心', '付款、出貨、優惠券提醒'),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: TextStyle(color: Colors.grey.shade700, height: 1.25),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
+}
 
-  // =====================================================
-  // ✅ 快捷入口（保持不變）
-  // =====================================================
-  Widget _shortcuts(BuildContext context) {
-    Widget item(IconData icon, String title, String sub, VoidCallback onTap) {
-      return InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Ink(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.grey.shade200),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.02),
-                blurRadius: 10,
-                offset: const Offset(0, 6),
-              )
-            ],
-          ),
-          child: Row(
-            children: [
-              CircleAvatar(
-                backgroundColor: _brand.withOpacity(0.12),
-                child: Icon(icon, color: _brand),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title,
-                        style:
-                            const TextStyle(fontWeight: FontWeight.w900)),
-                    const SizedBox(height: 2),
-                    Text(
-                      sub,
-                      style: TextStyle(
-                        color: Colors.grey.shade700,
-                        fontSize: 12,
-                        height: 1.25,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded, color: Colors.grey),
-            ],
-          ),
-        ),
-      );
-    }
+class _BlurCircle extends StatelessWidget {
+  final Color color;
+  final double size;
 
-    return Column(
-      children: [
-        item(Icons.storefront_outlined, '先逛逛商城', '未登入可瀏覽商品',
-            () => _go(context, '/shop')),
-        const SizedBox(height: 10),
-        item(Icons.emoji_events_outlined, '看看任務', '未登入可查看活動',
-            () => _go(context, '/tasks')),
-        const SizedBox(height: 10),
-        item(Icons.people_outline, '互動社群', '未登入可瀏覽貼文',
-            () => _go(context, '/interaction')),
-        const SizedBox(height: 10),
-        item(Icons.shopping_cart_outlined, '購物車', '需登入才能使用',
-            () => _go(context, '/login')),
-        const SizedBox(height: 10),
-        item(Icons.favorite_border, '收藏', '需登入才能使用',
-            () => _go(context, '/login')),
-        const SizedBox(height: 10),
-        item(Icons.notifications_none_rounded, '通知', '需登入才能查看',
-            () => _go(context, '/login')),
-      ],
+  const _BlurCircle({required this.color, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
   }
 }

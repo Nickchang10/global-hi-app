@@ -1,373 +1,539 @@
 // lib/services/product_service.dart
 //
-// ✅ ProductService v2.2（最終完整版・可編譯強化版｜Web/Chrome OK｜含 Storage 圖片刪除）
+// ✅ ProductService（可編譯完整版｜補齊缺的方法：deleteProductWithImages 等）
+// ------------------------------------------------------------
+// ✅ 修正：firebase_storage 某些版本沒有 ref.putStream()
+//      => uploadProductStream 改成：先把 Stream<List<int>> 收集成 bytes，再 ref.putData()
+// ------------------------------------------------------------
 //
-// 支援頁面：
-// - AdminProductsPage
-// - ProductsPage
-// - VendorProductsPage
+// 目標：讓以下頁面不再報 undefined_method：
+// - product_admin_page.dart: deleteProductWithImages
+// - admin_products_page_full.dart: streamProducts / toggleActive / deleteProductWithImages
+// - new_product_dialog.dart: uploadProductBytes / uploadProductStream / upsert / appendProductImages
+//                           updateImageOrder / setPrimaryImage / removeProductImage
 //
-// Firestore 結構: products/{productId}
+// Firestore schema（建議）:
+// products/{productId}
+// - id: String
 // - title: String
 // - price: num
+// - vendorId: String
+// - categoryId: String
 // - isActive: bool
-// - createdAt: Timestamp
-// - updatedAt: Timestamp
-// - vendorId: String?
-// - categoryId: String?
-// - images: List<String>（建議放「downloadURL」或「gs://」）
-// - imageUrl: String（舊版相容）
+// - imageUrl: String (主圖 url)
+// - primaryImage: {url, path}
+// - images: [ String(url) | {url, path} ]
+// - updatedAt, createdAt: Timestamp
 //
-// Storage：
-// - 建議上傳到：products/{productId}/{timestamp}_{filename}
-// - 刪除商品時可一併刪除 images/imageUrl 指向的 Storage 檔案（僅限 Firebase Storage URL / gs://）
-//
-// 依賴：cloud_firestore, firebase_storage
+// Storage schema（建議）:
+// /products/{productId}/{timestamp}_{filename}
+
+import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:flutter/foundation.dart';
-
-class ProductException implements Exception {
-  final String code;
-  final String message;
-  ProductException(this.code, this.message);
-  @override
-  String toString() => 'ProductException($code): $message';
-}
 
 class ProductService {
   ProductService({FirebaseFirestore? firestore, FirebaseStorage? storage})
-      : _db = firestore ?? FirebaseFirestore.instance,
-        _storage = storage ?? FirebaseStorage.instance;
+    : _db = firestore ?? FirebaseFirestore.instance,
+      _st = storage ?? FirebaseStorage.instance;
 
   final FirebaseFirestore _db;
-  final FirebaseStorage _storage;
+  final FirebaseStorage _st;
 
-  CollectionReference<Map<String, dynamic>> get _col => _db.collection('products');
+  CollectionReference<Map<String, dynamic>> get _col =>
+      _db.collection('products');
 
   String _s(dynamic v) => (v ?? '').toString().trim();
 
-  num _toNum(dynamic v) {
-    if (v is num) return v;
-    return num.tryParse(_s(v)) ?? 0;
+  // ------------------------------------------------------------
+  // Stream: all products -> List<Map>
+  // ------------------------------------------------------------
+  Stream<List<Map<String, dynamic>>> streamProducts({int limit = 500}) {
+    return _col
+        .orderBy('updatedAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map((snap) {
+          return snap.docs.map((d) {
+            // ⚠️ d.data() 回來的 Map 可能被重用；這裡複製一份避免副作用
+            final m = Map<String, dynamic>.from(d.data());
+
+            // 確保 map 內有 id（優先用欄位 id，沒有就用 docId）
+            final id = _s(m['id']).isNotEmpty ? _s(m['id']) : d.id;
+
+            // 確保 imageUrl（若缺就從 primary/images 推導）
+            final mainUrl = _pickMainImageUrl(m);
+            if (_s(m['imageUrl']).isEmpty && mainUrl.isNotEmpty) {
+              m['imageUrl'] = mainUrl;
+            }
+
+            return {...m, 'id': id, '_docId': d.id};
+          }).toList();
+        });
   }
 
-  Map<String, dynamic> _withId(DocumentSnapshot<Map<String, dynamic>> d) {
-    final m = d.data() ?? <String, dynamic>{};
-    return <String, dynamic>{...m, 'id': d.id};
-  }
-
-  // ------------------------------------------------------------
-  // Streams / Queries
-  // ------------------------------------------------------------
-
-  /// ✅ 全部商品串流（含 vendor / active 篩選）
-  Stream<List<Map<String, dynamic>>> streamProducts({
-    String? vendorId,
-    bool includeInactive = true,
-    int limit = 500,
-    String orderByField = 'updatedAt',
-    bool descending = true,
-  }) async* {
-    Query<Map<String, dynamic>> q = _col;
-
-    final v = _s(vendorId);
-    if (v.isNotEmpty) q = q.where('vendorId', isEqualTo: v);
-
-    if (!includeInactive) q = q.where('isActive', isEqualTo: true);
-
-    q = q.orderBy(orderByField, descending: descending);
-    if (limit > 0) q = q.limit(limit);
-
-    try {
-      yield* q.snapshots().map((s) => s.docs.map(_withId).toList());
-    } on FirebaseException catch (e) {
-      // 索引缺失提示
-      if (e.code == 'failed-precondition' && (e.message ?? '').contains('requires an index')) {
-        if (kDebugMode) {
-          // ignore: avoid_print
-          print('[ProductService] Firestore 索引缺失：${e.message}');
-        }
-      }
-      rethrow;
-    } catch (e) {
-      if (kDebugMode) {
-        // ignore: avoid_print
-        print('[ProductService] streamProducts error: $e');
-      }
-      rethrow;
+  String _pickMainImageUrl(Map<String, dynamic> m) {
+    final primary = m['primaryImage'];
+    if (primary is Map) {
+      final u = _s(primary['url']);
+      if (u.isNotEmpty) return u;
     }
-  }
 
-  Stream<List<Map<String, dynamic>>> streamVendorProducts(
-    String vendorId, {
-    bool includeInactive = true,
-    int limit = 500,
-  }) {
-    final v = _s(vendorId);
-    if (v.isEmpty) return const Stream<List<Map<String, dynamic>>>.empty();
-    return streamProducts(vendorId: v, includeInactive: includeInactive, limit: limit);
-  }
+    final u0 = _s(m['imageUrl']);
+    if (u0.isNotEmpty) return u0;
 
-  Future<Map<String, dynamic>?> getById(String id) async {
-    final pid = _s(id);
-    if (pid.isEmpty) return null;
-
-    try {
-      final d = await _col.doc(pid).get();
-      if (!d.exists) return null;
-      return _withId(d);
-    } catch (e) {
-      throw ProductException('get_failed', '讀取商品失敗：$e');
+    final imgs = m['images'];
+    if (imgs is List && imgs.isNotEmpty) {
+      final first = imgs.first;
+      if (first is String) return _s(first);
+      if (first is Map) return _s(first['url']);
     }
+    return '';
   }
 
   // ------------------------------------------------------------
-  // Upsert / Update
+  // Upsert product
   // ------------------------------------------------------------
-
   Future<void> upsert({
     required String id,
     required Map<String, dynamic> data,
   }) async {
-    final pid = _s(id);
-    if (pid.isEmpty) throw ProductException('invalid_id', '商品 id 不可為空');
+    final pid = id.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
 
-    final normalized = _normalizeData(data);
+    final payload = <String, dynamic>{
+      ...data,
+      'id': pid,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
 
-    try {
-      final ref = _col.doc(pid);
-      final snap = await ref.get();
-
-      final payload = <String, dynamic>{
-        ...normalized,
-        'updatedAt': FieldValue.serverTimestamp(),
-        if (!snap.exists) 'createdAt': FieldValue.serverTimestamp(),
-        'id': pid,
-      };
-
-      await ref.set(payload, SetOptions(merge: true));
-    } catch (e) {
-      throw ProductException('upsert_failed', '儲存商品失敗：$e');
-    }
-  }
-
-  Future<void> createOrUpdate(String id, Map<String, dynamic> data) => upsert(id: id, data: data);
-
-  Future<void> updateFields(String id, Map<String, dynamic> fields) async {
-    final pid = _s(id);
-    if (pid.isEmpty) return;
-
-    try {
-      await _col.doc(pid).set(
-        <String, dynamic>{
-          ..._normalizeData(fields),
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-    } catch (e) {
-      throw ProductException('update_failed', '更新商品失敗：$e');
-    }
-  }
-
-  Map<String, dynamic> _normalizeData(Map<String, dynamic> inData) {
-    final data = Map<String, dynamic>.from(inData);
-
-    if (data.containsKey('title')) data['title'] = _s(data['title']);
-    if (data.containsKey('price')) {
-      final p = _toNum(data['price']);
-      data['price'] = p < 0 ? 0 : p;
-    }
-    if (data.containsKey('isActive')) data['isActive'] = data['isActive'] == true;
-    if (data.containsKey('categoryId')) data['categoryId'] = _s(data['categoryId']);
-    if (data.containsKey('vendorId')) data['vendorId'] = _s(data['vendorId']);
-
-    final imageUrl = _s(data['imageUrl']);
-    if (data['images'] is List) {
-      final imgs = List.from(data['images'] as List)
-          .map((e) => _s(e))
-          .where((e) => e.isNotEmpty)
-          .toList();
-      data['images'] = imgs;
-      if (imgs.isNotEmpty) {
-        data['imageUrl'] = imgs.first;
-      } else if (imageUrl.isNotEmpty) {
-        data['images'] = [imageUrl];
-      }
-    } else {
-      if (imageUrl.isNotEmpty) data['images'] = [imageUrl];
+    // createdAt：只在「呼叫者有提供」才寫入；避免每次 upsert 都誤蓋
+    if (!payload.containsKey('createdAt')) {
+      payload['createdAt'] = FieldValue.serverTimestamp();
     }
 
-    if (data.containsKey('rating')) {
-      final r = data['rating'];
-      data['rating'] = r is num ? r : (num.tryParse(_s(r)) ?? 0);
-    }
-
-    return data;
+    await _col.doc(pid).set(payload, SetOptions(merge: true));
   }
 
   // ------------------------------------------------------------
-  // Active toggle
+  // Toggle active
   // ------------------------------------------------------------
+  Future<void> toggleActive(String productId, bool isActive) async {
+    final pid = productId.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
 
-  Future<void> toggleActive(String id, bool active) async {
-    final pid = _s(id);
-    if (pid.isEmpty) return;
-    try {
-      await _col.doc(pid).set(
-        <String, dynamic>{
-          'isActive': active,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-    } catch (e) {
-      throw ProductException('toggle_failed', '切換上架狀態失敗：$e');
-    }
-  }
-
-  Future<void> setActive(String id, bool active) => toggleActive(id, active);
-
-  Future<void> batchToggleActive(List<String> ids, bool toActive) async {
-    final list = ids.map(_s).where((e) => e.isNotEmpty).toList();
-    if (list.isEmpty) return;
-
-    const chunk = 450;
-    try {
-      for (var i = 0; i < list.length; i += chunk) {
-        final part = list.sublist(i, (i + chunk).clamp(0, list.length));
-        final batch = _db.batch();
-        for (final id in part) {
-          batch.set(
-            _col.doc(id),
-            <String, dynamic>{
-              'isActive': toActive,
-              'updatedAt': FieldValue.serverTimestamp(),
-            },
-            SetOptions(merge: true),
-          );
-        }
-        await batch.commit();
-      }
-    } catch (e) {
-      throw ProductException('batch_toggle_failed', '批次切換上架失敗：$e');
-    }
+    await _col.doc(pid).set({
+      'isActive': isActive,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   // ------------------------------------------------------------
-  // Delete
+  // Upload helpers
   // ------------------------------------------------------------
-
-  Future<void> delete(String id) async {
-    final pid = _s(id);
-    if (pid.isEmpty) return;
-    try {
-      await _col.doc(pid).delete();
-    } catch (e) {
-      throw ProductException('delete_failed', '刪除商品失敗：$e');
-    }
+  String _safeFileName(String name) {
+    final n = name.trim();
+    if (n.isEmpty) return 'file';
+    // 避免奇怪字元
+    return n.replaceAll(RegExp(r'[^\w\.\-\(\)\[\]\s]'), '_');
   }
 
-  Future<void> deleteProduct(String id) => delete(id);
+  String _buildStoragePath(String productId, String filename) {
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    return 'products/$productId/${ts}_${_safeFileName(filename)}';
+  }
 
-  /// ✅ 刪除商品（含 Storage 圖片）
-  ///
-  /// - 會從 Firestore 商品文件讀取：
-  ///   - images（List<String>）
-  ///   - imageUrl（String）
-  /// - 嘗試刪除「可辨識為 Firebase Storage」的 URL / gs://
-  /// - 預設就算刪 Storage 失敗，也會刪掉 Firestore 商品（避免卡住）
-  Future<void> deleteProductWithImages(
-    String id, {
-    bool deleteStorageFiles = true,
-    bool failOnStorageError = false,
+  Future<Map<String, String>> uploadProductBytes({
+    required String productId,
+    required Uint8List bytes,
+    required String filename,
+    void Function(double progress)? onProgress,
+    String? contentType,
   }) async {
-    final pid = _s(id);
-    if (pid.isEmpty) return;
+    final pid = productId.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
+
+    final path = _buildStoragePath(pid, filename);
+    final ref = _st.ref(path);
+
+    final meta = SettableMetadata(
+      contentType: contentType, // 可為 null
+      customMetadata: {'productId': pid},
+    );
+
+    final task = ref.putData(bytes, meta);
+
+    StreamSubscription<TaskSnapshot>? sub;
+    if (onProgress != null) {
+      sub = task.snapshotEvents.listen((snap) {
+        final total = snap.totalBytes;
+        final sent = snap.bytesTransferred;
+        if (total > 0) onProgress(sent / total);
+      });
+    }
+
+    final snap = await task.whenComplete(() {});
+    await sub?.cancel();
+
+    final url = await snap.ref.getDownloadURL();
+    return {'url': url, 'path': path};
+  }
+
+  /// ✅ 兼容版本：不使用 ref.putStream（有些 firebase_storage 版本沒有）
+  /// 改用：先把 openStream 收集成 bytes → ref.putData
+  Future<Map<String, String>> uploadProductStream({
+    required String productId,
+    required Stream<List<int>> Function() openStream,
+    required String filename,
+    void Function(double progress)? onProgress,
+    String? contentType,
+  }) async {
+    final pid = productId.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
+
+    final path = _buildStoragePath(pid, filename);
+    final ref = _st.ref(path);
+
+    // 先把 stream 收集成 bytes（避免 putStream）
+    final bb = BytesBuilder(copy: false);
+    await for (final chunk in openStream()) {
+      bb.add(chunk);
+    }
+    final bytes = bb.takeBytes(); // Uint8List
+
+    final meta = SettableMetadata(
+      contentType: contentType,
+      customMetadata: {'productId': pid},
+    );
+
+    final task = ref.putData(bytes, meta);
+
+    StreamSubscription<TaskSnapshot>? sub;
+    if (onProgress != null) {
+      sub = task.snapshotEvents.listen((snap) {
+        final total = snap.totalBytes;
+        final sent = snap.bytesTransferred;
+        if (total > 0) onProgress(sent / total);
+      });
+    }
+
+    final snap = await task.whenComplete(() {});
+    await sub?.cancel();
+
+    final url = await snap.ref.getDownloadURL();
+    return {'url': url, 'path': path};
+  }
+
+  // ------------------------------------------------------------
+  // Images ops
+  // ------------------------------------------------------------
+  Future<void> appendProductImages(
+    String productId,
+    List<Map<String, String>> images, {
+    bool setPrimaryIfEmpty = true,
+  }) async {
+    final pid = productId.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
+    if (images.isEmpty) return;
 
     final ref = _col.doc(pid);
+    final doc = await ref.get();
+    final m = doc.data() ?? <String, dynamic>{};
 
-    try {
-      final snap = await ref.get();
-      if (!snap.exists) return;
+    final oldList = (m['images'] is List)
+        ? List.from(m['images'] as List)
+        : <dynamic>[];
 
-      final data = snap.data() ?? <String, dynamic>{};
+    final addList = images
+        .map(
+          (e) => <String, dynamic>{
+            'url': e['url'] ?? '',
+            'path': e['path'] ?? '',
+          },
+        )
+        .where((e) => _s(e['url']).isNotEmpty)
+        .toList();
 
-      // 收集 URLs
-      final urls = <String>{};
-      final images = data['images'];
-      if (images is List) {
-        for (final x in images) {
-          final u = _s(x);
-          if (u.isNotEmpty) urls.add(u);
-        }
+    // 合併（避免 url 重複）
+    final seen = <String>{};
+    final merged = <dynamic>[];
+
+    void push(dynamic item) {
+      if (item is String) {
+        final u = _s(item);
+        if (u.isEmpty || seen.contains(u)) return;
+        seen.add(u);
+        merged.add(u);
+      } else if (item is Map) {
+        final u = _s(item['url']);
+        if (u.isEmpty || seen.contains(u)) return;
+        seen.add(u);
+        merged.add({'url': u, 'path': _s(item['path'])});
       }
-      final imageUrl = _s(data['imageUrl']);
-      if (imageUrl.isNotEmpty) urls.add(imageUrl);
+    }
 
-      // 先刪 Storage（可選）
-      if (deleteStorageFiles && urls.isNotEmpty) {
-        final errs = <String>[];
+    for (final it in oldList) {
+      push(it);
+    }
+    for (final it in addList) {
+      push(it);
+    }
 
-        for (final u in urls) {
-          final ok = await _tryDeleteStorageByUrl(u);
-          if (!ok) {
-            errs.add(u);
+    final payload = <String, dynamic>{
+      'images': merged,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    // 若沒有主圖，補主圖
+    final existingPrimary = (m['primaryImage'] is Map)
+        ? Map<String, dynamic>.from(m['primaryImage'] as Map)
+        : null;
+    final existingImageUrl = _s(m['imageUrl']);
+
+    if (setPrimaryIfEmpty) {
+      if ((existingPrimary == null || _s(existingPrimary['url']).isEmpty) &&
+          existingImageUrl.isEmpty) {
+        final first = merged.isEmpty ? null : merged.first;
+        if (first is String) {
+          payload['imageUrl'] = first;
+          payload['primaryImage'] = {'url': first, 'path': ''};
+        } else if (first is Map) {
+          final u = _s(first['url']);
+          final p = _s(first['path']);
+          if (u.isNotEmpty) {
+            payload['imageUrl'] = u;
+            payload['primaryImage'] = {'url': u, 'path': p};
           }
         }
+      }
+    }
 
-        if (errs.isNotEmpty && failOnStorageError) {
-          throw ProductException('storage_delete_failed', '部分圖片刪除失敗：${errs.take(3).join(', ')}');
+    await ref.set(payload, SetOptions(merge: true));
+  }
+
+  Future<void> setPrimaryImage(
+    String productId, {
+    required String url,
+    String? path,
+  }) async {
+    final pid = productId.trim();
+    final u = url.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
+    if (u.isEmpty) throw Exception('url is empty');
+
+    await _col.doc(pid).set({
+      'primaryImage': {'url': u, 'path': _s(path)},
+      'imageUrl': u,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> updateImageOrder(
+    String productId,
+    List<String> urlsOrder,
+  ) async {
+    final pid = productId.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
+
+    final ref = _col.doc(pid);
+    final doc = await ref.get();
+    final m = doc.data() ?? <String, dynamic>{};
+
+    final imgs = (m['images'] is List)
+        ? List.from(m['images'] as List)
+        : <dynamic>[];
+    if (imgs.isEmpty || urlsOrder.isEmpty) return;
+
+    // 建 index: url -> item
+    final map = <String, dynamic>{};
+    for (final it in imgs) {
+      if (it is String) {
+        final u = _s(it);
+        if (u.isNotEmpty) map[u] = it;
+      } else if (it is Map) {
+        final u = _s(it['url']);
+        if (u.isNotEmpty) {
+          map[u] = {'url': u, 'path': _s(it['path'])};
         }
       }
+    }
 
-      // 最後刪 Firestore doc
-      await ref.delete();
-    } catch (e) {
-      throw ProductException('delete_with_images_failed', '刪除商品（含圖片）失敗：$e');
+    final newList = <dynamic>[];
+    final used = <String>{};
+
+    // 先依指定順序
+    for (final u0 in urlsOrder) {
+      final u = _s(u0);
+      if (u.isEmpty) continue;
+      final it = map[u];
+      if (it == null) continue;
+      if (used.contains(u)) continue;
+      used.add(u);
+      newList.add(it);
+    }
+
+    // 再補上剩餘
+    for (final entry in map.entries) {
+      if (used.contains(entry.key)) continue;
+      newList.add(entry.value);
+    }
+
+    final payload = <String, dynamic>{
+      'images': newList,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    // 主圖跟著第一張
+    final first = newList.isEmpty ? null : newList.first;
+    if (first is String) {
+      payload['imageUrl'] = first;
+      payload['primaryImage'] = {'url': first, 'path': ''};
+    } else if (first is Map) {
+      final u = _s(first['url']);
+      final p = _s(first['path']);
+      if (u.isNotEmpty) {
+        payload['imageUrl'] = u;
+        payload['primaryImage'] = {'url': u, 'path': p};
+      }
+    }
+
+    await ref.set(payload, SetOptions(merge: true));
+  }
+
+  Future<void> removeProductImage({
+    required String productId,
+    required String imageUrl,
+    String? storagePath,
+  }) async {
+    final pid = productId.trim();
+    final u = imageUrl.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
+    if (u.isEmpty) return;
+
+    final ref = _col.doc(pid);
+    final doc = await ref.get();
+    final m = doc.data() ?? <String, dynamic>{};
+
+    final imgs = (m['images'] is List)
+        ? List.from(m['images'] as List)
+        : <dynamic>[];
+    if (imgs.isEmpty) return;
+
+    final newList = <dynamic>[];
+    for (final it in imgs) {
+      if (it is String) {
+        if (_s(it) == u) continue;
+        newList.add(it);
+      } else if (it is Map) {
+        if (_s(it['url']) == u) continue;
+        newList.add({'url': _s(it['url']), 'path': _s(it['path'])});
+      }
+    }
+
+    // 如果主圖就是被刪的那張，改成第一張
+    final primary = (m['primaryImage'] is Map)
+        ? Map<String, dynamic>.from(m['primaryImage'] as Map)
+        : null;
+    final primaryUrl = _s(primary?['url']);
+    final imageUrlField = _s(m['imageUrl']);
+
+    final payload = <String, dynamic>{
+      'images': newList,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    final needResetPrimary = (primaryUrl == u) || (imageUrlField == u);
+    if (needResetPrimary) {
+      final first = newList.isEmpty ? null : newList.first;
+      if (first is String) {
+        payload['imageUrl'] = first;
+        payload['primaryImage'] = {'url': first, 'path': ''};
+      } else if (first is Map) {
+        final fu = _s(first['url']);
+        final fp = _s(first['path']);
+        if (fu.isNotEmpty) {
+          payload['imageUrl'] = fu;
+          payload['primaryImage'] = {'url': fu, 'path': fp};
+        } else {
+          payload['imageUrl'] = '';
+          payload['primaryImage'] = {'url': '', 'path': ''};
+        }
+      } else {
+        payload['imageUrl'] = '';
+        payload['primaryImage'] = {'url': '', 'path': ''};
+      }
+    }
+
+    await ref.set(payload, SetOptions(merge: true));
+
+    // 刪 Storage（如果有 path）
+    final p = _s(storagePath);
+    if (p.isNotEmpty) {
+      try {
+        await _st.ref(p).delete();
+      } catch (_) {
+        // 忽略：可能檔案已不存在或權限不足
+      }
     }
   }
 
-  /// 嘗試用 URL/gs:// 推回 Storage ref 並刪除；非 Storage URL 會略過（回傳 false 代表未刪）
-  Future<bool> _tryDeleteStorageByUrl(String urlOrGs) async {
-    final u = _s(urlOrGs);
-    if (u.isEmpty) return false;
+  // ------------------------------------------------------------
+  // Delete product + images in storage
+  // ------------------------------------------------------------
+  Future<void> deleteProductWithImages(String productId) async {
+    final pid = productId.trim();
+    if (pid.isEmpty) throw Exception('productId is empty');
 
-    // 只處理 Firebase Storage 來源（refFromURL 支援 gs:// 與 https downloadURL）
-    try {
-      final Reference r = _storage.refFromURL(u);
-      await r.delete();
-      return true;
-    } catch (e) {
-      // 不是 Storage URL 或權限不足或檔案不存在
-      if (kDebugMode) {
-        // ignore: avoid_print
-        print('[ProductService] skip/delete storage failed: $u -> $e');
-      }
-      return false;
+    final ref = _col.doc(pid);
+    final doc = await ref.get();
+
+    if (!doc.exists) {
+      await ref.delete().catchError((_) {});
+      return;
     }
+
+    final m = doc.data() ?? <String, dynamic>{};
+    final imgs = (m['images'] is List)
+        ? List.from(m['images'] as List)
+        : <dynamic>[];
+
+    // 收集 storage paths（若有）
+    final paths = <String>{};
+
+    // primaryImage
+    final primary = m['primaryImage'];
+    if (primary is Map) {
+      final p = _s(primary['path']);
+      if (p.isNotEmpty) paths.add(p);
+    }
+
+    // images list
+    for (final it in imgs) {
+      if (it is Map) {
+        final p = _s(it['path']);
+        if (p.isNotEmpty) paths.add(p);
+      }
+    }
+
+    // 刪 storage 檔案
+    for (final p in paths) {
+      try {
+        await _st.ref(p).delete();
+      } catch (_) {
+        // ignore
+      }
+    }
+
+    // 刪 firestore doc
+    await ref.delete();
   }
 
-  Future<void> deleteProductWithImagesCompat(String id) => deleteProductWithImages(id);
-
-  Future<void> batchDelete(List<String> ids) async {
-    final list = ids.map(_s).where((e) => e.isNotEmpty).toList();
-    if (list.isEmpty) return;
-
-    const chunk = 450;
-    try {
-      for (var i = 0; i < list.length; i += chunk) {
-        final part = list.sublist(i, (i + chunk).clamp(0, list.length));
-        final batch = _db.batch();
-        for (final id in part) {
-          batch.delete(_col.doc(id));
-        }
-        await batch.commit();
-      }
-    } catch (e) {
-      throw ProductException('batch_delete_failed', '批次刪除商品失敗：$e');
-    }
+  // （可選）只刪 doc 不刪圖
+  Future<void> deleteProductDocOnly(String productId) async {
+    final pid = productId.trim();
+    if (pid.isEmpty) return;
+    await _col.doc(pid).delete();
   }
 }

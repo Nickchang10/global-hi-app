@@ -1,327 +1,445 @@
+// lib/pages/admin/marketing/admin_marketing_dashboard_page.dart
+//
+// ✅ AdminMarketingDashboardPage（正式版｜完整版｜可直接編譯）
+// ------------------------------------------------------------
+// ✅ 修正：移除未使用的 intl import（不再 unused_import）
+// ✅ 功能：
+//   - KPI（啟用中的自動活動數 / 抽獎活動數 / 未發放中獎數）
+//   - 快速入口：
+//       1) AI 活動洞察
+//       2) 新增自動活動
+//       3) 自動活動報表
+//       4) 新增抽獎活動
+//       5) 抽獎中獎名單
+//
+// 依賴：cloud_firestore, flutter/material
+// ------------------------------------------------------------
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
-import 'package:intl/intl.dart';
 
-/// ✅ AdminMarketingDashboardPage（行銷中心儀表板｜完整版 v2.0.0）
-/// ------------------------------------------------------------
-/// - 整合 Firestore 集合：coupons / lotteries / segments / auto_campaigns
-/// - 指標：CTR、CVR、抽獎轉換率、自動派發成效
-/// - 圖表：CTR/CVR 對比、Top5 優惠券使用率、Top5 自動派發轉換量
-/// - 含完整錯誤處理與容錯保護
-/// ------------------------------------------------------------
-class AdminMarketingDashboardPage extends StatefulWidget {
+// 這些頁面你前面已經在專案中建立（若路徑不同自行改）
+import 'admin_ai_campaign_insight_page.dart';
+import 'admin_auto_campaign_edit_page.dart';
+import 'admin_auto_campaign_reports_page.dart';
+import 'admin_lottery_edit_page.dart';
+import 'admin_lottery_winners_page.dart';
+
+class AdminMarketingDashboardPage extends StatelessWidget {
   const AdminMarketingDashboardPage({super.key});
 
-  @override
-  State<AdminMarketingDashboardPage> createState() =>
-      _AdminMarketingDashboardPageState();
-}
-
-class _AdminMarketingDashboardPageState
-    extends State<AdminMarketingDashboardPage> {
-  bool _loading = true;
-  int couponCount = 0;
-  int activeCoupons = 0;
-  int lotteryCount = 0;
-  int activeLotteries = 0;
-  int segmentCount = 0;
-  int autoCampaigns = 0;
-
-  num avgCTR = 0;
-  num avgCVR = 0;
-  num avgLotteryCVR = 0;
-  num totalConversions = 0;
-
-  List<MapEntry<String, double>> topCoupons = [];
-  List<MapEntry<String, double>> topAuto = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
-
-  Future<void> _loadData() async {
-    setState(() => _loading = true);
-    try {
-      final fs = FirebaseFirestore.instance;
-
-      final couponSnap = await fs.collection('coupons').get();
-      final lotterySnap = await fs.collection('lotteries').get();
-      final segSnap = await fs.collection('segments').get();
-      final autoSnap = await fs.collection('auto_campaigns').get();
-
-      // 基本統計
-      couponCount = couponSnap.size;
-      activeCoupons = couponSnap.docs.where((d) => d['isActive'] == true).length;
-      lotteryCount = lotterySnap.size;
-      activeLotteries =
-          lotterySnap.docs.where((d) => d['isActive'] == true).length;
-      segmentCount = segSnap.size;
-      autoCampaigns = autoSnap.size;
-
-      // CTR / CVR
-      num totalIssued = 0, totalClicks = 0, totalUsed = 0;
-      for (final e in couponSnap.docs) {
-        final issued = (e['issuedCount'] ?? 0) as num;
-        final clicks = (e['clickCount'] ?? 0) as num;
-        final used = (e['usedCount'] ?? 0) as num;
-        if (issued > 0) {
-          totalIssued += issued;
-          totalClicks += clicks;
-          totalUsed += used;
-        }
-      }
-      avgCTR = totalIssued > 0 ? (totalClicks / totalIssued) * 100 : 0;
-      avgCVR = totalIssued > 0 ? (totalUsed / totalIssued) * 100 : 0;
-
-      // 抽獎平均轉換率
-      num totalParticipants = 0, totalWinners = 0;
-      for (final e in lotterySnap.docs) {
-        final p = (e['participants'] as List?)?.length ?? 0;
-        final w = (e['winners'] as List?)?.length ?? 0;
-        totalParticipants += p;
-        totalWinners += w;
-      }
-      avgLotteryCVR =
-          totalParticipants > 0 ? (totalWinners / totalParticipants) * 100 : 0;
-
-      // 自動派發總轉換量
-      totalConversions = autoSnap.docs.fold<num>(
-          0, (sum, e) => sum + ((e['conversionCount'] ?? 0) as num));
-
-      // Top 5 優惠券
-      final couponEntries = couponSnap.docs.map((e) {
-        final issued = (e['issuedCount'] ?? 0) as num;
-        final used = (e['usedCount'] ?? 0) as num;
-        final rate = issued > 0 ? (used / issued) * 100 : 0.0;
-        return MapEntry((e['title'] ?? '未命名').toString(), rate.toDouble());
-      }).toList()
-        ..sort((a, b) => b.value.compareTo(a.value));
-      topCoupons = couponEntries.take(5).toList();
-
-      // Top 5 自動派發活動
-      final autoEntries = autoSnap.docs.map((e) {
-        final conv = (e['conversionCount'] ?? 0) as num;
-        return MapEntry((e['title'] ?? '未命名').toString(), conv.toDouble());
-      }).toList()
-        ..sort((a, b) => b.value.compareTo(a.value));
-      topAuto = autoEntries.take(5).toList();
-
-      if (mounted) setState(() => _loading = false);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('資料讀取失敗：$e')));
-    }
-  }
+  // 依你的 Firestore 命名調整
+  static const String _colAutoCampaigns = 'auto_campaigns';
+  static const String _colAutoReports = 'auto_campaign_reports';
+  static const String _colLotteries = 'lotteries';
+  static const String _colLotteryWinners = 'lottery_winners';
+  static const String _colAiInsights = 'ai_campaign_insights';
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
+    final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('行銷中心儀表板'),
-        actions: [
-          IconButton(onPressed: _loadData, icon: const Icon(Icons.refresh))
-        ],
-      ),
+      appBar: AppBar(title: const Text('行銷儀表板')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _summaryCards(),
-          const SizedBox(height: 20),
-          _buildRateChart('優惠券 CTR / CVR', avgCTR.toDouble(), avgCVR.toDouble()),
-          const SizedBox(height: 20),
-          _buildBarChart('Top 5 優惠券使用率', topCoupons, Colors.green),
-          const SizedBox(height: 20),
-          _buildBarChart('Top 5 自動派發轉換量', topAuto, Colors.orange),
+          Text(
+            'KPI',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _kpiRow(context),
+          const SizedBox(height: 18),
+
+          Text(
+            '快速入口',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _quickActions(context),
+          const SizedBox(height: 18),
+
+          Text(
+            '資料集合（debug）',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _collectionInfoCard(context),
+          const SizedBox(height: 24),
         ],
       ),
     );
   }
 
-  // =====================================================
-  // 統計卡片區
-  // =====================================================
-  Widget _summaryCards() {
-    return Wrap(
-      spacing: 12,
-      runSpacing: 12,
+  Widget _kpiRow(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, c) {
+        final w = c.maxWidth;
+        final crossAxisCount = w >= 900
+            ? 4
+            : w >= 600
+            ? 3
+            : 2;
+
+        final tiles = <Widget>[
+          _KpiTile(
+            title: '啟用中的自動活動',
+            icon: Icons.auto_awesome,
+            stream: FirebaseFirestore.instance
+                .collection(_colAutoCampaigns)
+                .where('enabled', isEqualTo: true)
+                .snapshots(),
+            valueBuilder: (snap) => snap.docs.length.toString(),
+            subtitleBuilder: (_) => 'enabled=true',
+          ),
+          _KpiTile(
+            title: '自動活動報表筆數',
+            icon: Icons.analytics,
+            stream: FirebaseFirestore.instance
+                .collection(_colAutoReports)
+                .snapshots(),
+            valueBuilder: (snap) => snap.docs.length.toString(),
+            subtitleBuilder: (_) => _colAutoReports,
+          ),
+          _KpiTile(
+            title: '抽獎活動數',
+            icon: Icons.casino,
+            stream: FirebaseFirestore.instance
+                .collection(_colLotteries)
+                .snapshots(),
+            valueBuilder: (snap) => snap.docs.length.toString(),
+            subtitleBuilder: (_) => _colLotteries,
+          ),
+          _KpiTile(
+            title: '未發放中獎數',
+            icon: Icons.card_giftcard,
+            stream: FirebaseFirestore.instance
+                .collection(_colLotteryWinners)
+                .where('fulfilled', isEqualTo: false)
+                .snapshots(),
+            valueBuilder: (snap) => snap.docs.length.toString(),
+            subtitleBuilder: (_) => 'fulfilled=false',
+          ),
+        ];
+
+        return GridView.count(
+          crossAxisCount: crossAxisCount,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: 2.6,
+          children: tiles,
+        );
+      },
+    );
+  }
+
+  Widget _quickActions(BuildContext context) {
+    return Column(
       children: [
-        _statCard('優惠券', '$activeCoupons / $couponCount', Icons.local_offer),
-        _statCard('抽獎活動', '$activeLotteries / $lotteryCount', Icons.casino),
-        _statCard('受眾分群', '$segmentCount', Icons.people_alt),
-        _statCard('自動派發', '$autoCampaigns', Icons.campaign),
-        _statCard('平均 CTR', '${avgCTR.toStringAsFixed(1)}%', Icons.touch_app),
-        _statCard('平均 CVR', '${avgCVR.toStringAsFixed(1)}%', Icons.trending_up),
-        _statCard('抽獎轉換率', '${avgLotteryCVR.toStringAsFixed(1)}%', Icons.card_giftcard),
-        _statCard('總轉換量', '$totalConversions', Icons.auto_graph),
+        _NavCard(
+          title: 'AI 活動洞察',
+          subtitle: '查看 AI 分眾洞察與指標彙總',
+          icon: Icons.insights,
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const AdminAiCampaignInsightPage(
+                collectionName: _colAiInsights,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: _NavCard(
+                title: '新增自動活動',
+                subtitle: '建立 Auto Campaign',
+                icon: Icons.add_circle,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AdminAutoCampaignEditPage(
+                      campaignId: null,
+                      collectionName: _colAutoCampaigns,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _NavCard(
+                title: '自動活動報表',
+                subtitle: '查看送達/開啟/點擊/轉換等指標',
+                icon: Icons.bar_chart,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AdminAutoCampaignReportsPage(
+                      collectionName: _colAutoReports,
+                      campaignId: null,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: _NavCard(
+                title: '新增抽獎活動',
+                subtitle: '建立 Lottery 活動與獎品',
+                icon: Icons.casino_outlined,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AdminLotteryEditPage(
+                      lotteryId: null,
+                      collectionName: _colLotteries,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _NavCard(
+                title: '抽獎中獎名單',
+                subtitle: '查詢中獎紀錄 / 標記已發放',
+                icon: Icons.emoji_events,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AdminLotteryWinnersPage(
+                      lotteryId: null,
+                      collectionName: _colLotteryWinners,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }
 
-  Widget _statCard(String label, String value, IconData icon) {
-    return Container(
-      width: 170,
-      height: 90,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [BoxShadow(color: Colors.grey.shade300, blurRadius: 4)],
+  Widget _collectionInfoCard(BuildContext context) {
+    final now = DateTime.now();
+    String two(int x) => x.toString().padLeft(2, '0');
+    final stamp =
+        '${now.year}-${two(now.month)}-${two(now.day)} ${two(now.hour)}:${two(now.minute)}';
+
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('更新時間：$stamp', style: TextStyle(color: Colors.grey[700])),
+            const SizedBox(height: 10),
+            _kv('auto_campaigns', _colAutoCampaigns),
+            _kv('auto_campaign_reports', _colAutoReports),
+            _kv('lotteries', _colLotteries),
+            _kv('lottery_winners', _colLotteryWinners),
+            _kv('ai_campaign_insights', _colAiInsights),
+          ],
+        ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
         children: [
-          Icon(icon, color: Colors.blueAccent),
-          const SizedBox(height: 6),
-          Text(value,
-              style: const TextStyle(
-                  fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black)),
-          Text(label, style: const TextStyle(color: Colors.grey)),
+          SizedBox(
+            width: 170,
+            child: Text(k, style: const TextStyle(fontWeight: FontWeight.w800)),
+          ),
+          Expanded(child: Text(v)),
         ],
       ),
     );
   }
+}
 
-  // =====================================================
-  // CTR / CVR 比較圖
-  // =====================================================
-  Widget _buildRateChart(String title, double ctr, double cvr) {
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 180,
-              child: BarChart(
-                BarChartData(
-                  barGroups: [
-                    BarChartGroupData(x: 0, barRods: [
-                      BarChartRodData(toY: ctr, color: Colors.blueAccent, width: 40)
-                    ]),
-                    BarChartGroupData(x: 1, barRods: [
-                      BarChartRodData(toY: cvr, color: Colors.green, width: 40)
-                    ]),
-                  ],
-                  titlesData: FlTitlesData(
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        getTitlesWidget: (v, _) {
-                          if (v.toInt() == 0) return const Text('CTR');
-                          if (v.toInt() == 1) return const Text('CVR');
-                          return const SizedBox.shrink();
-                        },
+class _NavCard extends StatelessWidget {
+  const _NavCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Card(
+        elevation: 0.8,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Icon(icon, size: 26, color: theme.colorScheme.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
                       ),
                     ),
-                    leftTitles: AxisTitles(
-                      sideTitles: SideTitles(showTitles: true, reservedSize: 40),
-                    ),
-                  ),
-                  gridData: FlGridData(show: true),
-                  borderData: FlBorderData(show: false),
-                  maxY: 100,
+                    const SizedBox(height: 4),
+                    Text(subtitle, style: TextStyle(color: Colors.grey[700])),
+                  ],
                 ),
               ),
-            ),
-          ],
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _KpiTile extends StatelessWidget {
+  const _KpiTile({
+    required this.title,
+    required this.icon,
+    required this.stream,
+    required this.valueBuilder,
+    required this.subtitleBuilder,
+  });
+
+  final String title;
+  final IconData icon;
+  final Stream<QuerySnapshot<Map<String, dynamic>>> stream;
+  final String Function(QuerySnapshot<Map<String, dynamic>> snap) valueBuilder;
+  final String Function(QuerySnapshot<Map<String, dynamic>> snap)
+  subtitleBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: stream,
+          builder: (context, snap) {
+            if (snap.hasError) {
+              return _kpiContent(
+                theme,
+                value: '—',
+                subtitle: '讀取失敗',
+                icon: icon,
+                title: title,
+                isError: true,
+              );
+            }
+            if (!snap.hasData) {
+              return _kpiContent(
+                theme,
+                value: '…',
+                subtitle: '載入中',
+                icon: icon,
+                title: title,
+              );
+            }
+            final s = snap.data!;
+            return _kpiContent(
+              theme,
+              value: valueBuilder(s),
+              subtitle: subtitleBuilder(s),
+              icon: icon,
+              title: title,
+            );
+          },
         ),
       ),
     );
   }
 
-  // =====================================================
-  // Top 5 柱狀圖（優惠券 / 自動派發）
-  // =====================================================
-  Widget _buildBarChart(String title, List<MapEntry<String, double>> entries, Color color) {
-    if (entries.isEmpty) {
-      return Card(
-        elevation: 2,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Text('$title：無資料'),
+  Widget _kpiContent(
+    ThemeData theme, {
+    required String value,
+    required String subtitle,
+    required IconData icon,
+    required String title,
+    bool isError = false,
+  }) {
+    return Row(
+      children: [
+        Icon(
+          icon,
+          size: 22,
+          color: isError ? Colors.red : theme.colorScheme.primary,
         ),
-      );
-    }
-
-    final maxY =
-        entries.map((e) => e.value).reduce((a, b) => a > b ? a : b) + 5.0;
-
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 240,
-              child: BarChart(
-                BarChartData(
-                  alignment: BarChartAlignment.spaceAround,
-                  borderData: FlBorderData(show: false),
-                  gridData: FlGridData(show: false),
-                  titlesData: FlTitlesData(
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 70,
-                        getTitlesWidget: (v, meta) {
-                          final i = v.toInt();
-                          if (i < 0 || i >= entries.length)
-                            return const SizedBox.shrink();
-                          return Text(
-                            entries[i].key,
-                            style: const TextStyle(fontSize: 10),
-                            textAlign: TextAlign.center,
-                          );
-                        },
-                      ),
-                    ),
-                    leftTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 40,
-                        getTitlesWidget: (v, _) =>
-                            Text('${v.toInt()}'),
-                      ),
-                    ),
-                  ),
-                  maxY: maxY,
-                  barGroups: [
-                    for (int i = 0; i < entries.length; i++)
-                      BarChartGroupData(x: i, barRods: [
-                        BarChartRodData(
-                          toY: entries[i].value,
-                          color: color,
-                          width: 14,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ]),
-                  ],
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: Colors.grey[700],
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 4),
+              Text(
+                value,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: Colors.grey[600],
+                ),
+              ),
+            ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }

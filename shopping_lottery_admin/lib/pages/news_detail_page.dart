@@ -105,9 +105,7 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
   @override
   Widget build(BuildContext context) {
     if (_id.isEmpty) {
-      return const Scaffold(
-        body: Center(child: Text('newsId 不可為空')),
-      );
+      return const Scaffold(body: Center(child: Text('newsId 不可為空')));
     }
 
     final cs = Theme.of(context).colorScheme;
@@ -131,10 +129,8 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
               if (kDebugMode)
                 IconButton(
                   tooltip: 'Debug：複製 Firestore doc 路徑',
-                  onPressed: () => _copy(
-                    '${widget.collection}/$_id',
-                    done: '已複製 doc 路徑',
-                  ),
+                  onPressed: () =>
+                      _copy('${widget.collection}/$_id', done: '已複製 doc 路徑'),
                   icon: const Icon(Icons.bug_report_outlined),
                 ),
               const SizedBox(width: 6),
@@ -157,13 +153,12 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
               final data = snap.data?.data() ?? <String, dynamic>{};
 
               if (!exists) {
-                return _ErrorBody(
-                  message: '此消息不存在或已被刪除。\n\nnewsId：$_id',
-                );
+                return _ErrorBody(message: '此消息不存在或已被刪除。\n\nnewsId：$_id');
               }
 
-              final title =
-                  _s(data['title']).isEmpty ? '（未命名）' : _s(data['title']);
+              final title = _s(data['title']).isEmpty
+                  ? '（未命名）'
+                  : _s(data['title']);
               final summary = _s(data['summary']);
               final content = _s(data['content']);
               final imageUrl = _s(data['imageUrl']);
@@ -180,8 +175,8 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
                   Text(
                     title,
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.w900,
-                        ),
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                   const SizedBox(height: 10),
 
@@ -212,7 +207,9 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
                           imageUrl,
                           fit: BoxFit.cover,
                           errorBuilder: (_, __, ___) => Container(
-                            color: cs.surfaceContainerHighest.withOpacity(0.25),
+                            color: cs.surfaceContainerHighest.withValues(
+                              alpha: 0.25,
+                            ),
                             child: const Center(
                               child: Icon(Icons.broken_image_outlined),
                             ),
@@ -237,8 +234,12 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: cs.outline.withOpacity(0.18)),
-                        color: cs.surfaceContainerHighest.withOpacity(0.22),
+                        border: Border.all(
+                          color: cs.outline.withValues(alpha: 0.18),
+                        ),
+                        color: cs.surfaceContainerHighest.withValues(
+                          alpha: 0.22,
+                        ),
                       ),
                       child: Text(summary),
                     ),
@@ -258,8 +259,10 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: cs.outline.withOpacity(0.18)),
-                      color: cs.surfaceContainerHighest.withOpacity(0.22),
+                      border: Border.all(
+                        color: cs.outline.withValues(alpha: 0.18),
+                      ),
+                      color: cs.surfaceContainerHighest.withValues(alpha: 0.22),
                     ),
                     child: Text(displayBody),
                   ),
@@ -281,10 +284,8 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
                         label: const Text('複製標題'),
                       ),
                       OutlinedButton.icon(
-                        onPressed: () => _copy(
-                          data.toString(),
-                          done: '已複製資料（toString）',
-                        ),
+                        onPressed: () =>
+                            _copy(data.toString(), done: '已複製資料（toString）'),
                         icon: const Icon(Icons.data_object),
                         label: const Text('複製資料'),
                       ),
@@ -296,8 +297,10 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
                     const Divider(),
                     Text(
                       'Debug：doc=${widget.collection}/$_id exists=$exists',
-                      style:
-                          TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                      style: TextStyle(
+                        color: cs.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ],
@@ -311,8 +314,7 @@ class _NewsDetailPageState extends State<NewsDetailPage> {
             left: 0,
             right: 0,
             bottom: 0,
-            child:
-                _BusyBar(label: _busyLabel.isEmpty ? '處理中...' : _busyLabel),
+            child: _BusyBar(label: _busyLabel.isEmpty ? '處理中...' : _busyLabel),
           ),
       ],
     );
@@ -332,8 +334,8 @@ class _MetaChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: cs.outline.withOpacity(0.2)),
-        color: cs.surfaceContainerHighest.withOpacity(0.18),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.2)),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.18),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,

@@ -117,10 +117,34 @@ class _HomePageState extends State<HomePage> {
   ];
 
   final List<Map<String, dynamic>> _healthMetrics = [
-    {'key': 'steps', 'label': '步數', 'value': '4,820', 'unit': '步', 'icon': Icons.directions_walk},
-    {'key': 'sleep', 'label': '睡眠', 'value': '7.1', 'unit': '小時', 'icon': Icons.bedtime_outlined},
-    {'key': 'hr', 'label': '心率', 'value': '76', 'unit': 'bpm', 'icon': Icons.favorite_border},
-    {'key': 'bp', 'label': '血壓', 'value': '118/76', 'unit': '', 'icon': Icons.monitor_heart_outlined},
+    {
+      'key': 'steps',
+      'label': '步數',
+      'value': '4,820',
+      'unit': '步',
+      'icon': Icons.directions_walk,
+    },
+    {
+      'key': 'sleep',
+      'label': '睡眠',
+      'value': '7.1',
+      'unit': '小時',
+      'icon': Icons.bedtime_outlined,
+    },
+    {
+      'key': 'hr',
+      'label': '心率',
+      'value': '76',
+      'unit': 'bpm',
+      'icon': Icons.favorite_border,
+    },
+    {
+      'key': 'bp',
+      'label': '血壓',
+      'value': '118/76',
+      'unit': '',
+      'icon': Icons.monitor_heart_outlined,
+    },
   ];
 
   final List<Map<String, dynamic>> _healthArticles = [
@@ -269,16 +293,22 @@ class _HomePageState extends State<HomePage> {
   static const _configPathDoc = 'home_layout';
 
   List<_ModuleCfg> _defaultModules() => const [
-        _ModuleCfg(id: 'push', label: '活動推播', enabled: true),
-        _ModuleCfg(id: 'task', label: '任務卡', enabled: true),
-        _ModuleCfg(id: 'flash_sale', label: '限時促銷', enabled: true),
-        _ModuleCfg(id: 'videos', label: '健康影片', enabled: true),
-        _ModuleCfg(id: 'health', label: '健康資訊', enabled: true),
-        _ModuleCfg(id: 'articles', label: '健康文章', enabled: true),
-        _ModuleCfg(id: 'featured', label: '精選熱門', enabled: true),
-      ];
+    _ModuleCfg(id: 'push', label: '活動推播', enabled: true),
+    _ModuleCfg(id: 'task', label: '任務卡', enabled: true),
+    _ModuleCfg(id: 'flash_sale', label: '限時促銷', enabled: true),
+    _ModuleCfg(id: 'videos', label: '健康影片', enabled: true),
+    _ModuleCfg(id: 'health', label: '健康資訊', enabled: true),
+    _ModuleCfg(id: 'articles', label: '健康文章', enabled: true),
+    _ModuleCfg(id: 'featured', label: '精選熱門', enabled: true),
+  ];
 
-  List<String> _defaultFooterTabs() => const ['home', 'shop', 'task', 'interact', 'mine'];
+  List<String> _defaultFooterTabs() => const [
+    'home',
+    'shop',
+    'task',
+    'interact',
+    'mine',
+  ];
 
   String _normalizeModuleId(String raw) {
     final id = raw.trim().toLowerCase();
@@ -352,7 +382,10 @@ class _HomePageState extends State<HomePage> {
 
   List<String> _parseFooterTabs(dynamic raw) {
     if (raw is! List) return _defaultFooterTabs();
-    final tabs = raw.map((e) => e.toString().trim().toLowerCase()).where((e) => e.isNotEmpty).toList();
+    final tabs = raw
+        .map((e) => e.toString().trim().toLowerCase())
+        .where((e) => e.isNotEmpty)
+        .toList();
     if (tabs.isEmpty) return _defaultFooterTabs();
     if (!tabs.contains('home')) tabs.insert(0, 'home');
     return tabs;
@@ -364,7 +397,10 @@ class _HomePageState extends State<HomePage> {
     final out = <Map<String, dynamic>>[];
 
     if (raw.isNotEmpty && raw.first is String) {
-      final urls = raw.map((e) => e.toString()).where((e) => e.trim().isNotEmpty).toList();
+      final urls = raw
+          .map((e) => e.toString())
+          .where((e) => e.trim().isNotEmpty)
+          .toList();
       if (urls.isEmpty) return _bannersFallback;
 
       for (var i = 0; i < urls.length; i++) {
@@ -423,129 +459,128 @@ class _HomePageState extends State<HomePage> {
 
     final builders = <String, List<Widget> Function()>{
       'banner': () => [
-            _BannerCarousel(
-              banners: banners,
-              onPrimary: () {
-                final b0 = banners.isNotEmpty ? banners.first : null;
-                final route = (b0?['primaryRoute'] ?? '/shop').toString();
-                _safeNav(route);
-              },
-              onSecondary: () {
-                final b0 = banners.isNotEmpty ? banners.first : null;
-                final route = (b0?['secondaryRoute'] ?? '/lotterys').toString();
-                _safeNav(route);
-              },
-            ),
-            const SizedBox(height: 12),
-          ],
+        _BannerCarousel(
+          banners: banners,
+          onPrimary: () {
+            final b0 = banners.isNotEmpty ? banners.first : null;
+            final route = (b0?['primaryRoute'] ?? '/shop').toString();
+            _safeNav(route);
+          },
+          onSecondary: () {
+            final b0 = banners.isNotEmpty ? banners.first : null;
+            final route = (b0?['secondaryRoute'] ?? '/lotterys').toString();
+            _safeNav(route);
+          },
+        ),
+        const SizedBox(height: 12),
+      ],
       'push': () => [
-            _SectionHeader(
-              title: '活動推播',
-              actionText: '查看全部',
-              onAction: () => _safeNav('/notifications'),
-            ),
-            _PushPreviewCard(
-              items: _pushItems,
-              onTap: () => _openPush(topPush),
-            ),
-            const SizedBox(height: 12),
-          ],
+        _SectionHeader(
+          title: '活動推播',
+          actionText: '查看全部',
+          onAction: () => _safeNav('/notifications'),
+        ),
+        _PushPreviewCard(items: _pushItems, onTap: () => _openPush(topPush)),
+        const SizedBox(height: 12),
+      ],
       'task': () => [
-            _TaskCard(
-              countdownText: _fmtCountdown(_taskCountdown),
-              onGo: () => _safeNav('/tasks'),
-            ),
-            const SizedBox(height: 12),
-          ],
+        _TaskCard(
+          countdownText: _fmtCountdown(_taskCountdown),
+          onGo: () => _safeNav('/tasks'),
+        ),
+        const SizedBox(height: 12),
+      ],
       'flash_sale': () => [
-            _SectionHeader(
-              title: '限時促銷',
-              actionText: '查看更多',
-              onAction: () => _safeNav('/shop'),
-            ),
-            const SizedBox(height: 8),
-            _HorizontalCards(
-              itemCount: _promos.length,
-              itemBuilder: (i) => _ProductMiniCard(
-                name: (_promos[i]['name'] ?? '').toString(),
-                price: _promos[i]['price'],
-                tag: (_promos[i]['tag'] ?? '').toString(),
-                imageUrl: (_promos[i]['image'] ?? '').toString(),
-                onTap: () => _toast('促銷商品：${(_promos[i]['name'] ?? '').toString()}（模板）'),
-              ),
-            ),
-            const SizedBox(height: 14),
-          ],
+        _SectionHeader(
+          title: '限時促銷',
+          actionText: '查看更多',
+          onAction: () => _safeNav('/shop'),
+        ),
+        const SizedBox(height: 8),
+        _HorizontalCards(
+          itemCount: _promos.length,
+          itemBuilder: (i) => _ProductMiniCard(
+            name: (_promos[i]['name'] ?? '').toString(),
+            price: _promos[i]['price'],
+            tag: (_promos[i]['tag'] ?? '').toString(),
+            imageUrl: (_promos[i]['image'] ?? '').toString(),
+            onTap: () =>
+                _toast('促銷商品：${(_promos[i]['name'] ?? '').toString()}（模板）'),
+          ),
+        ),
+        const SizedBox(height: 14),
+      ],
       'videos': () => [
-            _SectionHeader(
-              title: '健康影片',
-              actionText: '查看更多',
-              onAction: () => _safeNav('/health/videos'),
-            ),
-            const SizedBox(height: 8),
-            _HorizontalCards(
-              itemCount: _videos.length,
-              itemBuilder: (i) => _VideoCard(
-                title: (_videos[i]['title'] ?? '').toString(),
-                duration: (_videos[i]['duration'] ?? '').toString(),
-                thumbUrl: (_videos[i]['thumb'] ?? '').toString(),
-                onTap: () => _toast('播放影片（模板）：${(_videos[i]['title'] ?? '').toString()}'),
-              ),
-            ),
-            const SizedBox(height: 14),
-          ],
+        _SectionHeader(
+          title: '健康影片',
+          actionText: '查看更多',
+          onAction: () => _safeNav('/health/videos'),
+        ),
+        const SizedBox(height: 8),
+        _HorizontalCards(
+          itemCount: _videos.length,
+          itemBuilder: (i) => _VideoCard(
+            title: (_videos[i]['title'] ?? '').toString(),
+            duration: (_videos[i]['duration'] ?? '').toString(),
+            thumbUrl: (_videos[i]['thumb'] ?? '').toString(),
+            onTap: () =>
+                _toast('播放影片（模板）：${(_videos[i]['title'] ?? '').toString()}'),
+          ),
+        ),
+        const SizedBox(height: 14),
+      ],
       'health': () => [
-            _SectionHeader(
-              title: '健康資訊（Osmile）',
-              actionText: '進入健康',
-              onAction: () => _safeNav('/health'),
-            ),
-            const SizedBox(height: 8),
-            _HealthSummaryCard(
-              metrics: _healthMetrics,
-              onMetricTap: (_) => _safeNav('/health'),
-              onQuickAction: (action) {
-                switch (action) {
-                  case 'health':
-                    _safeNav('/health');
-                    break;
-                  case 'support':
-                    _safeNav('/support'); // ✅ 真切 tab
-                    break;
-                  case 'map':
-                    _safeNav('/tracking');
-                    break;
-                  case 'sos':
-                    _toast('SOS（模板）：可在此呼叫 SOSService.triggerSOS()');
-                    break;
-                  default:
-                    _toast('快捷：$action');
-                }
-              },
-            ),
-            const SizedBox(height: 10),
-          ],
+        _SectionHeader(
+          title: '健康資訊（Osmile）',
+          actionText: '進入健康',
+          onAction: () => _safeNav('/health'),
+        ),
+        const SizedBox(height: 8),
+        _HealthSummaryCard(
+          metrics: _healthMetrics,
+          onMetricTap: (_) => _safeNav('/health'),
+          onQuickAction: (action) {
+            switch (action) {
+              case 'health':
+                _safeNav('/health');
+                break;
+              case 'support':
+                _safeNav('/support'); // ✅ 真切 tab
+                break;
+              case 'map':
+                _safeNav('/tracking');
+                break;
+              case 'sos':
+                _toast('SOS（模板）：可在此呼叫 SOSService.triggerSOS()');
+                break;
+              default:
+                _toast('快捷：$action');
+            }
+          },
+        ),
+        const SizedBox(height: 10),
+      ],
       'articles': () => [
-            _HealthArticlesList(
-              items: _healthArticles,
-              onTap: () => _safeNav('/health/articles'),
-            ),
-            const SizedBox(height: 14),
-          ],
+        _HealthArticlesList(
+          items: _healthArticles,
+          onTap: () => _safeNav('/health/articles'),
+        ),
+        const SizedBox(height: 14),
+      ],
       'featured': () => [
-            _SectionHeader(
-              title: '精選 & 熱門推薦',
-              actionText: '查看更多',
-              onAction: () => _safeNav('/shop'),
-            ),
-            const SizedBox(height: 8),
-            _FeaturedGrid(
-              items: _featuredHot,
-              fmtMoney: _fmtMoney,
-              onTapItem: (m) => _toast('推薦商品（模板）：${(m['name'] ?? '').toString()}'),
-            ),
-            const SizedBox(height: 10),
-          ],
+        _SectionHeader(
+          title: '精選 & 熱門推薦',
+          actionText: '查看更多',
+          onAction: () => _safeNav('/shop'),
+        ),
+        const SizedBox(height: 8),
+        _FeaturedGrid(
+          items: _featuredHot,
+          fmtMoney: _fmtMoney,
+          onTapItem: (m) => _toast('推薦商品（模板）：${(m['name'] ?? '').toString()}'),
+        ),
+        const SizedBox(height: 10),
+      ],
     };
 
     final widgets = <Widget>[...builders['banner']!.call()];
@@ -565,7 +600,9 @@ class _HomePageState extends State<HomePage> {
   // =========================
   @override
   Widget build(BuildContext context) {
-    final docRef = FirebaseFirestore.instance.collection(_configPathCollection).doc(_configPathDoc);
+    final docRef = FirebaseFirestore.instance
+        .collection(_configPathCollection)
+        .doc(_configPathDoc);
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: docRef.snapshots(),
@@ -587,7 +624,10 @@ class _HomePageState extends State<HomePage> {
             backgroundColor: Colors.white,
             elevation: 0.6,
             centerTitle: true,
-            title: const Text('Osmile 商城', style: TextStyle(fontWeight: FontWeight.w900)),
+            title: const Text(
+              'Osmile 商城',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
             actions: [
               Padding(
                 padding: const EdgeInsets.only(right: 6),
@@ -608,7 +648,10 @@ class _HomePageState extends State<HomePage> {
                             decoration: BoxDecoration(
                               color: Colors.redAccent,
                               shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 1.3),
+                              border: Border.all(
+                                color: Colors.white,
+                                width: 1.3,
+                              ),
                             ),
                           ),
                         ),
@@ -623,7 +666,9 @@ class _HomePageState extends State<HomePage> {
           body: RefreshIndicator(
             onRefresh: () async {
               try {
-                await docRef.get(const GetOptions(source: Source.serverAndCache));
+                await docRef.get(
+                  const GetOptions(source: Source.serverAndCache),
+                );
                 if (!mounted) return;
                 _toast('已更新首頁（後台設定已同步）');
               } catch (_) {
@@ -640,9 +685,11 @@ class _HomePageState extends State<HomePage> {
                     padding: const EdgeInsets.all(12),
                     margin: const EdgeInsets.only(bottom: 12),
                     decoration: BoxDecoration(
-                      color: Colors.redAccent.withOpacity(0.08),
+                      color: Colors.redAccent.withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.redAccent.withOpacity(0.18)),
+                      border: Border.all(
+                        color: Colors.redAccent.withValues(alpha: 0.18),
+                      ),
                     ),
                     child: Text(
                       '讀取後台設定失敗：${snap.error}\n將以模板模式顯示。',
@@ -654,9 +701,11 @@ class _HomePageState extends State<HomePage> {
                     padding: const EdgeInsets.all(12),
                     margin: const EdgeInsets.only(bottom: 12),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.04),
+                      color: Colors.black.withValues(alpha: 0.04),
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.black.withOpacity(0.06)),
+                      border: Border.all(
+                        color: Colors.black.withValues(alpha: 0.06),
+                      ),
                     ),
                     child: const Text(
                       '載入中：正在同步後台版面設定…',
@@ -678,7 +727,11 @@ class _ModuleCfg {
   final String label;
   final bool enabled;
 
-  const _ModuleCfg({required this.id, required this.label, required this.enabled});
+  const _ModuleCfg({
+    required this.id,
+    required this.label,
+    required this.enabled,
+  });
 }
 
 // =====================================================
@@ -690,13 +743,22 @@ class _SectionHeader extends StatelessWidget {
   final String actionText;
   final VoidCallback onAction;
 
-  const _SectionHeader({required this.title, required this.actionText, required this.onAction});
+  const _SectionHeader({
+    required this.title,
+    required this.actionText,
+    required this.onAction,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900))),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+          ),
+        ),
         TextButton(onPressed: onAction, child: Text(actionText)),
       ],
     );
@@ -708,7 +770,11 @@ class _BannerCarousel extends StatefulWidget {
   final VoidCallback onPrimary;
   final VoidCallback onSecondary;
 
-  const _BannerCarousel({required this.banners, required this.onPrimary, required this.onSecondary});
+  const _BannerCarousel({
+    required this.banners,
+    required this.onPrimary,
+    required this.onSecondary,
+  });
 
   @override
   State<_BannerCarousel> createState() => _BannerCarouselState();
@@ -746,11 +812,17 @@ class _BannerCarouselState extends State<_BannerCarousel> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      _NetImage(url: (b['image'] ?? '').toString(), fit: BoxFit.cover),
+                      _NetImage(
+                        url: (b['image'] ?? '').toString(),
+                        fit: BoxFit.cover,
+                      ),
                       Container(
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
-                            colors: [Colors.black.withOpacity(0.55), Colors.black.withOpacity(0.05)],
+                            colors: [
+                              Colors.black.withValues(alpha: 0.55),
+                              Colors.black.withValues(alpha: 0.05),
+                            ],
                             begin: Alignment.bottomLeft,
                             end: Alignment.topRight,
                           ),
@@ -765,14 +837,21 @@ class _BannerCarouselState extends State<_BannerCarousel> {
                           children: [
                             Text(
                               (b['title'] ?? '').toString(),
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w900,
+                                fontSize: 16,
+                              ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                             const SizedBox(height: 4),
                             Text(
                               (b['subtitle'] ?? '').toString(),
-                              style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 12),
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.9),
+                                fontSize: 12,
+                              ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -785,12 +864,19 @@ class _BannerCarouselState extends State<_BannerCarousel> {
                                     backgroundColor: Colors.orangeAccent,
                                     foregroundColor: Colors.white,
                                     elevation: 0,
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 14,
+                                      vertical: 10,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
                                   ),
                                   child: Text(
                                     (b['primaryText'] ?? '立即購買').toString(),
-                                    style: const TextStyle(fontWeight: FontWeight.w900),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(width: 10),
@@ -798,13 +884,24 @@ class _BannerCarouselState extends State<_BannerCarousel> {
                                   onPressed: widget.onSecondary,
                                   style: OutlinedButton.styleFrom(
                                     foregroundColor: Colors.white,
-                                    side: BorderSide(color: Colors.white.withOpacity(0.7)),
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                                    side: BorderSide(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.7,
+                                      ),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 14,
+                                      vertical: 10,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
                                   ),
                                   child: Text(
                                     (b['secondaryText'] ?? '今日抽獎').toString(),
-                                    style: const TextStyle(fontWeight: FontWeight.w900),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                    ),
                                   ),
                                 ),
                               ],
@@ -869,7 +966,13 @@ class _PushPreviewCard extends StatelessWidget {
           color: Colors.white,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: Colors.grey.shade200),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10, offset: const Offset(0, 6))],
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.03),
+              blurRadius: 10,
+              offset: const Offset(0, 6),
+            ),
+          ],
         ),
         child: Row(
           children: [
@@ -877,15 +980,24 @@ class _PushPreviewCard extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: Colors.orangeAccent.withOpacity(0.16),
+                color: Colors.orangeAccent.withValues(alpha: 0.16),
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: const Icon(Icons.campaign_outlined, color: Colors.orangeAccent),
+              child: const Icon(
+                Icons.campaign_outlined,
+                color: Colors.orangeAccent,
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: top == null
-                  ? Text('目前沒有推播', style: TextStyle(color: Colors.grey.shade700, fontWeight: FontWeight.w700))
+                  ? Text(
+                      '目前沒有推播',
+                      style: TextStyle(
+                        color: Colors.grey.shade700,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    )
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -894,14 +1006,23 @@ class _PushPreviewCard extends StatelessWidget {
                             Expanded(
                               child: Text(
                                 (top['title'] ?? '活動').toString(),
-                                style: const TextStyle(fontWeight: FontWeight.w900),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
                             Text(
-                              _fmtTime(top['time'] is DateTime ? top['time'] as DateTime : null),
-                              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                              _fmtTime(
+                                top['time'] is DateTime
+                                    ? top['time'] as DateTime
+                                    : null,
+                              ),
+                              style: TextStyle(
+                                color: Colors.grey.shade500,
+                                fontSize: 12,
+                              ),
                             ),
                           ],
                         ),
@@ -945,18 +1066,30 @@ class _TaskCard extends StatelessWidget {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: _HomePageState._brand.withOpacity(0.12),
+              color: _HomePageState._brand.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: const Icon(Icons.flag_outlined, color: _HomePageState._brand),
+            child: const Icon(
+              Icons.flag_outlined,
+              color: _HomePageState._brand,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('每日任務：完成簽到 / 抽獎可得 +50 積分', style: TextStyle(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 4),
-              Text('剩餘 $countdownText', style: const TextStyle(color: Colors.redAccent)),
-            ]),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '每日任務：完成簽到 / 抽獎可得 +50 積分',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '剩餘 $countdownText',
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
+              ],
+            ),
           ),
           ElevatedButton(
             onPressed: onGo,
@@ -964,10 +1097,15 @@ class _TaskCard extends StatelessWidget {
               backgroundColor: Colors.orangeAccent,
               foregroundColor: Colors.white,
               elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(999),
+              ),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             ),
-            child: const Text('去完成', style: TextStyle(fontWeight: FontWeight.w900)),
+            child: const Text(
+              '去完成',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
           ),
         ],
       ),
@@ -1013,7 +1151,9 @@ class _ProductMiniCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final moneyFmt = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
-    final p = (price is num) ? price as num : num.tryParse(price.toString()) ?? 0;
+    final p = (price is num)
+        ? price as num
+        : num.tryParse(price.toString()) ?? 0;
 
     return InkWell(
       onTap: onTap,
@@ -1034,20 +1174,29 @@ class _ProductMiniCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
                 child: Stack(
                   children: [
-                    Positioned.fill(child: _NetImage(url: imageUrl, fit: BoxFit.cover)),
+                    Positioned.fill(
+                      child: _NetImage(url: imageUrl, fit: BoxFit.cover),
+                    ),
                     if (tag.trim().isNotEmpty)
                       Positioned(
                         left: 8,
                         top: 8,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
                           decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.55),
+                            color: Colors.black.withValues(alpha: 0.55),
                             borderRadius: BorderRadius.circular(999),
                           ),
                           child: Text(
                             tag,
-                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w800),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
                         ),
                       ),
@@ -1056,9 +1205,20 @@ class _ProductMiniCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w900)),
+            Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
             const SizedBox(height: 2),
-            Text(moneyFmt.format(p), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w900)),
+            Text(
+              moneyFmt.format(p),
+              style: const TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
           ],
         ),
       ),
@@ -1072,7 +1232,12 @@ class _VideoCard extends StatelessWidget {
   final String thumbUrl;
   final VoidCallback onTap;
 
-  const _VideoCard({required this.title, required this.duration, required this.thumbUrl, required this.onTap});
+  const _VideoCard({
+    required this.title,
+    required this.duration,
+    required this.thumbUrl,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1090,12 +1255,17 @@ class _VideoCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
           child: Stack(
             children: [
-              Positioned.fill(child: _NetImage(url: thumbUrl, fit: BoxFit.cover)),
+              Positioned.fill(
+                child: _NetImage(url: thumbUrl, fit: BoxFit.cover),
+              ),
               Positioned.fill(
                 child: Container(
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
-                      colors: [Colors.black.withOpacity(0.15), Colors.black.withOpacity(0.55)],
+                      colors: [
+                        Colors.black.withValues(alpha: 0.15),
+                        Colors.black.withValues(alpha: 0.55),
+                      ],
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                     ),
@@ -1103,18 +1273,34 @@ class _VideoCard extends StatelessWidget {
                 ),
               ),
               const Positioned.fill(
-                child: Center(child: Icon(Icons.play_circle_fill_rounded, color: Colors.white, size: 54)),
+                child: Center(
+                  child: Icon(
+                    Icons.play_circle_fill_rounded,
+                    color: Colors.white,
+                    size: 54,
+                  ),
+                ),
               ),
               Positioned(
                 right: 10,
                 bottom: 10,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.65),
+                    color: Colors.black.withValues(alpha: 0.65),
                     borderRadius: BorderRadius.circular(999),
                   ),
-                  child: Text(duration, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 11)),
+                  child: Text(
+                    duration,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 11,
+                    ),
+                  ),
                 ),
               ),
               Positioned(
@@ -1123,7 +1309,10 @@ class _VideoCard extends StatelessWidget {
                 bottom: 12,
                 child: Text(
                   title,
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w900,
+                  ),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -1141,7 +1330,11 @@ class _HealthSummaryCard extends StatelessWidget {
   final void Function(String key) onMetricTap;
   final void Function(String action) onQuickAction;
 
-  const _HealthSummaryCard({required this.metrics, required this.onMetricTap, required this.onQuickAction});
+  const _HealthSummaryCard({
+    required this.metrics,
+    required this.onMetricTap,
+    required this.onQuickAction,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1160,7 +1353,9 @@ class _HealthSummaryCard extends StatelessWidget {
               final label = (m['label'] ?? '').toString();
               final value = (m['value'] ?? '').toString();
               final unit = (m['unit'] ?? '').toString();
-              final icon = m['icon'] is IconData ? m['icon'] as IconData : Icons.insights_outlined;
+              final icon = m['icon'] is IconData
+                  ? m['icon'] as IconData
+                  : Icons.insights_outlined;
 
               return Expanded(
                 child: Padding(
@@ -1169,21 +1364,36 @@ class _HealthSummaryCard extends StatelessWidget {
                     onTap: () => onMetricTap(key),
                     borderRadius: BorderRadius.circular(14),
                     child: Ink(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 10,
+                      ),
                       decoration: BoxDecoration(
-                        color: _HomePageState._brand.withOpacity(0.06),
+                        color: _HomePageState._brand.withValues(alpha: 0.06),
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: _HomePageState._brand.withOpacity(0.12)),
+                        border: Border.all(
+                          color: _HomePageState._brand.withValues(alpha: 0.12),
+                        ),
                       ),
                       child: Column(
                         children: [
                           Icon(icon, color: _HomePageState._brand),
                           const SizedBox(height: 6),
-                          Text(label, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12)),
+                          Text(
+                            label,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 12,
+                            ),
+                          ),
                           const SizedBox(height: 2),
                           Text(
                             '$value${unit.isEmpty ? '' : ' $unit'}',
-                            style: TextStyle(color: Colors.grey.shade700, fontWeight: FontWeight.w800, fontSize: 12),
+                            style: TextStyle(
+                              color: Colors.grey.shade700,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
                           ),
                         ],
                       ),
@@ -1237,7 +1447,12 @@ class _QuickActionTile extends StatelessWidget {
   final Color color;
   final VoidCallback onTap;
 
-  const _QuickActionTile({required this.icon, required this.label, required this.color, required this.onTap});
+  const _QuickActionTile({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1248,15 +1463,21 @@ class _QuickActionTile extends StatelessWidget {
         child: Ink(
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.10),
+            color: color.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withOpacity(0.18)),
+            border: Border.all(color: color.withValues(alpha: 0.18)),
           ),
           child: Column(
             children: [
               Icon(icon, color: color),
               const SizedBox(height: 6),
-              Text(label, style: TextStyle(fontWeight: FontWeight.w900, color: Colors.grey.shade800)),
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                  color: Colors.grey.shade800,
+                ),
+              ),
             ],
           ),
         ),
@@ -1300,15 +1521,33 @@ class _HealthArticlesList extends StatelessWidget {
                   children: [
                     ClipRRect(
                       borderRadius: BorderRadius.circular(10),
-                      child: _NetImage(url: image, width: 44, height: 44, fit: BoxFit.cover),
+                      child: _NetImage(
+                        url: image,
+                        width: 44,
+                        height: 44,
+                        fit: BoxFit.cover,
+                      ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(title, style: const TextStyle(fontWeight: FontWeight.w900), maxLines: 1, overflow: TextOverflow.ellipsis),
-                        const SizedBox(height: 2),
-                        Text(desc, style: TextStyle(color: Colors.grey.shade700), maxLines: 1, overflow: TextOverflow.ellipsis),
-                      ]),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            desc,
+                            style: TextStyle(color: Colors.grey.shade700),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
                     ),
                     const Icon(Icons.chevron_right_rounded, color: Colors.grey),
                   ],
@@ -1327,7 +1566,11 @@ class _FeaturedGrid extends StatelessWidget {
   final String Function(num) fmtMoney;
   final void Function(Map<String, dynamic> m) onTapItem;
 
-  const _FeaturedGrid({required this.items, required this.fmtMoney, required this.onTapItem});
+  const _FeaturedGrid({
+    required this.items,
+    required this.fmtMoney,
+    required this.onTapItem,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1363,23 +1606,34 @@ class _FeaturedGrid extends StatelessWidget {
               children: [
                 Expanded(
                   child: ClipRRect(
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(16),
+                    ),
                     child: Stack(
                       children: [
-                        Positioned.fill(child: _NetImage(url: image, fit: BoxFit.cover)),
+                        Positioned.fill(
+                          child: _NetImage(url: image, fit: BoxFit.cover),
+                        ),
                         if (badge.trim().isNotEmpty)
                           Positioned(
                             left: 10,
                             top: 10,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
                               decoration: BoxDecoration(
                                 color: Colors.orangeAccent,
                                 borderRadius: BorderRadius.circular(999),
                               ),
                               child: Text(
                                 badge,
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 11),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 11,
+                                ),
                               ),
                             ),
                           ),
@@ -1389,11 +1643,22 @@ class _FeaturedGrid extends StatelessWidget {
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(10, 10, 10, 2),
-                  child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w900)),
+                  child: Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                  ),
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-                  child: Text(fmtMoney(p), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w900)),
+                  child: Text(
+                    fmtMoney(p),
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -1410,7 +1675,12 @@ class _NetImage extends StatelessWidget {
   final double? height;
   final BoxFit fit;
 
-  const _NetImage({required this.url, this.width, this.height, required this.fit});
+  const _NetImage({
+    required this.url,
+    this.width,
+    this.height,
+    required this.fit,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1445,7 +1715,8 @@ class _NetImage extends StatelessWidget {
               strokeWidth: 2,
               value: (progress.expectedTotalBytes == null)
                   ? null
-                  : progress.cumulativeBytesLoaded / (progress.expectedTotalBytes ?? 1),
+                  : progress.cumulativeBytesLoaded /
+                        (progress.expectedTotalBytes ?? 1),
             ),
           ),
         );

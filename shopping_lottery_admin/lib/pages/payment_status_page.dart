@@ -43,7 +43,9 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
     // epoch seconds / milliseconds
     if (v is int) {
       try {
-        if (v < 10000000000) return DateTime.fromMillisecondsSinceEpoch(v * 1000);
+        if (v < 10000000000) {
+          return DateTime.fromMillisecondsSinceEpoch(v * 1000);
+        }
         return DateTime.fromMillisecondsSinceEpoch(v);
       } catch (_) {}
     }
@@ -54,7 +56,9 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
       final asInt = int.tryParse(t);
       if (asInt != null) {
         try {
-          if (asInt < 10000000000) return DateTime.fromMillisecondsSinceEpoch(asInt * 1000);
+          if (asInt < 10000000000) {
+            return DateTime.fromMillisecondsSinceEpoch(asInt * 1000);
+          }
           return DateTime.fromMillisecondsSinceEpoch(asInt);
         } catch (_) {}
       }
@@ -89,16 +93,13 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
   // ---------- timeline ----------
   DateTime? _pickTimelineTs(Map<String, dynamic> t) {
     return _toDate(
-      t['ts'] ??
-          t['time'] ??
-          t['createdAt'] ??
-          t['at'] ??
-          t['timestamp'],
+      t['ts'] ?? t['time'] ?? t['createdAt'] ?? t['at'] ?? t['timestamp'],
     );
   }
 
   List<Map<String, dynamic>> _extractTimeline(Map<String, dynamic> data) {
-    dynamic raw = data['paymentTimeline'] ?? data['timeline'] ?? data['paymentEvents'];
+    dynamic raw =
+        data['paymentTimeline'] ?? data['timeline'] ?? data['paymentEvents'];
     if (raw is! List) return <Map<String, dynamic>>[];
 
     final out = <Map<String, dynamic>>[];
@@ -135,9 +136,13 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
     final cs = Theme.of(context).colorScheme;
     final s = status.trim().toLowerCase();
 
-    if (s.contains('paid') || s == 'success' || s == 'completed') return cs.primary;
+    if (s.contains('paid') || s == 'success' || s == 'completed') {
+      return cs.primary;
+    }
     if (s.contains('pending') || s.contains('wait')) return Colors.orange;
-    if (s.contains('fail') || s.contains('cancel') || s.contains('error')) return cs.error;
+    if (s.contains('fail') || s.contains('cancel') || s.contains('error')) {
+      return cs.error;
+    }
 
     return cs.onSurfaceVariant;
   }
@@ -177,9 +182,10 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: c.withOpacity(0.12),
+        // ✅ withOpacity deprecated -> withValues(alpha:)
+        color: c.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: c.withOpacity(0.25)),
+        border: Border.all(color: c.withValues(alpha: 0.25)),
       ),
       child: Text(
         text,
@@ -244,17 +250,26 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
           final data = doc.data() ?? <String, dynamic>{};
 
           // status：優先 paymentStatus，否則 status
-          final status = _s(data['paymentStatus']).isNotEmpty ? _s(data['paymentStatus']) : _s(data['status']);
+          final status = _s(data['paymentStatus']).isNotEmpty
+              ? _s(data['paymentStatus'])
+              : _s(data['status']);
 
-          final total = _toNum(data['total'] ?? data['amount'] ?? data['priceTotal'] ?? 0);
+          final total = _toNum(
+            data['total'] ?? data['amount'] ?? data['priceTotal'] ?? 0,
+          );
           final createdAt = _toDate(data['createdAt'] ?? data['created_time']);
-          final buyer = _s(data['buyerEmail']).isNotEmpty ? _s(data['buyerEmail']) : _s(data['buyer']);
+          final buyer = _s(data['buyerEmail']).isNotEmpty
+              ? _s(data['buyerEmail'])
+              : _s(data['buyer']);
 
           // vendor 顯示：優先 vendorIds（list），否則 vendorId
           String vendorShow = '';
           final vendorIdsRaw = data['vendorIds'];
           if (vendorIdsRaw is List) {
-            final ids = vendorIdsRaw.map((e) => _s(e)).where((e) => e.isNotEmpty).toList();
+            final ids = vendorIdsRaw
+                .map((e) => _s(e))
+                .where((e) => e.isNotEmpty)
+                .toList();
             if (ids.isNotEmpty) vendorShow = ids.join(', ');
           }
           if (vendorShow.isEmpty) vendorShow = _s(data['vendorId']);
@@ -280,15 +295,25 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
                         runSpacing: 8,
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          _StatusChip(label: _statusLabel(status), color: stColor),
+                          _StatusChip(
+                            label: _statusLabel(status),
+                            color: stColor,
+                          ),
                           Text(
                             'NT\$${total.toStringAsFixed(0)}',
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 10),
-                      _kv('訂單ID', orderId, onCopy: () => _copy(orderId, done: '已複製訂單ID')),
+                      _kv(
+                        '訂單ID',
+                        orderId,
+                        onCopy: () => _copy(orderId, done: '已複製訂單ID'),
+                      ),
                       const SizedBox(height: 6),
                       _kv('建立時間', _fmt(createdAt)),
                       const SizedBox(height: 6),
@@ -300,7 +325,10 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
                         children: [
                           Expanded(
                             child: OutlinedButton.icon(
-                              onPressed: () => Navigator.pushReplacementNamed(context, '/orders'),
+                              onPressed: () => Navigator.pushReplacementNamed(
+                                context,
+                                '/orders',
+                              ),
                               icon: const Icon(Icons.receipt_long_outlined),
                               label: const Text('訂單管理'),
                             ),
@@ -325,9 +353,15 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
               // Timeline title
               Row(
                 children: [
-                  const Text('付款時間軸', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                  const Text(
+                    '付款時間軸',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                  ),
                   const SizedBox(width: 8),
-                  Text('（最新在上）', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
+                  Text(
+                    '（最新在上）',
+                    style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                  ),
                 ],
               ),
               const SizedBox(height: 8),
@@ -356,9 +390,13 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
                       final t = timeline[i];
 
                       final ts = _pickTimelineTs(t);
-                      final label = _s(t['label']).isNotEmpty ? _s(t['label']) : _s(t['title']);
+                      final label = _s(t['label']).isNotEmpty
+                          ? _s(t['label'])
+                          : _s(t['title']);
                       final st = _s(t['status']);
-                      final note = _s(t['note']).isNotEmpty ? _s(t['note']) : _s(t['message']);
+                      final note = _s(t['note']).isNotEmpty
+                          ? _s(t['note'])
+                          : _s(t['message']);
 
                       final c = _statusColor(context, st);
 
@@ -367,9 +405,12 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
                           width: 40,
                           height: 40,
                           decoration: BoxDecoration(
-                            color: c.withOpacity(0.12),
+                            // ✅ withOpacity deprecated -> withValues(alpha:)
+                            color: c.withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: c.withOpacity(0.25)),
+                            border: Border.all(
+                              color: c.withValues(alpha: 0.25),
+                            ),
                           ),
                           child: Icon(Icons.timeline, color: c),
                         ),
@@ -388,13 +429,23 @@ class _PaymentStatusPageState extends State<PaymentStatusPage> {
                                 spacing: 10,
                                 runSpacing: 4,
                                 children: [
-                                  Text(_fmt(ts), style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
+                                  Text(
+                                    _fmt(ts),
+                                    style: TextStyle(
+                                      color: cs.onSurfaceVariant,
+                                      fontSize: 12,
+                                    ),
+                                  ),
                                   if (st.isNotEmpty) _miniChip(st, c),
                                 ],
                               ),
                               if (note.isNotEmpty) ...[
                                 const SizedBox(height: 6),
-                                Text(note, maxLines: 3, overflow: TextOverflow.ellipsis),
+                                Text(
+                                  note,
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                               ],
                             ],
                           ),
@@ -424,9 +475,10 @@ class _StatusChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        // ✅ withOpacity deprecated -> withValues(alpha:)
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.25)),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
       ),
       child: Text(
         label,

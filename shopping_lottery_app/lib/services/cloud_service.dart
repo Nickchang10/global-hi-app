@@ -1,95 +1,117 @@
+// lib/services/badge_service.dart
+//
+// ✅ BadgeService（正式版｜完整版｜可直接編譯）
+// ----------------------------------------------------
+// 修正：不再使用 NotificationService.hasUnread（避免 undefined_getter）
+// 改為：BadgeService 直接監聽 Firestore users/{uid}/notifications 未讀數量
+//
+// Firestore 結構（配合你前面 cloud_push_service）：
+// - users/{uid}/notifications/{autoId}
+//   - read: bool
+//
+// 需要套件：cloud_firestore, firebase_auth, flutter foundation
+// ----------------------------------------------------
+
 import 'dart:async';
-import 'dart:math';
-import 'package:flutter/material.dart';
-import 'security_service.dart';
-import 'api_service.dart';
 
-/// ☁️ 模擬雲端儲存與伺服器部署服務
-///
-/// 功能：
-/// - 模擬多區伺服器佈署 (Server A / B)
-/// - 檔案上傳 / 下載 / 刪除
-/// - API 層封裝安全請求
-/// - 整合防火牆安全事件記錄
-class CloudService extends ChangeNotifier {
-  static final CloudService instance = CloudService._internal();
-  CloudService._internal();
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
-  final _random = Random();
+class BadgeService extends ChangeNotifier {
+  BadgeService._({FirebaseAuth? auth, FirebaseFirestore? firestore})
+    : _auth = auth ?? FirebaseAuth.instance,
+      _db = firestore ?? FirebaseFirestore.instance;
 
-  // 模擬伺服器節點
-  String activeServer = "Server A (台北)";
-  final List<String> servers = ["Server A (台北)", "Server B (新加坡)"];
+  static final BadgeService instance = BadgeService._();
 
-  // 模擬已上傳檔案
-  final List<Map<String, dynamic>> _files = [];
+  final FirebaseAuth _auth;
+  final FirebaseFirestore _db;
 
-  List<Map<String, dynamic>> get files => List.unmodifiable(_files);
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _unreadSub;
 
-  /// 🪣 上傳檔案（模擬）
-  Future<Map<String, dynamic>> uploadFile(String filename) async {
-    final api = ApiService.instance;
-    final security = SecurityService.instance;
+  bool _started = false;
 
-    final payload = {"filename": filename, "action": "upload"};
-    await api.sendSecureRequest(endpoint: "/api/cloud/upload", payload: payload);
+  int _unreadNotifications = 0;
+  int get unreadNotificationsCount => _unreadNotifications;
 
-    final file = {
-      "name": filename,
-      "url": "https://mock.osmile.cloud/$filename",
-      "server": activeServer,
-      "time": DateTime.now(),
-    };
-    _files.add(file);
-    notifyListeners();
+  /// ✅ 你原本要的「是否有未讀」：直接提供同名概念（不再靠 NotificationService）
+  bool get hasUnreadNotifications => _unreadNotifications > 0;
 
-    security._addLog("雲端上傳", "上傳 $filename 至 $activeServer");
-    return {"status": 200, "file": file};
+  /// （有些 UI 可能直接用 hasUnread）
+  bool get hasUnread => _unreadNotifications > 0;
+
+  /// ✅ 建議在 App 啟動後呼叫一次（例如 main.dart Provider 建好後）
+  void start() {
+    if (_started) return;
+    _started = true;
+
+    // 先用當前 user 初始化
+    _handleUser(_auth.currentUser);
+
+    // 監聽登入狀態
+    _authSub?.cancel();
+    _authSub = _auth.userChanges().listen((u) {
+      _handleUser(u);
+    });
   }
 
-  /// ⬇️ 下載檔案
-  Future<Map<String, dynamic>> downloadFile(String filename) async {
-    final api = ApiService.instance;
-    final file = _files.firstWhere(
-      (f) => f["name"] == filename,
-      orElse: () => {},
+  void _handleUser(User? user) {
+    // 登出：清空 badge + 停止監聽
+    if (user == null) {
+      _cancelUnreadSub();
+      _setUnread(0);
+      return;
+    }
+
+    // 登入：監聽未讀通知數
+    _listenUnreadNotifications(user.uid);
+  }
+
+  void _listenUnreadNotifications(String uid) {
+    _cancelUnreadSub();
+
+    // users/{uid}/notifications where read == false
+    final q = _db
+        .collection('users')
+        .doc(uid)
+        .collection('notifications')
+        .where('read', isEqualTo: false);
+
+    _unreadSub = q.snapshots().listen(
+      (snap) {
+        _setUnread(snap.size);
+      },
+      onError: (_) {
+        // 出錯時不要炸 UI：保留現值或歸零都可
+        // 這裡採保留現值，避免 badge 突然閃爍
+      },
     );
-    if (file.isEmpty) return {"status": 404, "message": "找不到檔案"};
-
-    await api.sendSecureRequest(
-        endpoint: "/api/cloud/download", payload: {"filename": filename});
-
-    return {"status": 200, "file": file};
   }
 
-  /// ❌ 刪除檔案
-  Future<Map<String, dynamic>> deleteFile(String filename) async {
-    final api = ApiService.instance;
-    final security = SecurityService.instance;
-
-    _files.removeWhere((f) => f["name"] == filename);
-    await api.sendSecureRequest(
-        endpoint: "/api/cloud/delete", payload: {"filename": filename});
-    notifyListeners();
-
-    security._addLog("雲端刪除", "已刪除 $filename");
-    return {"status": 200, "message": "刪除成功"};
-  }
-
-  /// 🌀 切換伺服器節點
-  void switchServer() {
-    activeServer = (activeServer == servers[0]) ? servers[1] : servers[0];
-    SecurityService.instance._addLog("伺服器切換", "目前使用節點：$activeServer");
+  void _setUnread(int v) {
+    if (v == _unreadNotifications) return;
+    _unreadNotifications = v;
     notifyListeners();
   }
 
-  /// 📊 模擬健康檢查
-  Map<String, dynamic> serverStatus() {
-    return {
-      "active": activeServer,
-      "uptime": "${_random.nextInt(99)}%",
-      "files": _files.length,
-      "lastSync": DateTime.now().toIso8601String(),
-    };
+  void _cancelUnreadSub() {
+    _unreadSub?.cancel();
+    _unreadSub = null;
+  }
+
+  /// ✅ 手動停止（通常不需要，除非你做了明確的 lifecycle 管理）
+  void stop() {
+    _authSub?.cancel();
+    _authSub = null;
+    _cancelUnreadSub();
+    _started = false;
+  }
+
+  @override
+  void dispose() {
+    stop();
+    super.dispose();
   }
 }

@@ -92,7 +92,9 @@ class _NewsPageState extends State<NewsPage> {
                     if (kDebugMode) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text('點擊了：${title.isEmpty ? id : title}（id=$id）'),
+                          content: Text(
+                            '點擊了：${title.isEmpty ? id : title}（id=$id）',
+                          ),
                           duration: const Duration(seconds: 1),
                         ),
                       );
@@ -115,7 +117,9 @@ class _NewsPageState extends State<NewsPage> {
                               errorBuilder: (_, __, ___) => Container(
                                 width: 80,
                                 height: 80,
-                                color: cs.surfaceVariant.withOpacity(0.2),
+                                color: cs.surfaceContainerHighest.withValues(
+                                  alpha: 0.20,
+                                ),
                                 child: const Icon(Icons.image_not_supported),
                               ),
                             ),
@@ -127,8 +131,12 @@ class _NewsPageState extends State<NewsPage> {
                             alignment: Alignment.center,
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(10),
-                              color: cs.surfaceVariant.withOpacity(0.15),
-                              border: Border.all(color: cs.outline.withOpacity(0.12)),
+                              color: cs.surfaceContainerHighest.withValues(
+                                alpha: 0.15,
+                              ),
+                              border: Border.all(
+                                color: cs.outline.withValues(alpha: 0.12),
+                              ),
                             ),
                             child: const Icon(Icons.newspaper_outlined),
                           ),
@@ -139,9 +147,7 @@ class _NewsPageState extends State<NewsPage> {
                             children: [
                               Text(
                                 title.isEmpty ? '(未命名)' : title,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleMedium
+                                style: Theme.of(context).textTheme.titleMedium
                                     ?.copyWith(fontWeight: FontWeight.w800),
                               ),
                               const SizedBox(height: 4),
@@ -149,17 +155,13 @@ class _NewsPageState extends State<NewsPage> {
                                 summary.isEmpty ? '(暫無摘要內容)' : summary,
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyMedium
+                                style: Theme.of(context).textTheme.bodyMedium
                                     ?.copyWith(color: cs.onSurfaceVariant),
                               ),
                               const SizedBox(height: 6),
                               Text(
                                 dateStr,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
+                                style: Theme.of(context).textTheme.bodySmall
                                     ?.copyWith(color: cs.outline),
                               ),
                             ],

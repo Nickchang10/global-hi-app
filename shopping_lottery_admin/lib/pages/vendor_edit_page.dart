@@ -1,40 +1,57 @@
 // lib/pages/vendor_edit_page.dart
 //
-// ✅ VendorEditPage（最終完整版）
+// ✅ VendorEditPage（最終完整版｜可編譯｜修正 use_build_context_synchronously + control_flow_in_finally）
 // ------------------------------------------------------------
-// 功能：新增 / 編輯 / 刪除 廠商資料
-// Firestore: vendors/{vendorId}
-// ------------------------------------------------------------
+// - Firestore: vendors/{vendorId}
+// - 支援：新增/編輯、儲存、刪除、複製 ID
+// - arguments / ctor 皆可帶 vendorId
+
+import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class VendorEditPage extends StatefulWidget {
-  final String? vendorId;
   const VendorEditPage({super.key, this.vendorId});
+
+  final String? vendorId;
 
   @override
   State<VendorEditPage> createState() => _VendorEditPageState();
 }
 
 class _VendorEditPageState extends State<VendorEditPage> {
-  final _formKey = GlobalKey<FormState>();
   final _db = FirebaseFirestore.instance;
 
   final _nameCtrl = TextEditingController();
   final _contactCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
-  final _noteCtrl = TextEditingController();
+  final _addressCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
 
-  bool _isActive = true;
-  bool _loading = false;
-  bool get _isEdit => widget.vendorId != null;
+  String _vendorId = '';
+  bool _active = true;
+
+  bool _loading = true;
+  bool _saving = false;
+
+  bool _didInit = false;
 
   @override
-  void initState() {
-    super.initState();
-    if (_isEdit) _loadVendor();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didInit) return;
+    _didInit = true;
+
+    _vendorId = _resolveVendorId(context);
+
+    if (_vendorId.isEmpty) {
+      setState(() => _loading = false);
+    } else {
+      unawaited(_load());
+    }
   }
 
   @override
@@ -43,187 +60,284 @@ class _VendorEditPageState extends State<VendorEditPage> {
     _contactCtrl.dispose();
     _phoneCtrl.dispose();
     _emailCtrl.dispose();
-    _noteCtrl.dispose();
+    _addressCtrl.dispose();
+    _descCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _loadVendor() async {
-    setState(() => _loading = true);
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  String _resolveVendorId(BuildContext context) {
+    final arg = ModalRoute.of(context)?.settings.arguments;
+    final fromArg = arg is String ? arg.trim() : '';
+    final fromCtor = (widget.vendorId ?? '').trim();
+    return fromArg.isNotEmpty ? fromArg : fromCtor;
+  }
+
+  DocumentReference<Map<String, dynamic>> _ref(String id) =>
+      _db.collection('vendors').doc(id);
+
+  Future<void> _load() async {
+    if (_vendorId.isEmpty) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
+
     try {
-      final doc = await _db.collection('vendors').doc(widget.vendorId).get();
-      if (!doc.exists) {
-        _snack('找不到此廠商資料');
-        Navigator.pop(context, false);
-        return;
+      final snap = await _ref(_vendorId).get();
+      if (!mounted) return;
+
+      if (snap.exists) {
+        final d = snap.data() ?? <String, dynamic>{};
+        _nameCtrl.text = _s(d['name']);
+        _contactCtrl.text = _s(d['contactName']);
+        _phoneCtrl.text = _s(d['phone']);
+        _emailCtrl.text = _s(d['email']);
+        _addressCtrl.text = _s(d['address']);
+        _descCtrl.text = _s(d['description']);
+        _active = (d['active'] is bool) ? (d['active'] as bool) : true;
       }
-      final data = doc.data()!;
-      _nameCtrl.text = (data['name'] ?? '').toString();
-      _contactCtrl.text = (data['contact'] ?? '').toString();
-      _phoneCtrl.text = (data['phone'] ?? '').toString();
-      _emailCtrl.text = (data['email'] ?? '').toString();
-      _noteCtrl.text = (data['note'] ?? '').toString();
-      _isActive = data['isActive'] == true;
     } catch (e) {
-      _snack('載入失敗：$e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('讀取失敗：$e')));
     } finally {
+      // ✅ finally 裡不要 return，避免 control_flow_in_finally
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  void _snack(String msg) {
+  Future<void> _copyId() async {
+    final id = _vendorId.trim();
+    if (id.isEmpty) return;
+
+    await Clipboard.setData(ClipboardData(text: id));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已複製 Vendor ID')));
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (_saving) return;
 
-    final data = {
-      'name': _nameCtrl.text.trim(),
-      'contact': _contactCtrl.text.trim(),
-      'phone': _phoneCtrl.text.trim(),
-      'email': _emailCtrl.text.trim(),
-      'note': _noteCtrl.text.trim(),
-      'isActive': _isActive,
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('廠商名稱不可空白')));
+      return;
+    }
 
-    setState(() => _loading = true);
+    if (!mounted) return;
+    setState(() => _saving = true);
+
     try {
-      if (_isEdit) {
-        await _db.collection('vendors').doc(widget.vendorId).set(data, SetOptions(merge: true));
-      } else {
-        await _db.collection('vendors').add({
-          ...data,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
+      if (_vendorId.trim().isEmpty) {
+        // 這裡不涉及 async，直接 setState 讓 UI 立即顯示新 ID
+        setState(() => _vendorId = _db.collection('vendors').doc().id);
       }
-      _snack('已儲存');
+
+      final docRef = _ref(_vendorId);
+
+      final existsSnap = await docRef.get();
+      final isNew = !existsSnap.exists;
+
+      final now = FieldValue.serverTimestamp();
+      final payload = <String, dynamic>{
+        'name': name,
+        'contactName': _contactCtrl.text.trim(),
+        'phone': _phoneCtrl.text.trim(),
+        'email': _emailCtrl.text.trim(),
+        'address': _addressCtrl.text.trim(),
+        'description': _descCtrl.text.trim(),
+        'active': _active,
+        'updatedAt': now,
+      };
+      if (isNew) payload['createdAt'] = now;
+
+      await docRef.set(payload, SetOptions(merge: true));
       if (!mounted) return;
-      Navigator.pop(context, true);
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已儲存')));
+      setState(() {}); // 刷新顯示（例如顯示 Vendor ID）
     } catch (e) {
-      _snack('儲存失敗：$e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
     } finally {
-      if (mounted) setState(() => _loading = false);
+      // ✅ finally 裡不要 return，避免 control_flow_in_finally
+      if (mounted) setState(() => _saving = false);
     }
   }
 
   Future<void> _delete() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('確認刪除'),
-        content: const Text('確定要刪除此廠商？此動作無法復原。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-        ],
-      ),
-    );
-    if (ok != true) return;
+    if (_vendorId.trim().isEmpty) return;
 
-    setState(() => _loading = true);
+    final displayName = _nameCtrl.text.trim().isEmpty
+        ? _vendorId
+        : _nameCtrl.text.trim();
+
+    final ok =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogCtx) => AlertDialog(
+            title: const Text('刪除廠商？'),
+            content: Text('將刪除：$displayName'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogCtx, true),
+                child: const Text('刪除'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!mounted) return;
+    if (!ok) return;
+
     try {
-      await _db.collection('vendors').doc(widget.vendorId).delete();
-      _snack('已刪除');
+      await _ref(_vendorId).delete();
       if (!mounted) return;
-      Navigator.pop(context, true);
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已刪除')));
+      Navigator.of(context).pop(true);
     } catch (e) {
-      _snack('刪除失敗：$e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final title = _isEdit ? '編輯廠商' : '新增廠商';
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(title),
+        title: Text(_vendorId.isEmpty ? '新增廠商' : '編輯廠商'),
         actions: [
-          if (_isEdit)
+          if (_vendorId.isNotEmpty)
             IconButton(
-              tooltip: '刪除此廠商',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: _delete,
+              tooltip: '複製 Vendor ID',
+              onPressed: _copyId,
+              icon: const Icon(Icons.copy),
             ),
-          IconButton(
-            tooltip: '儲存',
-            icon: const Icon(Icons.save_outlined),
-            onPressed: _save,
-          ),
+          if (_vendorId.isNotEmpty)
+            IconButton(
+              tooltip: '刪除',
+              onPressed: _saving ? null : _delete,
+              icon: const Icon(Icons.delete_outline),
+            ),
+          const SizedBox(width: 6),
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  children: [
-                    TextFormField(
-                      controller: _nameCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '廠商名稱 *',
-                        border: OutlineInputBorder(),
+          : AbsorbPointer(
+              absorbing: _saving,
+              child: ListView(
+                padding: const EdgeInsets.all(12),
+                children: [
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: BorderSide(color: cs.outlineVariant),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        children: [
+                          _field(_nameCtrl, '廠商名稱*'),
+                          Row(
+                            children: [
+                              Expanded(child: _field(_contactCtrl, '聯絡人')),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _field(
+                                  _phoneCtrl,
+                                  '電話',
+                                  keyboardType: TextInputType.phone,
+                                ),
+                              ),
+                            ],
+                          ),
+                          _field(
+                            _emailCtrl,
+                            'Email',
+                            keyboardType: TextInputType.emailAddress,
+                          ),
+                          _field(_addressCtrl, '地址', maxLines: 2),
+                          _field(_descCtrl, '描述', maxLines: 4),
+                          const SizedBox(height: 6),
+                          SwitchListTile(
+                            value: _active,
+                            onChanged: (v) => setState(() => _active = v),
+                            title: const Text('啟用（active）'),
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ],
                       ),
-                      validator: (v) => (v == null || v.trim().isEmpty) ? '請輸入廠商名稱' : null,
                     ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _contactCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '聯絡人 *',
-                        border: OutlineInputBorder(),
-                      ),
-                      validator: (v) => (v == null || v.trim().isEmpty) ? '請輸入聯絡人' : null,
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _phoneCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '電話 *',
-                        border: OutlineInputBorder(),
-                      ),
-                      validator: (v) => (v == null || v.trim().isEmpty) ? '請輸入電話' : null,
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _emailCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Email',
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: TextInputType.emailAddress,
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _noteCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '備註',
-                        border: OutlineInputBorder(),
-                      ),
-                      maxLines: 3,
-                    ),
-                    const SizedBox(height: 16),
-                    SwitchListTile(
-                      title: const Text('啟用狀態'),
-                      value: _isActive,
-                      onChanged: (v) => setState(() => _isActive = v),
-                    ),
-                    const SizedBox(height: 20),
-                    FilledButton.icon(
-                      icon: const Icon(Icons.save_outlined),
-                      label: const Text('儲存'),
-                      onPressed: _save,
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _saving ? null : _save,
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.save_outlined),
+                    label: Text(_saving ? '儲存中…' : '儲存'),
+                  ),
+                  if (_vendorId.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      'Vendor ID：$_vendorId',
+                      style: TextStyle(color: cs.onSurfaceVariant),
                     ),
                   ],
-                ),
+                ],
               ),
             ),
+    );
+  }
+
+  Widget _field(
+    TextEditingController c,
+    String label, {
+    int maxLines = 1,
+    String? hint,
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: c,
+        maxLines: maxLines,
+        keyboardType: keyboardType,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
     );
   }
 }

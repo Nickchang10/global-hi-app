@@ -12,7 +12,12 @@
           "package_name": "com.example.shopping_lottery_admin"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "569654002656-i1kor593j0it8qce5c8dqit0ut0n9oc8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyBbQVFqXoXlsxZ0H55NHVfYT9gYbTAxRS0"
@@ -20,7 +25,55 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "569654002656-i1kor593j0it8qce5c8dqit0ut0n9oc8.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "569654002656-a43cdjeit5ch9parl4c4hil4hbk875vd.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.shoppingLotteryAdmin"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:569654002656:android:9d5b8a6d92b6f27013a185",
+        "android_client_info": {
+          "package_name": "com.example.shopping_lottery_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "569654002656-i1kor593j0it8qce5c8dqit0ut0n9oc8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbQVFqXoXlsxZ0H55NHVfYT9gYbTAxRS0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "569654002656-i1kor593j0it8qce5c8dqit0ut0n9oc8.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "569654002656-a43cdjeit5ch9parl4c4hil4hbk875vd.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.shoppingLotteryAdmin"
+              }
+            }
+          ]
         }
       }
     }

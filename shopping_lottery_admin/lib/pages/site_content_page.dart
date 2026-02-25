@@ -1,50 +1,32 @@
 // lib/pages/site_content_page.dart
 //
-// ✅ SiteContentPage（共用資訊頁底座｜最終穩定可編譯版）
+// ✅ SiteContentPage（最終完整版｜可編譯｜內建 Doc Preview Page）
 // ------------------------------------------------------------
-// 目的：統一 /services /news /faq /downloads 四頁樣式與行為
-//
-// Firestore：site_contents/{docId}
-// 建議欄位：
-// - title: String
-// - content: String（可選）
-// - items: List<Map>（可選）
-//    items 每筆建議：
-//    - title 或 name: String
-//    - body 或 desc 或 content: String
-//    - url 或 link: String
-//    - order: number（可選）
-//    - createdAt/updatedAt: Timestamp（可選）
-//
 // 功能：
-// - 即時監聽（snapshots）
-// - AppBar：重新整理 / 複製 doc path / 匯出 CSV
-// - 搜尋：title/body/url/id
-// - 可複製：JSON、URL、docId、內容
-// - 不依賴 url_launcher / markdown 套件（避免編譯失敗）
+// - Firestore: site_contents
+// - 列表：搜尋（title/slug/category/id）、category 篩選、published 篩選
+// - 操作：新增 / 編輯 / 刪除 / 切換 published
+// - 預覽：SiteContentDocPreviewPage（同檔提供，解決 undefined_method）
 //
-// 依賴：cloud_firestore, flutter/material, flutter/services
-
-import 'dart:convert';
+// 建議 Firestore schema（彈性容錯）
+// site_contents/{id} {
+//   title: String
+//   slug: String
+//   category: String
+//   content: String
+//   published: bool
+//   pinned: bool?
+//   createdAt: Timestamp
+//   updatedAt: Timestamp
+// }
+//
+// 依賴：cloud_firestore, flutter/material
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 class SiteContentPage extends StatefulWidget {
-  const SiteContentPage({
-    super.key,
-    required this.docId,
-    required this.fallbackTitle,
-    required this.fallbackContent,
-    this.collection = 'site_contents',
-  });
-
-  final String collection;
-  final String docId;
-  final String fallbackTitle;
-  final String fallbackContent;
+  const SiteContentPage({super.key});
 
   @override
   State<SiteContentPage> createState() => _SiteContentPageState();
@@ -54,15 +36,8 @@ class _SiteContentPageState extends State<SiteContentPage> {
   final _db = FirebaseFirestore.instance;
 
   final _searchCtrl = TextEditingController();
-  String _q = '';
-
-  bool _busy = false;
-  String _busyLabel = '';
-
-  DocumentReference<Map<String, dynamic>> get _ref =>
-      _db.collection(widget.collection).doc(widget.docId);
-
-  String get _path => '${widget.collection}/${widget.docId}';
+  String _category = 'all';
+  String _pubFilter = 'all'; // all / published / draft
 
   @override
   void dispose() {
@@ -70,365 +45,710 @@ class _SiteContentPageState extends State<SiteContentPage> {
     super.dispose();
   }
 
-  // -------------------------
-  // Utils
-  // -------------------------
+  // ----------------------------
+  // helpers
+  // ----------------------------
   String _s(dynamic v) => (v ?? '').toString().trim();
+
+  bool _b(dynamic v, {bool fallback = false}) {
+    if (v is bool) return v;
+    if (v is num) return v != 0;
+    if (v is String) {
+      final t = v.trim().toLowerCase();
+      if (t == 'true' || t == '1' || t == 'yes') return true;
+      if (t == 'false' || t == '0' || t == 'no') return false;
+    }
+    return fallback;
+  }
 
   DateTime? _toDate(dynamic v) {
     if (v is Timestamp) return v.toDate();
     if (v is DateTime) return v;
+    if (v is int) {
+      try {
+        return DateTime.fromMillisecondsSinceEpoch(v);
+      } catch (_) {
+        return null;
+      }
+    }
     return null;
   }
 
   String _fmt(DateTime? d) {
-    if (d == null) return '-';
+    if (d == null) return '';
     String two(int n) => n.toString().padLeft(2, '0');
     return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
   }
 
-  void _snack(String msg) {
+  Query<Map<String, dynamic>> _baseQuery() {
+    // 只用一個 orderBy，避免複合索引問題
+    return _db
+        .collection('site_contents')
+        .orderBy('updatedAt', descending: true);
+  }
+
+  bool _match(String id, Map<String, dynamic> d) {
+    final cat = _category.trim().toLowerCase();
+    if (cat.isNotEmpty && cat != 'all') {
+      final docCat = _s(d['category']).toLowerCase();
+      if (docCat != cat) return false;
+    }
+
+    final pub = _pubFilter.trim().toLowerCase();
+    final published = _b(d['published'], fallback: true);
+    if (pub == 'published' && !published) return false;
+    if (pub == 'draft' && published) return false;
+
+    final k = _searchCtrl.text.trim().toLowerCase();
+    if (k.isEmpty) return true;
+
+    final title = _s(d['title']).toLowerCase();
+    final slug = _s(d['slug']).toLowerCase();
+    final category = _s(d['category']).toLowerCase();
+
+    return id.toLowerCase().contains(k) ||
+        title.contains(k) ||
+        slug.contains(k) ||
+        category.contains(k);
+  }
+
+  // ----------------------------
+  // actions
+  // ----------------------------
+  Future<void> _togglePublished(String id, bool to) async {
+    await _db.collection('site_contents').doc(id).set({
+      'published': to,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> _deleteDoc(String id, String title) async {
+    final ok =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogCtx) => AlertDialog(
+            title: const Text('刪除內容？'),
+            content: Text('將刪除：$title\n（不可復原）'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogCtx, true),
+                child: const Text('刪除'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!ok) return;
+    await _db.collection('site_contents').doc(id).delete();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已刪除')));
   }
 
-  Future<void> _copy(String text, {String done = '已複製'}) async {
-    final t = text.trim();
-    if (t.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: t));
-    _snack(done);
-  }
+  Future<void> _openEditor({
+    required String docId,
+    required Map<String, dynamic> data,
+    required bool isNew,
+  }) async {
+    final titleCtrl = TextEditingController(text: _s(data['title']));
+    final slugCtrl = TextEditingController(text: _s(data['slug']));
+    final categoryCtrl = TextEditingController(text: _s(data['category']));
+    final contentCtrl = TextEditingController(text: _s(data['content']));
+    bool published = _b(data['published'], fallback: true);
 
-  Future<void> _setBusy(bool v, {String label = ''}) async {
-    if (!mounted) return;
-    setState(() {
-      _busy = v;
-      _busyLabel = label;
-    });
-  }
-
-  Future<void> _refreshServer() async {
-    await _setBusy(true, label: '重新整理中...');
+    bool ok = false;
     try {
-      await _ref.get(const GetOptions(source: Source.server));
-      _snack('已重新整理');
-    } catch (e) {
-      _snack('重新整理失敗：$e');
+      ok =
+          await showDialog<bool>(
+            context: context,
+            builder: (dialogCtx) => AlertDialog(
+              title: Text(isNew ? '新增內容' : '編輯內容'),
+              content: SizedBox(
+                width: 620,
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      _field(titleCtrl, '標題*'),
+                      _field(
+                        slugCtrl,
+                        'slug（可空，建議唯一）',
+                        hint: 'about / terms / privacy / news-xxx',
+                      ),
+                      _field(
+                        categoryCtrl,
+                        'category*',
+                        hint: 'about / terms / privacy / news / faq ...',
+                      ),
+                      _field(
+                        contentCtrl,
+                        'content',
+                        maxLines: 10,
+                        hint: '支援純文字或 Markdown（依你前台解析）',
+                      ),
+                      const SizedBox(height: 6),
+                      SwitchListTile(
+                        value: published,
+                        onChanged: (v) => published = v,
+                        title: const Text('發布（published）'),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogCtx, false),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogCtx, true),
+                  child: const Text('儲存'),
+                ),
+              ],
+            ),
+          ) ??
+          false;
     } finally {
-      await _setBusy(false);
-      if (mounted) setState(() {});
+      // 先不 dispose，因為後面還要讀 text（避免你再遇到 use_build_context/async gap 警告）
     }
+
+    if (!ok) {
+      titleCtrl.dispose();
+      slugCtrl.dispose();
+      categoryCtrl.dispose();
+      contentCtrl.dispose();
+      return;
+    }
+
+    final title = titleCtrl.text.trim();
+    final slug = slugCtrl.text.trim();
+    final category = categoryCtrl.text.trim();
+
+    if (title.isEmpty || category.isEmpty) {
+      titleCtrl.dispose();
+      slugCtrl.dispose();
+      categoryCtrl.dispose();
+      contentCtrl.dispose();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('標題與 category 不可空白')));
+      return;
+    }
+
+    final payload = <String, dynamic>{
+      'title': title,
+      'slug': slug,
+      'category': category.toLowerCase(),
+      'content': contentCtrl.text,
+      'published': published,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    if (isNew) {
+      payload['createdAt'] = FieldValue.serverTimestamp();
+    }
+
+    await _db
+        .collection('site_contents')
+        .doc(docId)
+        .set(payload, SetOptions(merge: true));
+
+    titleCtrl.dispose();
+    slugCtrl.dispose();
+    categoryCtrl.dispose();
+    contentCtrl.dispose();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已儲存')));
   }
 
-  // -------------------------
-  // Parse
-  // -------------------------
-  _Parsed _parse(DocumentSnapshot<Map<String, dynamic>>? snap) {
-    final exists = snap?.exists == true;
-    final data = snap?.data() ?? <String, dynamic>{};
-
-    final title = _s(data['title']).isEmpty ? widget.fallbackTitle : _s(data['title']);
-    final content = _s(data['content']).isEmpty ? widget.fallbackContent : _s(data['content']);
-
-    final rawItems = data['items'];
-    final items = <_Item>[];
-
-    if (rawItems is List) {
-      for (final it in rawItems) {
-        if (it is Map) {
-          final m = Map<String, dynamic>.from(it as Map);
-          items.add(_Item.fromMap(m));
-        }
-      }
-    }
-
-    // order（可選）
-    items.sort((a, b) {
-      final ao = a.order ?? 1 << 30;
-      final bo = b.order ?? 1 << 30;
-      final c = ao.compareTo(bo);
-      if (c != 0) return c;
-      // 次排序：updatedAt/createdAt（新到舊）
-      final ad = a.updatedAt ?? a.createdAt;
-      final bd = b.updatedAt ?? b.createdAt;
-      if (ad == null && bd == null) return 0;
-      if (ad == null) return 1;
-      if (bd == null) return -1;
-      return bd.compareTo(ad);
-    });
-
-    return _Parsed(
-      exists: exists,
-      data: data,
-      title: title,
-      content: content,
-      items: items,
+  Widget _field(
+    TextEditingController c,
+    String label, {
+    String? hint,
+    int maxLines = 1,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: c,
+        maxLines: maxLines,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
     );
   }
 
-  bool _matchItem(_Item it) {
-    final q = _q.trim().toLowerCase();
-    if (q.isEmpty) return true;
-
-    return it.id.toLowerCase().contains(q) ||
-        it.title.toLowerCase().contains(q) ||
-        it.body.toLowerCase().contains(q) ||
-        it.url.toLowerCase().contains(q);
+  void _openPreview({required String id, required Map<String, dynamic> data}) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SiteContentDocPreviewPage(docId: id, initialData: data),
+      ),
+    );
   }
 
-  Future<void> _exportCsv(_Parsed p) async {
-    // 若 items 有資料：匯出 items；否則匯出 title/content
-    final buffer = StringBuffer();
-
-    if (p.items.isNotEmpty) {
-      buffer.writeln('id,title,body,url,order,createdAt,updatedAt');
-      for (final it in p.items) {
-        final row = <String>[
-          it.id,
-          it.title,
-          it.body,
-          it.url,
-          (it.order ?? '').toString(),
-          (it.createdAt?.toIso8601String() ?? ''),
-          (it.updatedAt?.toIso8601String() ?? ''),
-        ].map((e) => e.replaceAll(',', '，')).toList();
-        buffer.writeln(row.join(','));
-      }
-    } else {
-      buffer.writeln('title,content');
-      buffer.writeln('${p.title.replaceAll(',', '，')},${p.content.replaceAll(',', '，')}');
-    }
-
-    await Clipboard.setData(ClipboardData(text: buffer.toString()));
-    _snack('已複製 CSV 到剪貼簿（可貼到 Excel）');
-  }
-
-  // -------------------------
+  // ----------------------------
   // UI
-  // -------------------------
+  // ----------------------------
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.fallbackTitle, style: const TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text('官網內容管理'),
         actions: [
           IconButton(
-            tooltip: '重新整理',
-            onPressed: _busy ? null : _refreshServer,
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            tooltip: '複製 doc path',
-            onPressed: () => _copy(_path, done: '已複製 doc path'),
-            icon: const Icon(Icons.copy),
+            tooltip: '新增內容',
+            onPressed: () async {
+              final id = _db.collection('site_contents').doc().id;
+              await _openEditor(
+                docId: id,
+                data: const <String, dynamic>{},
+                isNew: true,
+              );
+            },
+            icon: const Icon(Icons.add),
           ),
           const SizedBox(width: 6),
         ],
       ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _ref.snapshots(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting && !snap.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return _ErrorBody(
-              title: widget.fallbackTitle,
-              error: '讀取失敗：${snap.error}',
-              hint: kDebugMode ? 'doc=$_path' : null,
-            );
-          }
-
-          final p = _parse(snap.data);
-
-          final filteredItems = p.items.where(_matchItem).toList();
-          final hasList = p.items.isNotEmpty;
-
-          return Stack(
-            children: [
-              Column(
-                children: [
-                  _FilterBar(
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
                     controller: _searchCtrl,
-                    onChanged: (v) => setState(() => _q = v),
-                    onClear: () {
-                      _searchCtrl.clear();
-                      setState(() => _q = '');
-                    },
-                    subtitle: hasList
-                        ? '共 ${p.items.length} 筆（篩選後 ${filteredItems.length} 筆）'
-                        : (p.exists ? '已讀取 $_path' : '使用預設內容（$_path 不存在）'),
+                    onChanged: (_) => setState(() {}),
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.search),
+                      hintText: '搜尋 title / slug / category / id',
+                      filled: true,
+                      fillColor: cs.surfaceContainerHighest.withValues(
+                        alpha: 56,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: cs.outlineVariant),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: cs.outlineVariant),
+                      ),
+                    ),
                   ),
-                  const Divider(height: 1),
-                  Expanded(
-                    child: hasList
-                        ? _ItemsList(
-                            title: p.title,
-                            items: filteredItems,
-                            fmtTime: _fmt,
-                            onCopyJson: (m) => _copy(jsonEncode(m), done: '已複製 JSON'),
-                            onCopyUrl: (u) => _copy(u, done: '已複製 URL'),
-                            onCopyText: (t) => _copy(t, done: '已複製內容'),
-                          )
-                        : _DocBody(
-                            title: p.title,
-                            content: p.content,
-                            debugHint: kDebugMode ? 'doc=$_path exists=${p.exists}' : null,
-                            onCopyTitle: () => _copy(p.title, done: '已複製標題'),
-                            onCopyContent: () => _copy(p.content, done: '已複製內容'),
-                            onCopyJson: () => _copy(jsonEncode(p.data), done: '已複製 JSON'),
+                ),
+                const SizedBox(width: 10),
+                DropdownButton<String>(
+                  value: _pubFilter,
+                  items: const [
+                    DropdownMenuItem(value: 'all', child: Text('全部')),
+                    DropdownMenuItem(value: 'published', child: Text('已發布')),
+                    DropdownMenuItem(value: 'draft', child: Text('草稿/未發布')),
+                  ],
+                  onChanged: (v) => setState(() => _pubFilter = v ?? 'all'),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            child: Row(
+              children: [
+                DropdownButton<String>(
+                  value: _category,
+                  items: const [
+                    DropdownMenuItem(value: 'all', child: Text('全部分類')),
+                    DropdownMenuItem(value: 'about', child: Text('about')),
+                    DropdownMenuItem(value: 'terms', child: Text('terms')),
+                    DropdownMenuItem(value: 'privacy', child: Text('privacy')),
+                    DropdownMenuItem(value: 'news', child: Text('news')),
+                    DropdownMenuItem(value: 'faq', child: Text('faq')),
+                  ],
+                  onChanged: (v) => setState(() => _category = v ?? 'all'),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  '提示：分類可自行擴充（此下拉僅示範）',
+                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _baseQuery().snapshots(),
+              builder: (context, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snap.hasError) {
+                  return Center(child: Text('讀取失敗：${snap.error}'));
+                }
+
+                final docs = snap.data?.docs ?? const [];
+                final filtered = docs
+                    .where((d) => _match(d.id, d.data()))
+                    .toList();
+
+                if (filtered.isEmpty) {
+                  return Center(
+                    child: Text(
+                      _searchCtrl.text.trim().isEmpty ? '目前沒有內容' : '沒有符合的內容',
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 90),
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (_, i) {
+                    final d = filtered[i];
+                    final data = d.data();
+
+                    final title = _s(data['title']).isEmpty
+                        ? d.id
+                        : _s(data['title']);
+                    final slug = _s(data['slug']);
+                    final category = _s(data['category']);
+                    final published = _b(data['published'], fallback: true);
+                    final updatedAt = _fmt(_toDate(data['updatedAt']));
+
+                    return Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        side: BorderSide(color: cs.outlineVariant),
+                      ),
+                      child: ListTile(
+                        onTap: () => _openPreview(id: d.id, data: data),
+                        title: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            _PubPill(published: published),
+                          ],
+                        ),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 6,
+                                children: [
+                                  if (category.isNotEmpty)
+                                    _MiniChip(
+                                      icon: Icons.folder,
+                                      text: category,
+                                    ),
+                                  if (slug.isNotEmpty)
+                                    _MiniChip(
+                                      icon: Icons.link,
+                                      text: 'slug:$slug',
+                                    ),
+                                  if (updatedAt.isNotEmpty)
+                                    _MiniChip(
+                                      icon: Icons.update,
+                                      text: updatedAt,
+                                    ),
+                                  _MiniChip(icon: Icons.tag, text: d.id),
+                                ],
+                              ),
+                            ],
                           ),
+                        ),
+                        trailing: PopupMenuButton<String>(
+                          onSelected: (v) async {
+                            if (v == 'preview') {
+                              _openPreview(id: d.id, data: data);
+                            } else if (v == 'edit') {
+                              await _openEditor(
+                                docId: d.id,
+                                data: data,
+                                isNew: false,
+                              );
+                            } else if (v == 'pub_on') {
+                              await _togglePublished(d.id, true);
+                            } else if (v == 'pub_off') {
+                              await _togglePublished(d.id, false);
+                            } else if (v == 'delete') {
+                              await _deleteDoc(d.id, title);
+                            }
+                          },
+                          itemBuilder: (_) => [
+                            const PopupMenuItem(
+                              value: 'preview',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.open_in_new, size: 18),
+                                  SizedBox(width: 8),
+                                  Text('預覽'),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'edit',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.edit_outlined, size: 18),
+                                  SizedBox(width: 8),
+                                  Text('編輯'),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuDivider(),
+                            PopupMenuItem(
+                              value: published ? 'pub_off' : 'pub_on',
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    published
+                                        ? Icons.visibility_off
+                                        : Icons.visibility,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(published ? '改為未發布' : '發布'),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuDivider(),
+                            const PopupMenuItem(
+                              value: 'delete',
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.delete_outline,
+                                    size: 18,
+                                    color: Colors.red,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    '刪除',
+                                    style: TextStyle(color: Colors.red),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ------------------------------------------------------------
+// ✅ 你缺的預覽頁：SiteContentDocPreviewPage（同檔提供）
+// ------------------------------------------------------------
+class SiteContentDocPreviewPage extends StatelessWidget {
+  const SiteContentDocPreviewPage({
+    super.key,
+    required this.docId,
+    this.initialData,
+  });
+
+  final String docId;
+  final Map<String, dynamic>? initialData;
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  bool _b(dynamic v, {bool fallback = false}) {
+    if (v is bool) return v;
+    if (v is num) return v != 0;
+    if (v is String) {
+      final t = v.trim().toLowerCase();
+      if (t == 'true' || t == '1' || t == 'yes') return true;
+      if (t == 'false' || t == '0' || t == 'no') return false;
+    }
+    return fallback;
+  }
+
+  DateTime? _toDate(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    if (v is int) {
+      try {
+        return DateTime.fromMillisecondsSinceEpoch(v);
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  String _fmt(DateTime? d) {
+    if (d == null) return '';
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final db = FirebaseFirestore.instance;
+
+    final ref = db.collection('site_contents').doc(docId);
+
+    Widget buildBody(Map<String, dynamic> data) {
+      final title = _s(data['title']).isEmpty ? docId : _s(data['title']);
+      final slug = _s(data['slug']);
+      final category = _s(data['category']);
+      final content = _s(data['content']);
+      final published = _b(data['published'], fallback: true);
+      final updatedAt = _fmt(_toDate(data['updatedAt']));
+      final createdAt = _fmt(_toDate(data['createdAt']));
+
+      return ListView(
+        padding: const EdgeInsets.all(14),
+        children: [
+          Card(
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: [
+                      _MiniChip(icon: Icons.tag, text: docId),
+                      if (category.isNotEmpty)
+                        _MiniChip(icon: Icons.folder, text: category),
+                      if (slug.isNotEmpty)
+                        _MiniChip(icon: Icons.link, text: 'slug:$slug'),
+                      _MiniChip(
+                        icon: published ? Icons.public : Icons.visibility_off,
+                        text: published ? '已發布' : '未發布',
+                      ),
+                      if (updatedAt.isNotEmpty)
+                        _MiniChip(icon: Icons.update, text: updatedAt),
+                      if (createdAt.isNotEmpty)
+                        _MiniChip(icon: Icons.schedule, text: createdAt),
+                    ],
                   ),
                 ],
               ),
-              if (_busy)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: _BusyBar(label: _busyLabel.isEmpty ? '處理中...' : _busyLabel),
-                ),
-              // 浮動匯出按鈕（右下）
-              Positioned(
-                right: 14,
-                bottom: 14 + (_busy ? 50 : 0),
-                child: FloatingActionButton.extended(
-                  onPressed: _busy ? null : () => _exportCsv(p),
-                  icon: const Icon(Icons.download_outlined),
-                  label: const Text('匯出CSV'),
-                ),
-              ),
-            ],
-          );
+            ),
+          ),
+          const SizedBox(height: 10),
+          Card(
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: content.isEmpty
+                  ? Text('（無內容）', style: TextStyle(color: cs.onSurfaceVariant))
+                  : SelectableText(
+                      content,
+                      style: const TextStyle(fontSize: 15, height: 1.55),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('內容預覽')),
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: ref.snapshots(),
+        builder: (context, snap) {
+          // 若 initialData 有值：先顯示（讓畫面更快），但仍以 Firestore stream 為準
+          if (!snap.hasData) {
+            if (initialData != null) return buildBody(initialData!);
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snap.hasError) return Center(child: Text('讀取失敗：${snap.error}'));
+
+          final doc = snap.data!;
+          if (!doc.exists) return Center(child: Text('找不到內容：$docId'));
+
+          final data = doc.data() ?? <String, dynamic>{};
+          return buildBody(data);
         },
       ),
     );
   }
 }
 
-// ------------------------------------------------------------
-// Models
-// ------------------------------------------------------------
-class _Parsed {
-  final bool exists;
-  final Map<String, dynamic> data;
-  final String title;
-  final String content;
-  final List<_Item> items;
-
-  _Parsed({
-    required this.exists,
-    required this.data,
-    required this.title,
-    required this.content,
-    required this.items,
-  });
-}
-
-class _Item {
-  final String id;
-  final String title;
-  final String body;
-  final String url;
-  final int? order;
-  final DateTime? createdAt;
-  final DateTime? updatedAt;
-
-  _Item({
-    required this.id,
-    required this.title,
-    required this.body,
-    required this.url,
-    required this.order,
-    required this.createdAt,
-    required this.updatedAt,
-  });
-
-  static String _s(dynamic v) => (v ?? '').toString().trim();
-  static DateTime? _toDate(dynamic v) {
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
-    return null;
-  }
-
-  factory _Item.fromMap(Map<String, dynamic> m) {
-    final title = _s(m['title']).isNotEmpty ? _s(m['title']) : _s(m['name']);
-    final body = _s(m['body']).isNotEmpty
-        ? _s(m['body'])
-        : (_s(m['desc']).isNotEmpty ? _s(m['desc']) : _s(m['content']));
-    final url = _s(m['url']).isNotEmpty ? _s(m['url']) : _s(m['link']);
-
-    return _Item(
-      id: _s(m['id']).isEmpty ? '' : _s(m['id']),
-      title: title,
-      body: body,
-      url: url,
-      order: m['order'] is num ? (m['order'] as num).toInt() : null,
-      createdAt: _toDate(m['createdAt']),
-      updatedAt: _toDate(m['updatedAt']),
-    );
-  }
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'body': body,
-        'url': url,
-        'order': order,
-        'createdAt': createdAt?.toIso8601String(),
-        'updatedAt': updatedAt?.toIso8601String(),
-      };
-}
-
-// ------------------------------------------------------------
-// Widgets
-// ------------------------------------------------------------
-class _FilterBar extends StatelessWidget {
-  const _FilterBar({
-    required this.controller,
-    required this.onChanged,
-    required this.onClear,
-    required this.subtitle,
-  });
-
-  final TextEditingController controller;
-  final ValueChanged<String> onChanged;
-  final VoidCallback onClear;
-  final String subtitle;
+// ----------------------------
+// UI chips
+// ----------------------------
+class _MiniChip extends StatelessWidget {
+  const _MiniChip({required this.icon, required this.text});
+  final IconData icon;
+  final String text;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: Column(
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withValues(alpha: 36),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          TextField(
-            controller: controller,
-            decoration: InputDecoration(
-              isDense: true,
-              prefixIcon: const Icon(Icons.search),
-              border: const OutlineInputBorder(),
-              hintText: '搜尋：標題 / 內容 / URL / id',
-              suffixIcon: controller.text.trim().isEmpty
-                  ? null
-                  : IconButton(
-                      tooltip: '清除',
-                      onPressed: onClear,
-                      icon: const Icon(Icons.clear),
-                    ),
-            ),
-            onChanged: onChanged,
-          ),
-          const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              subtitle,
-              style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800),
+          Icon(icon, size: 14, color: cs.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 12,
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ],
@@ -437,218 +757,28 @@ class _FilterBar extends StatelessWidget {
   }
 }
 
-class _DocBody extends StatelessWidget {
-  const _DocBody({
-    required this.title,
-    required this.content,
-    required this.onCopyTitle,
-    required this.onCopyContent,
-    required this.onCopyJson,
-    this.debugHint,
-  });
-
-  final String title;
-  final String content;
-  final String? debugHint;
-
-  final VoidCallback onCopyTitle;
-  final VoidCallback onCopyContent;
-  final VoidCallback onCopyJson;
+class _PubPill extends StatelessWidget {
+  const _PubPill({required this.published});
+  final bool published;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final bg = published
+        ? cs.primary.withValues(alpha: 18)
+        : cs.surfaceContainerHighest.withValues(alpha: 56);
+    final fg = published ? cs.primary : cs.onSurfaceVariant;
 
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          children: [
-            Expanded(child: Text(title, style: Theme.of(context).textTheme.headlineSmall)),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: '複製標題',
-              onPressed: onCopyTitle,
-              icon: const Icon(Icons.copy),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        SelectableText(
-          content,
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
-        const SizedBox(height: 14),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            OutlinedButton.icon(
-              onPressed: onCopyContent,
-              icon: const Icon(Icons.content_copy),
-              label: const Text('複製內容'),
-            ),
-            OutlinedButton.icon(
-              onPressed: onCopyJson,
-              icon: const Icon(Icons.code),
-              label: const Text('複製JSON'),
-            ),
-          ],
-        ),
-        if (debugHint != null) ...[
-          const SizedBox(height: 18),
-          const Divider(),
-          Text(debugHint!, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-        ],
-      ],
-    );
-  }
-}
-
-class _ItemsList extends StatelessWidget {
-  const _ItemsList({
-    required this.title,
-    required this.items,
-    required this.fmtTime,
-    required this.onCopyJson,
-    required this.onCopyUrl,
-    required this.onCopyText,
-  });
-
-  final String title;
-  final List<_Item> items;
-  final String Function(DateTime?) fmtTime;
-
-  final ValueChanged<Map<String, dynamic>> onCopyJson;
-  final ValueChanged<String> onCopyUrl;
-  final ValueChanged<String> onCopyText;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    if (items.isEmpty) {
-      return Center(
-        child: Text('沒有資料', style: TextStyle(color: cs.onSurfaceVariant)),
-      );
-    }
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
-      children: [
-        Text(title, style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 12),
-        for (final it in items)
-          Card(
-            elevation: 0,
-            color: cs.surfaceContainerHighest.withOpacity(0.35),
-            child: ExpansionTile(
-              title: Text(
-                it.title.isEmpty ? '（未命名）' : it.title,
-                style: const TextStyle(fontWeight: FontWeight.w900),
-              ),
-              subtitle: Wrap(
-                spacing: 10,
-                runSpacing: 6,
-                children: [
-                  if (it.url.isNotEmpty)
-                    Text('URL：${it.url}', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                  if (it.createdAt != null)
-                    Text('建立：${fmtTime(it.createdAt)}', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                  if (it.updatedAt != null)
-                    Text('更新：${fmtTime(it.updatedAt)}', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-                ],
-              ),
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (it.body.isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        SelectableText(it.body),
-                        const SizedBox(height: 12),
-                      ],
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        children: [
-                          if (it.url.isNotEmpty)
-                            OutlinedButton.icon(
-                              onPressed: () => onCopyUrl(it.url),
-                              icon: const Icon(Icons.link),
-                              label: const Text('複製URL'),
-                            ),
-                          OutlinedButton.icon(
-                            onPressed: () => onCopyText(it.body.isNotEmpty ? it.body : it.title),
-                            icon: const Icon(Icons.content_copy),
-                            label: const Text('複製內容'),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: () => onCopyJson(it.toJson()),
-                            icon: const Icon(Icons.code),
-                            label: const Text('複製JSON'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _ErrorBody extends StatelessWidget {
-  const _ErrorBody({required this.title, required this.error, this.hint});
-
-  final String title;
-  final String error;
-  final String? hint;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text(title, style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 10),
-        Text(error, style: TextStyle(color: cs.error)),
-        if (hint != null) ...[
-          const SizedBox(height: 16),
-          Text(hint!, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-        ],
-      ],
-    );
-  }
-}
-
-class _BusyBar extends StatelessWidget {
-  const _BusyBar({required this.label});
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Material(
-      elevation: 8,
-      color: cs.surface,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Row(
-          children: [
-            const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800)),
-            ),
-          ],
-        ),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Text(
+        published ? '已發布' : '未發布',
+        style: TextStyle(color: fg, fontWeight: FontWeight.w800, fontSize: 12),
       ),
     );
   }

@@ -10,7 +10,7 @@ import 'package:flutter/material.dart';
 /// {
 ///   key: "about" | "terms" | "privacy",
 ///   title: "關於我們",
-///   content: "<html or markdown>",
+///   content: `<html or markdown>`,
 ///   status: "draft" | "published",
 ///   isPublic: true,
 ///   updatedAt: Timestamp,
@@ -25,8 +25,9 @@ class AdminPagesPage extends StatefulWidget {
 
 class _AdminPagesPageState extends State<AdminPagesPage> {
   final _db = FirebaseFirestore.instance;
-  late final CollectionReference<Map<String, dynamic>> _col =
-      _db.collection('site_contents');
+  late final CollectionReference<Map<String, dynamic>> _col = _db.collection(
+    'site_contents',
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -95,113 +96,136 @@ class _AdminPagesPageState extends State<AdminPagesPage> {
     );
   }
 
-  Future<void> _createPage() async {
-    await _openEditor();
-  }
-
+  Future<void> _createPage() async => _openEditor();
   Future<void> _editPage(
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
-  ) async {
-    await _openEditor(doc: doc);
-  }
+  ) async => _openEditor(doc: doc);
 
   Future<void> _openEditor({
     QueryDocumentSnapshot<Map<String, dynamic>>? doc,
   }) async {
-    final titleCtrl =
-        TextEditingController(text: doc?.data()['title'] ?? '');
-    final keyCtrl =
-        TextEditingController(text: doc?.data()['key'] ?? '');
-    final contentCtrl =
-        TextEditingController(text: doc?.data()['content'] ?? '');
+    final data = doc?.data() ?? <String, dynamic>{};
 
-    String status = doc?.data()['status'] ?? 'draft';
-    bool isPublic = doc?.data()['isPublic'] == true;
+    final titleCtrl = TextEditingController(
+      text: (data['title'] ?? '').toString(),
+    );
+    final keyCtrl = TextEditingController(text: (data['key'] ?? '').toString());
+    final contentCtrl = TextEditingController(
+      text: (data['content'] ?? '').toString(),
+    );
+
+    String status = (data['status'] ?? 'draft').toString();
+    bool isPublic = data['isPublic'] == true;
 
     await showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text(doc == null ? '新增頁面' : '編輯頁面'),
-        content: SizedBox(
-          width: 900,
-          child: SingleChildScrollView(
-            child: Column(
-              children: [
-                TextField(
-                  controller: titleCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '標題',
-                    border: OutlineInputBorder(),
+      builder: (dialogCtx) {
+        final nav = Navigator.of(
+          dialogCtx,
+        ); // ✅ 先拿 Navigator，避免 await 後直接用 context
+        return StatefulBuilder(
+          builder: (dialogCtx, setDialogState) {
+            return AlertDialog(
+              title: Text(doc == null ? '新增頁面' : '編輯頁面'),
+              content: SizedBox(
+                width: 900,
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      TextField(
+                        controller: titleCtrl,
+                        decoration: const InputDecoration(
+                          labelText: '標題',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: keyCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Key（about / terms / privacy）',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: contentCtrl,
+                        maxLines: 12,
+                        decoration: const InputDecoration(
+                          labelText: '內容',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+
+                      // ✅ DropdownButtonFormField：value 已 deprecated → initialValue
+                      DropdownButtonFormField<String>(
+                        key: ValueKey('status_$status'),
+                        initialValue: status,
+                        items: const [
+                          DropdownMenuItem(value: 'draft', child: Text('草稿')),
+                          DropdownMenuItem(
+                            value: 'published',
+                            child: Text('已上架'),
+                          ),
+                        ],
+                        onChanged: (v) =>
+                            setDialogState(() => status = v ?? status),
+                        decoration: const InputDecoration(
+                          labelText: '狀態',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      SwitchListTile(
+                        title: const Text('前台公開'),
+                        value: isPublic,
+                        onChanged: (v) => setDialogState(() => isPublic = v),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: keyCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Key（about / terms / privacy）',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: contentCtrl,
-                  maxLines: 12,
-                  decoration: const InputDecoration(
-                    labelText: '內容',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                DropdownButtonFormField<String>(
-                  value: status,
-                  items: const [
-                    DropdownMenuItem(value: 'draft', child: Text('草稿')),
-                    DropdownMenuItem(value: 'published', child: Text('已上架')),
-                  ],
-                  onChanged: (v) => status = v ?? status,
-                  decoration: const InputDecoration(
-                    labelText: '狀態',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                SwitchListTile(
-                  title: const Text('前台公開'),
-                  value: isPublic,
-                  onChanged: (v) => isPublic = v,
+              ),
+              actions: [
+                TextButton(onPressed: () => nav.pop(), child: const Text('取消')),
+                FilledButton(
+                  onPressed: () async {
+                    final payload = {
+                      'title': titleCtrl.text.trim(),
+                      'key': keyCtrl.text.trim(),
+                      'content': contentCtrl.text,
+                      'status': status,
+                      'isPublic': isPublic,
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    };
+
+                    try {
+                      if (doc == null) {
+                        await _col.add(payload);
+                      } else {
+                        await _col
+                            .doc(doc.id)
+                            .set(payload, SetOptions(merge: true));
+                      }
+                      if (!mounted) return;
+                      nav.pop(); // ✅ 不用 await 後再直接用 context
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+                    }
+                  },
+                  child: const Text('儲存'),
                 ),
               ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              final data = {
-                'title': titleCtrl.text.trim(),
-                'key': keyCtrl.text.trim(),
-                'content': contentCtrl.text,
-                'status': status,
-                'isPublic': isPublic,
-                'updatedAt': FieldValue.serverTimestamp(),
-              };
-
-              if (doc == null) {
-                await _col.add(data);
-              } else {
-                await _col.doc(doc.id).set(data, SetOptions(merge: true));
-              }
-
-              if (!mounted) return;
-              Navigator.pop(context);
-            },
-            child: const Text('儲存'),
-          ),
-        ],
-      ),
+            );
+          },
+        );
+      },
     );
+
+    titleCtrl.dispose();
+    keyCtrl.dispose();
+    contentCtrl.dispose();
   }
 }

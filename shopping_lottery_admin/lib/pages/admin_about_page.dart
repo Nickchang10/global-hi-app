@@ -1,341 +1,396 @@
 // lib/pages/admin_about_page.dart
 //
-// ✅ AdminAboutPage v3.0 Final
-// ------------------------------------------------------------
-// - 公司簡介與願景內容管理
-// - Firestore + Firebase Storage 整合
-// - 圖片上傳、排序、上下架、編輯
-// - type: 'company' / 'vision'
-// ------------------------------------------------------------
+// ✅ AdminAboutPage（單檔完整版｜可編譯｜已修正：control_flow_in_finally + use_build_context_synchronously）
+// -----------------------------------------------------------------------------
+// - 顯示：管理後台版本資訊、環境資訊、常用連結（以複製方式）
+// - 支援：複製診斷資訊、檢查更新（示範 async）、回報問題（複製模板）
+// - ✅ 重點：
+//   1) finally 裡不使用 return（修正 control_flow_in_finally）
+//   2) async 後的 UI 操作：先抓 messenger/nav + mounted 檢查
+//
+// 依賴：flutter/material.dart, flutter/services.dart
+// -----------------------------------------------------------------------------
 
-import 'dart:typed_data';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:file_picker/file_picker.dart';
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class AdminAboutPage extends StatefulWidget {
-  final String type; // company / vision
-  const AdminAboutPage({super.key, required this.type});
+  const AdminAboutPage({super.key});
 
   @override
   State<AdminAboutPage> createState() => _AdminAboutPageState();
 }
 
 class _AdminAboutPageState extends State<AdminAboutPage> {
-  final _db = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
-  bool _loading = true;
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs = [];
+  // 不依賴 package_info_plus，避免缺套件造成編譯失敗
+  static const String kAppName = 'Osmile Admin';
+  static const String kAppVersion = '1.0.0';
+  static const String kBuildNumber = '1';
+  static const String kChannel = 'stable';
 
-  String get _title => widget.type == 'vision' ? '願景與理念管理' : '公司簡介管理';
+  bool _checking = false;
+  DateTime? _lastCheckedAt;
+  String? _checkResult;
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
+  String _fmtDt(DateTime? dt) {
+    if (dt == null) return '—';
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    final ss = dt.second.toString().padLeft(2, '0');
+    return '$y/$m/$d $hh:$mm:$ss';
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  String _platformLine() {
+    if (kIsWeb) return 'Web';
     try {
-      final q = await _db
-          .collection('about_sections')
-          .where('type', isEqualTo: widget.type)
-          .orderBy('order')
-          .get();
-      setState(() => _docs = q.docs);
-    } catch (e) {
-      _snack('載入失敗：$e');
-    } finally {
-      setState(() => _loading = false);
+      return '${Platform.operatingSystem} (${Platform.operatingSystemVersion})';
+    } catch (_) {
+      return 'Unknown';
     }
   }
 
-  void _snack(String msg) {
+  String _runtimeLine() {
+    return kReleaseMode ? 'release' : (kProfileMode ? 'profile' : 'debug');
+  }
+
+  Future<void> _copyToClipboard(String text, {String? toast}) async {
+    if (text.trim().isEmpty) return;
+
+    // ✅ 先抓 messenger，避免 await 後再用 context
+    final messenger = ScaffoldMessenger.of(context);
+
+    await Clipboard.setData(ClipboardData(text: text));
+
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    messenger.showSnackBar(SnackBar(content: Text(toast ?? '已複製到剪貼簿')));
   }
 
-  Future<void> _createNew() async {
-    final ref = await _db.collection('about_sections').add({
-      'type': widget.type,
-      'title': '新段落',
-      'body': '',
-      'imageUrl': '',
-      'order': _docs.length + 1,
-      'isActive': true,
-      'createdAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
+  String _buildDiagnostics() {
+    final lines = <String>[
+      '[$kAppName]',
+      'version=$kAppVersion+$kBuildNumber ($kChannel)',
+      'platform=${_platformLine()}',
+      'mode=${_runtimeLine()}',
+      'lastCheck=${_fmtDt(_lastCheckedAt)}',
+      if (_checkResult != null) 'checkResult=$_checkResult',
+    ];
+    return lines.join('\n');
+  }
+
+  Future<void> _simulateCheckUpdate() async {
+    if (_checking) return;
+
+    // ✅ 先取 messenger（避免 async gap 後用 context）
+    final messenger = ScaffoldMessenger.of(context);
+
+    setState(() {
+      _checking = true;
+      _checkResult = null;
     });
-    _snack('已新增段落');
-    _load();
-    _edit(ref.id);
-  }
-
-  Future<void> _delete(DocumentSnapshot d) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('刪除確認'),
-        content: Text('確定要刪除「${d['title'] ?? ''}」嗎？'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-        ],
-      ),
-    );
-    if (ok != true) return;
 
     try {
-      final img = (d['imageUrl'] ?? '').toString();
-      if (img.isNotEmpty) {
-        try {
-          await _storage.refFromURL(img).delete();
-        } catch (_) {}
-      }
-      await d.reference.delete();
-      _snack('已刪除');
-      _load();
+      // 模擬 API 檢查更新（你之後換成真的 request 也不會再出現 context across async）
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+
+      final now = DateTime.now();
+      final result = '目前已是最新版本（示範）';
+
+      if (!mounted) return;
+      setState(() {
+        _lastCheckedAt = now;
+        _checkResult = result;
+      });
+
+      messenger.showSnackBar(const SnackBar(content: Text('檢查完成')));
     } catch (e) {
-      _snack('刪除失敗：$e');
+      if (!mounted) return;
+      setState(() {
+        _checkResult = '檢查失敗：$e';
+      });
+      messenger.showSnackBar(SnackBar(content: Text('檢查失敗：$e')));
+    } finally {
+      // ✅ 修正：finally 裡不能 return
+      if (mounted) {
+        setState(() => _checking = false);
+      }
     }
-  }
-
-  Future<void> _toggleActive(DocumentSnapshot d) async {
-    await d.reference.set({
-      'isActive': !(d['isActive'] == true),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-    _load();
-  }
-
-  Future<void> _reorder(int oldIndex, int newIndex) async {
-    final items = List.of(_docs);
-    if (newIndex > oldIndex) newIndex -= 1;
-    final moved = items.removeAt(oldIndex);
-    items.insert(newIndex, moved);
-    setState(() => _docs = items);
-
-    for (int i = 0; i < items.length; i++) {
-      await items[i].reference.set({'order': i + 1}, SetOptions(merge: true));
-    }
-  }
-
-  Future<void> _edit(String id) async {
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => _AboutEditSheet(id: id),
-    );
-    _load();
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(_title),
+        title: const Text(
+          '關於後台',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
-          IconButton(icon: const Icon(Icons.add_outlined), onPressed: _createNew),
-          IconButton(icon: const Icon(Icons.refresh_outlined), onPressed: _load),
+          IconButton(
+            tooltip: '複製診斷資訊',
+            icon: const Icon(Icons.copy),
+            onPressed: () =>
+                _copyToClipboard(_buildDiagnostics(), toast: '已複製診斷資訊'),
+          ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _docs.isEmpty
-              ? const Center(child: Text('目前沒有段落內容'))
-              : ReorderableListView.builder(
-                  itemCount: _docs.length,
-                  onReorder: _reorder,
-                  itemBuilder: (context, i) {
-                    final d = _docs[i];
-                    final active = d['isActive'] == true;
-                    final title = (d['title'] ?? '').toString();
-                    final body = (d['body'] ?? '').toString();
-                    final img = (d['imageUrl'] ?? '').toString();
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _headerCard(cs),
+          const SizedBox(height: 12),
 
-                    return Card(
-                      key: ValueKey(d.id),
-                      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      child: ListTile(
-                        leading: img.isEmpty
-                            ? const Icon(Icons.image_outlined, size: 40)
-                            : ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: Image.network(img, width: 50, height: 50, fit: BoxFit.cover),
-                              ),
-                        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-                        subtitle: Text(
-                          body.isEmpty ? '(尚無內容)' : body,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: PopupMenuButton<String>(
-                          onSelected: (v) {
-                            switch (v) {
-                              case 'toggle':
-                                _toggleActive(d);
-                                break;
-                              case 'edit':
-                                _edit(d.id);
-                                break;
-                              case 'delete':
-                                _delete(d);
-                                break;
-                            }
-                          },
-                          itemBuilder: (_) => [
-                            PopupMenuItem(
-                              value: 'toggle',
-                              child: Text(active ? '下架' : '上架'),
-                            ),
-                            const PopupMenuItem(value: 'edit', child: Text('編輯')),
-                            const PopupMenuItem(
-                              value: 'delete',
-                              child: Text('刪除', style: TextStyle(color: Colors.redAccent)),
-                            ),
-                          ],
-                        ),
-                        onTap: () => _edit(d.id),
-                      ),
-                    );
-                  },
+          _sectionTitle('版本資訊'),
+          _infoCard(
+            children: [
+              _kv('App', kAppName),
+              _kv('Version', '$kAppVersion+$kBuildNumber'),
+              _kv('Channel', kChannel),
+              _kv('Mode', _runtimeLine()),
+              _kv('Platform', _platformLine()),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          _sectionTitle('更新'),
+          _infoCard(
+            children: [
+              _kv('上次檢查', _fmtDt(_lastCheckedAt)),
+              if (_checkResult != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  _checkResult!,
+                  style: TextStyle(
+                    color: cs.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
+              ],
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  FilledButton.icon(
+                    onPressed: _checking ? null : _simulateCheckUpdate,
+                    icon: _checking
+                        ? const SizedBox(
+                            height: 18,
+                            width: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.system_update_alt),
+                    label: Text(_checking ? '檢查中...' : '檢查更新'),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    onPressed: () =>
+                        _copyToClipboard(_buildDiagnostics(), toast: '已複製診斷資訊'),
+                    icon: const Icon(Icons.bug_report_outlined),
+                    label: const Text('複製診斷'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          _sectionTitle('常用連結（複製）'),
+          _infoCard(
+            children: [
+              _linkRow(
+                label: 'Firebase Console',
+                url: 'https://console.firebase.google.com/',
+                onCopy: () => _copyToClipboard(
+                  'https://console.firebase.google.com/',
+                  toast: '已複製 Firebase Console 連結',
+                ),
+              ),
+              const SizedBox(height: 8),
+              _linkRow(
+                label: 'Google Maps',
+                url: 'https://www.google.com/maps',
+                onCopy: () => _copyToClipboard(
+                  'https://www.google.com/maps',
+                  toast: '已複製 Google Maps 連結',
+                ),
+              ),
+              const SizedBox(height: 8),
+              _linkRow(
+                label: 'Osmile 官網（示範）',
+                url: 'https://osmile.com.tw',
+                onCopy: () =>
+                    _copyToClipboard('https://osmile.com.tw', toast: '已複製官網連結'),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                '提示：此頁不依賴 url_launcher，會以「複製連結」方式避免缺套件造成編譯失敗。',
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          _sectionTitle('回報問題（複製模板）'),
+          _infoCard(
+            children: [
+              Text(
+                '遇到 bug 時，建議把「診斷資訊」與「重現步驟」一起貼給工程端。',
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () {
+                  final template = [
+                    '[Bug 回報]',
+                    '問題描述：',
+                    '重現步驟：',
+                    '預期結果：',
+                    '實際結果：',
+                    '',
+                    '--- 診斷資訊 ---',
+                    _buildDiagnostics(),
+                  ].join('\n');
+                  _copyToClipboard(template, toast: '已複製回報模板');
+                },
+                icon: const Icon(Icons.copy_all),
+                label: const Text('複製回報模板'),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 24),
+
+          Center(
+            child: Text(
+              '© ${DateTime.now().year} Osmile',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
     );
   }
-}
 
-// ------------------------------------------------------------
-// ✅ 編輯 BottomSheet：標題 / 內文 / 圖片
-// ------------------------------------------------------------
-class _AboutEditSheet extends StatefulWidget {
-  final String id;
-  const _AboutEditSheet({required this.id});
-
-  @override
-  State<_AboutEditSheet> createState() => _AboutEditSheetState();
-}
-
-class _AboutEditSheetState extends State<_AboutEditSheet> {
-  final _db = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
-  final _titleCtrl = TextEditingController();
-  final _bodyCtrl = TextEditingController();
-  String? _imageUrl;
-  bool _loading = true;
-  bool _saving = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final doc = await _db.collection('about_sections').doc(widget.id).get();
-    if (doc.exists) {
-      final d = doc.data()!;
-      _titleCtrl.text = (d['title'] ?? '').toString();
-      _bodyCtrl.text = (d['body'] ?? '').toString();
-      _imageUrl = (d['imageUrl'] ?? '').toString().isEmpty ? null : d['imageUrl'];
-    }
-    setState(() => _loading = false);
-  }
-
-  Future<void> _uploadImage() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
-    if (result == null) return;
-    final file = result.files.first;
-    Uint8List? bytes = file.bytes;
-    if (bytes == null) return;
-
-    setState(() => _saving = true);
-    try {
-      final path = 'about/${widget.id}/${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-      final ref = _storage.ref(path);
-      await ref.putData(bytes, SettableMetadata(contentType: 'image/${file.extension ?? 'jpg'}'));
-      final url = await ref.getDownloadURL();
-      await _db.collection('about_sections').doc(widget.id).set({
-        'imageUrl': url,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      setState(() => _imageUrl = url);
-    } finally {
-      setState(() => _saving = false);
-    }
-  }
-
-  Future<void> _save() async {
-    setState(() => _saving = true);
-    try {
-      await _db.collection('about_sections').doc(widget.id).set({
-        'title': _titleCtrl.text.trim(),
-        'body': _bodyCtrl.text.trim(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      Navigator.pop(context);
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
-    } finally {
-      setState(() => _saving = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-        left: 20,
-        right: 20,
-        top: 20,
-      ),
-      child: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
+  Widget _headerCard(ColorScheme cs) {
+    return Card(
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                color: cs.primaryContainer,
+              ),
+              child: Icon(
+                Icons.admin_panel_settings,
+                color: cs.onPrimaryContainer,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
               child: Column(
-                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('編輯段落', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _titleCtrl,
-                    decoration: const InputDecoration(labelText: '標題', border: OutlineInputBorder()),
+                  const Text(
+                    kAppName,
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
                   ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _bodyCtrl,
-                    maxLines: 6,
-                    decoration: const InputDecoration(labelText: '內文', border: OutlineInputBorder()),
-                  ),
-                  const SizedBox(height: 10),
-                  if (_imageUrl != null)
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.network(_imageUrl!, height: 150, fit: BoxFit.cover),
+                  const SizedBox(height: 2),
+                  Text(
+                    'version $kAppVersion+$kBuildNumber • $kChannel',
+                    style: TextStyle(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
                     ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      OutlinedButton.icon(
-                        onPressed: _saving ? null : _uploadImage,
-                        icon: const Icon(Icons.image_outlined),
-                        label: const Text('上傳圖片'),
-                      ),
-                    ],
                   ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: _saving ? null : _save,
-                    icon: const Icon(Icons.save_outlined),
-                    label: const Text('儲存'),
-                  ),
-                  const SizedBox(height: 16),
                 ],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, bottom: 8),
+      child: Text(
+        text,
+        style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+      ),
+    );
+  }
+
+  Widget _infoCard({required List<Widget> children}) {
+    return Card(
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: children,
+        ),
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 92,
+            child: Text(k, style: const TextStyle(fontWeight: FontWeight.w900)),
+          ),
+          Expanded(child: Text(v)),
+        ],
+      ),
+    );
+  }
+
+  Widget _linkRow({
+    required String label,
+    required String url,
+    required VoidCallback onCopy,
+  }) {
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(fontWeight: FontWeight.w900)),
+              const SizedBox(height: 2),
+              Text(url, maxLines: 1, overflow: TextOverflow.ellipsis),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        OutlinedButton.icon(
+          onPressed: onCopy,
+          icon: const Icon(Icons.copy, size: 18),
+          label: const Text('複製'),
+        ),
+      ],
     );
   }
 }

@@ -2,7 +2,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/badge_service.dart';
-import '../services/notification_service.dart';
 
 class BottomNavBar extends StatelessWidget {
   final int currentIndex;
@@ -33,12 +32,9 @@ class BottomNavBar extends StatelessWidget {
       type: BottomNavigationBarType.fixed,
       items: [
         _navItem(Icons.home, "首頁", 0),
-        _navItem(Icons.people, "社群", 1,
-            badgeCount: badge.socialCount),
-        _navItem(Icons.shopping_cart, "購物車", 2,
-            badgeCount: badge.cartCount),
-        _navItem(Icons.person, "我的", 3,
-            showDot: hasNotification),
+        _navItem(Icons.people, "社群", 1, badgeCount: badge.socialCount),
+        _navItem(Icons.shopping_cart, "購物車", 2, badgeCount: badge.cartCount),
+        _navItem(Icons.person, "我的", 3, showDot: hasNotification),
       ],
     );
   }
@@ -71,9 +67,10 @@ class BottomNavBar extends StatelessWidget {
               child: Text(
                 badgeCount > 0 ? badgeCount.toString() : "",
                 style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold),
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),
@@ -81,9 +78,6 @@ class BottomNavBar extends StatelessWidget {
       );
     }
 
-    return BottomNavigationBarItem(
-      icon: iconWidget,
-      label: label,
-    );
+    return BottomNavigationBarItem(icon: iconWidget, label: label);
   }
 }

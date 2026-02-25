@@ -34,8 +34,7 @@ class AnnouncementUnreadList extends StatefulWidget {
   });
 
   @override
-  State<AnnouncementUnreadList> createState() =>
-      _AnnouncementUnreadListState();
+  State<AnnouncementUnreadList> createState() => _AnnouncementUnreadListState();
 }
 
 class _AnnouncementUnreadListState extends State<AnnouncementUnreadList> {
@@ -91,13 +90,12 @@ class _AnnouncementUnreadListState extends State<AnnouncementUnreadList> {
               return const _LoadingView(label: '載入已讀名單...');
             }
 
-            final readIds =
-                readsSnap.data!.docs.map((d) => d.id).toSet();
+            final readIds = readsSnap.data!.docs.map((d) => d.id).toSet();
 
             // 未讀 users
-            final unreadUsers = userDocs.where((u) {
-              return !readIds.contains(u.id);
-            }).toList();
+            final unreadUsers = userDocs
+                .where((u) => !readIds.contains(u.id))
+                .toList();
 
             final q = _s(_searchCtrl.text);
             final filtered = unreadUsers.where((u) {
@@ -121,15 +119,19 @@ class _AnnouncementUnreadListState extends State<AnnouncementUnreadList> {
                         const Text(
                           '未讀名單',
                           style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w900),
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                          ),
                         ),
                         const SizedBox(width: 10),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
                           decoration: BoxDecoration(
-                            color: cs.error.withOpacity(0.1),
+                            // ✅ withOpacity -> withValues(alpha:)
+                            color: cs.error.withValues(alpha: 0.10),
                             borderRadius: BorderRadius.circular(999),
                           ),
                           child: Text(
@@ -179,11 +181,9 @@ class _AnnouncementUnreadListState extends State<AnnouncementUnreadList> {
                     else
                       ListView.separated(
                         shrinkWrap: true,
-                        physics:
-                            const NeverScrollableScrollPhysics(),
+                        physics: const NeverScrollableScrollPhysics(),
                         itemCount: filtered.length,
-                        separatorBuilder: (_, __) =>
-                            const Divider(height: 1),
+                        separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (_, i) {
                           final u = filtered[i];
                           final d = u.data();
@@ -194,16 +194,14 @@ class _AnnouncementUnreadListState extends State<AnnouncementUnreadList> {
 
                           return ListTile(
                             dense: true,
-                            leading: const Icon(
-                              Icons.person_outline,
-                              size: 20,
-                            ),
+                            leading: const Icon(Icons.person_outline, size: 20),
                             title: Text(
                               uid,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                  fontWeight: FontWeight.w800),
+                                fontWeight: FontWeight.w800,
+                              ),
                             ),
                             subtitle: Text(
                               [
@@ -212,9 +210,7 @@ class _AnnouncementUnreadListState extends State<AnnouncementUnreadList> {
                               ].join(' ｜ '),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                  color:
-                                      cs.onSurfaceVariant),
+                              style: TextStyle(color: cs.onSurfaceVariant),
                             ),
                           );
                         },
@@ -243,14 +239,14 @@ class _LoadingView extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Row(
-        children: const [
-          SizedBox(
+        children: [
+          const SizedBox(
             width: 18,
             height: 18,
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
-          SizedBox(width: 10),
-          Expanded(child: Text('載入中...')),
+          const SizedBox(width: 10),
+          Expanded(child: Text(label)),
         ],
       ),
     );
@@ -261,10 +257,7 @@ class _ErrorView extends StatelessWidget {
   final String title;
   final String message;
 
-  const _ErrorView({
-    required this.title,
-    required this.message,
-  });
+  const _ErrorView({required this.title, required this.message});
 
   @override
   Widget build(BuildContext context) {
@@ -274,14 +267,12 @@ class _ErrorView extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title,
-              style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                  color: cs.error)),
+          Text(
+            title,
+            style: TextStyle(fontWeight: FontWeight.w900, color: cs.error),
+          ),
           const SizedBox(height: 8),
-          Text(message,
-              style: TextStyle(
-                  color: cs.onSurfaceVariant)),
+          Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
         ],
       ),
     );

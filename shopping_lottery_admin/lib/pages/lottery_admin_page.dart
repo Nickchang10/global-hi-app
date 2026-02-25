@@ -17,14 +17,6 @@
 //   notified: bool
 //
 // ------------------------------------------------------------
-// 依賴：
-// - cloud_firestore
-// - firebase_auth
-// - provider
-// - services/admin_gate.dart
-// - services/auth_service.dart
-// - services/notification_service.dart
-// ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -52,12 +44,18 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
     super.dispose();
   }
 
-  /// ✅ 建立模擬抽獎紀錄
-  Future<void> _createFakeLottery(BuildContext context) async {
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  /// ✅ 建立模擬抽獎紀錄（不再傳 BuildContext 進來，避免 async gap 警告）
+  Future<void> _createFakeLottery() async {
     final uid = _searchCtrl.text.trim();
     if (uid.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('請輸入使用者 UID')));
+      _snack('請輸入使用者 UID');
       return;
     }
 
@@ -65,24 +63,29 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
     final prize = prizeList[DateTime.now().millisecond % prizeList.length];
     final status = prize == '未中獎' ? 'lost' : 'won';
 
-    await FirebaseFirestore.instance.collection('lotteries').add({
-      'uid': uid,
-      'prize': prize,
-      'status': status,
-      'createdAt': FieldValue.serverTimestamp(),
-      'notified': false,
-    });
+    try {
+      await FirebaseFirestore.instance.collection('lotteries').add({
+        'uid': uid,
+        'prize': prize,
+        'status': status,
+        'createdAt': FieldValue.serverTimestamp(),
+        'notified': false,
+      });
 
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('已建立模擬抽獎紀錄')));
+      if (!mounted) return;
+      _snack('已建立模擬抽獎紀錄');
+    } catch (e) {
+      if (!mounted) return;
+      _snack('建立失敗：$e');
+    }
   }
 
-  /// ✅ 發送中獎通知
-  Future<void> _sendNotify(BuildContext context, Map<String, dynamic> data, String docId) async {
-    try {
-      final uid = (data['uid'] ?? '').toString();
-      if (uid.isEmpty) return;
+  /// ✅ 發送中獎通知（await 後使用 SnackBar 前都 guard mounted）
+  Future<void> _sendNotify(Map<String, dynamic> data, String docId) async {
+    final uid = (data['uid'] ?? '').toString().trim();
+    if (uid.isEmpty) return;
 
+    try {
       final prize = (data['prize'] ?? '').toString();
       final notifSvc = context.read<NotificationService>();
 
@@ -100,11 +103,11 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
           .doc(docId)
           .update({'notified': true});
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已發送通知')));
+      if (!mounted) return;
+      _snack('已發送通知');
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('發送通知失敗：$e')));
+      if (!mounted) return;
+      _snack('發送通知失敗：$e');
     }
   }
 
@@ -119,7 +122,9 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
         final user = authSnap.data;
 
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
         if (user == null) {
           return const Scaffold(body: Center(child: Text('請先登入')));
@@ -129,14 +134,14 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
           future: gate.ensureAndGetRole(user),
           builder: (context, roleSnap) {
             if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
 
             if (roleSnap.hasError) {
               return Scaffold(
-                body: Center(
-                  child: Text('角色讀取失敗：${roleSnap.error}'),
-                ),
+                body: Center(child: Text('角色讀取失敗：${roleSnap.error}')),
               );
             }
 
@@ -150,7 +155,7 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
               );
             }
 
-            final query = FirebaseFirestore.instance
+            final Query<Map<String, dynamic>> query = FirebaseFirestore.instance
                 .collection('lotteries')
                 .orderBy('createdAt', descending: true)
                 .limit(300);
@@ -174,7 +179,7 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
               floatingActionButton: FloatingActionButton.extended(
                 icon: const Icon(Icons.add),
                 label: const Text('新增測試紀錄'),
-                onPressed: () => _createFakeLottery(context),
+                onPressed: _createFakeLottery,
               ),
               body: Column(
                 children: [
@@ -201,22 +206,27 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
                     ),
                   ),
                   Expanded(
-                    child: StreamBuilder<QuerySnapshot>(
+                    child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                       stream: query.snapshots(),
                       builder: (context, snapshot) {
                         if (snapshot.hasError) {
                           return Center(child: Text('錯誤：${snapshot.error}'));
                         }
                         if (!snapshot.hasData) {
-                          return const Center(child: CircularProgressIndicator());
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
                         }
 
                         final docs = snapshot.data!.docs;
+
                         final filtered = _search.isEmpty
                             ? docs
                             : docs.where((d) {
-                                final data = d.data() as Map<String, dynamic>;
-                                return (data['uid'] ?? '').toString().contains(_search);
+                                final data = d.data();
+                                return (data['uid'] ?? '').toString().contains(
+                                  _search,
+                                );
                               }).toList();
 
                         if (filtered.isEmpty) {
@@ -228,37 +238,48 @@ class _LotteryAdminPageState extends State<LotteryAdminPage> {
                           separatorBuilder: (_, __) => const Divider(height: 1),
                           itemBuilder: (_, i) {
                             final doc = filtered[i];
-                            final data = doc.data() as Map<String, dynamic>;
+                            final data = doc.data();
+
                             final uid = (data['uid'] ?? '').toString();
                             final prize = (data['prize'] ?? '').toString();
                             final status = (data['status'] ?? '').toString();
                             final notified = data['notified'] == true;
-                            final createdAt = (data['createdAt'] as Timestamp?)
-                                ?.toDate()
-                                .toLocal()
-                                .toString()
-                                .split('.')[0];
+
+                            final createdAt = (data['createdAt'] is Timestamp)
+                                ? (data['createdAt'] as Timestamp)
+                                      .toDate()
+                                      .toLocal()
+                                      .toString()
+                                      .split('.')[0]
+                                : '-';
 
                             return ListTile(
                               leading: Icon(
                                 status == 'won'
                                     ? Icons.emoji_events_outlined
                                     : Icons.cancel_outlined,
-                                color: status == 'won' ? Colors.amber : Colors.grey,
+                                color: status == 'won'
+                                    ? Colors.amber
+                                    : Colors.grey,
                               ),
                               title: Text('UID：$uid'),
-                              subtitle: Text('獎項：$prize\n建立時間：${createdAt ?? '-'}'),
+                              subtitle: Text('獎項：$prize\n建立時間：$createdAt'),
                               trailing: notified
-                                  ? const Icon(Icons.check_circle, color: Colors.green)
+                                  ? const Icon(
+                                      Icons.check_circle,
+                                      color: Colors.green,
+                                    )
                                   : status == 'won'
-                                      ? IconButton(
-                                          icon: const Icon(Icons.send),
-                                          tooltip: '發送通知',
-                                          onPressed: () =>
-                                              _sendNotify(context, data, doc.id),
-                                        )
-                                      : const Icon(Icons.hourglass_empty,
-                                          color: Colors.grey),
+                                  ? IconButton(
+                                      icon: const Icon(Icons.send),
+                                      tooltip: '發送通知',
+                                      onPressed: () =>
+                                          _sendNotify(data, doc.id),
+                                    )
+                                  : const Icon(
+                                      Icons.hourglass_empty,
+                                      color: Colors.grey,
+                                    ),
                             );
                           },
                         );

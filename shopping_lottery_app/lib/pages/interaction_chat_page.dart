@@ -1,347 +1,321 @@
+// lib/pages/interaction_chat_page.dart
+//
+// ✅ InteractionChatPage（聊天室｜最終完整版｜可直接使用｜已修正 invalid_constant）
+// - ✅ 修正：不能用 const 建立包含 DateTime.now() 的物件
+//   → 移除 _ChatMessage.me/_ChatMessage.bot 的 const，以及初始訊息清單的 const
+// - ✅ 保留：prefer_initializing_formals（this.text / this.createdAt / this.isMe）
+// - 無額外套件依賴（只用 Flutter SDK）
+// - 內建示範聊天室：可送訊息、可自動回覆（demo bot）
+
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
-/// Osmile 客服互動中心（最終完整版）
-/// 功能包含：
-/// - 智慧模擬客服回覆
-/// - 語音輸入按鈕（示範）
-/// - 評價回饋視窗
-/// - 客服輸入中動畫
-/// - 品牌化藍白 UI
 class InteractionChatPage extends StatefulWidget {
   const InteractionChatPage({super.key});
+
+  static const routeName = '/chat';
 
   @override
   State<InteractionChatPage> createState() => _InteractionChatPageState();
 }
 
 class _InteractionChatPageState extends State<InteractionChatPage> {
-  final List<_ChatMessage> _messages = [];
-  final TextEditingController _controller = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-  final _dateFmt = DateFormat('HH:mm');
+  final TextEditingController _ctrl = TextEditingController();
+  final ScrollController _scrollCtrl = ScrollController();
 
-  bool _isTyping = false;
-  bool _hasRated = false;
+  final List<_ChatMessage> _messages = <_ChatMessage>[
+    _ChatMessage.bot('歡迎來到 Osmile 聊天室 👋'),
+    _ChatMessage.bot('這是示範頁：你可以直接輸入訊息測試 UI。'),
+  ];
+
+  bool _sending = false;
 
   @override
   void initState() {
     super.initState();
-    Future.delayed(const Duration(milliseconds: 500), () {
-      _addSystemMessage("您好，這裡是 Osmile 客服中心，很高興為您服務！");
+    _ctrl.addListener(() {
+      if (!mounted) return;
+      // 讓右側清除按鈕能即時出現/消失
+      setState(() {});
     });
-  }
-
-  void _addUserMessage(String text) {
-    if (text.trim().isEmpty) return;
-    final msg = _ChatMessage(text: text.trim(), isUser: true, time: DateTime.now());
-    setState(() {
-      _messages.add(msg);
-      _controller.clear();
-      _isTyping = true;
-    });
-    _scrollToBottom();
-
-    // 模擬客服延遲回覆
-    Future.delayed(const Duration(seconds: 1), () {
-      _addSystemMessage(_mockReply(text));
-    });
-  }
-
-  void _addSystemMessage(String text) {
-    final msg = _ChatMessage(text: text, isUser: false, time: DateTime.now());
-    setState(() {
-      _messages.add(msg);
-      _isTyping = false;
-    });
-    _scrollToBottom();
-
-    // 若客服主動結尾，顯示評價彈窗
-    if (text.contains('感謝') || text.contains('祝您有美好的一天')) {
-      Future.delayed(const Duration(milliseconds: 600), _showRatingDialog);
-    }
-  }
-
-  String _mockReply(String input) {
-    final lower = input.toLowerCase();
-    if (lower.contains('出貨') || lower.contains('訂單')) {
-      return '訂單出貨時間約 1~2 個工作天，出貨後會自動通知您。';
-    } else if (lower.contains('退款')) {
-      return '退款處理需 3~5 個工作天完成，將退回原支付方式。';
-    } else if (lower.contains('抽獎')) {
-      return '抽獎活動可於「互動中心」或「抽獎頁」進行，每次需 50 積分。';
-    } else if (lower.contains('積分')) {
-      return '積分可用於抽獎或折抵金額，目前活動：滿 500 元贈一次抽獎。';
-    } else if (lower.contains('優惠') || lower.contains('折扣')) {
-      return '目前優惠活動：全館滿 NT\$500 折 NT\$50，歡迎選購！';
-    } else {
-      return '了解，您的問題我已回報相關部門，我們將盡快通知您，感謝您的耐心。';
-    }
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent + 80,
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeOut,
-      );
-    });
-  }
-
-  void _showRatingDialog() {
-    if (_hasRated) return;
-    showDialog<void>(
-      context: context,
-      builder: (context) {
-        int rating = 0;
-        return AlertDialog(
-          title: const Text('請評價此次客服服務'),
-          content: StatefulBuilder(
-            builder: (context, setState) {
-              return Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(5, (i) {
-                  final filled = i < rating;
-                  return IconButton(
-                    icon: Icon(
-                      filled ? Icons.star_rounded : Icons.star_border_rounded,
-                      color: filled ? Colors.amber : Colors.grey,
-                      size: 32,
-                    ),
-                    onPressed: () => setState(() => rating = i + 1),
-                  );
-                }),
-              );
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                setState(() => _hasRated = true);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('感謝您的回饋！')),
-                );
-              },
-              child: const Text('送出'),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   @override
   void dispose() {
-    _controller.dispose();
-    _scrollController.dispose();
+    _ctrl.dispose();
+    _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _scrollToBottom({bool animate = true}) async {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    if (!mounted) return;
+    if (!_scrollCtrl.hasClients) return;
+
+    final pos = _scrollCtrl.position.maxScrollExtent;
+    if (animate) {
+      await _scrollCtrl.animateTo(
+        pos,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    } else {
+      _scrollCtrl.jumpTo(pos);
+    }
+  }
+
+  Future<void> _send() async {
+    final text = _ctrl.text.trim();
+    if (text.isEmpty || _sending) return;
+
+    setState(() => _sending = true);
+    _ctrl.clear();
+
+    setState(() {
+      _messages.add(_ChatMessage.me(text));
+    });
+
+    await _scrollToBottom();
+
+    // demo：模擬機器人回覆
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (!mounted) return;
+
+    final reply = _autoReply(text);
+    setState(() {
+      _messages.add(_ChatMessage.bot(reply));
+      _sending = false;
+    });
+
+    await _scrollToBottom();
+  }
+
+  String _autoReply(String text) {
+    final t = text.toLowerCase();
+    if (t.contains('優惠') || t.contains('coupon')) {
+      return '優惠券可在結帳頁選擇套用（示範）。\n你也可以到「我的優惠券」查看可用折抵。';
+    }
+    if (t.contains('訂單') || t.contains('order')) {
+      return '訂單查詢：到「我的 → 訂單」即可查看狀態（示範）。';
+    }
+    if (t.contains('退') || t.contains('換') || t.contains('refund')) {
+      return '退換貨：請提供訂單編號與原因，我們會協助處理（示範）。';
+    }
+    if (t.contains('sos')) {
+      return 'SOS：可在手錶上長按/按鍵觸發求救並通知家長端（示範）。';
+    }
+    return '收到 ✅（示範回覆）\n你可以輸入：優惠/訂單/退換貨/SOS 來看不同回覆。';
+  }
+
+  void _clearChat() {
+    setState(() {
+      _messages
+        ..clear()
+        ..add(_ChatMessage.bot('聊天室已清空（示範）'));
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F6F8),
+      backgroundColor: const Color(0xFFF6F7F8),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0.4,
-        centerTitle: true,
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
-            CircleAvatar(
-              radius: 14,
-              backgroundImage: AssetImage('assets/images/support_avatar.png'),
-            ),
-            SizedBox(width: 8),
-            Text('Osmile 客服中心',
-                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
-          ],
-        ),
+        title: const Text('聊天室'),
+        actions: [
+          IconButton(
+            tooltip: '清空',
+            onPressed: _clearChat,
+            icon: const Icon(Icons.delete_outline),
+          ),
+        ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(child: _buildMessageList()),
-            if (_isTyping)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 8),
-                child: _TypingIndicator(),
+      body: Column(
+        children: [
+          Expanded(
+            child: _messages.isEmpty
+                ? const Center(child: Text('尚無訊息'))
+                : ListView.builder(
+                    controller: _scrollCtrl,
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                    itemCount: _messages.length,
+                    itemBuilder: (_, i) =>
+                        _MessageBubble(msg: _messages[i], cs: cs),
+                  ),
+          ),
+          const Divider(height: 1),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.black12),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.chat_bubble_outline,
+                            color: Colors.grey,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: _ctrl,
+                              minLines: 1,
+                              maxLines: 4,
+                              textInputAction: TextInputAction.send,
+                              onSubmitted: (_) => _send(),
+                              decoration: const InputDecoration(
+                                hintText: '輸入訊息…',
+                                border: InputBorder.none,
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          if (_ctrl.text.isNotEmpty)
+                            IconButton(
+                              tooltip: '清除',
+                              onPressed: () => _ctrl.clear(),
+                              icon: const Icon(Icons.close, size: 18),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    height: 46,
+                    child: FilledButton.icon(
+                      onPressed: _sending ? null : _send,
+                      icon: _sending
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send),
+                      label: Text(
+                        _sending ? '送出中' : '送出',
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            const Divider(height: 1),
-            _buildInputBar(),
-          ],
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
+}
 
-  // 訊息清單
-  Widget _buildMessageList() {
-    return ListView.builder(
-      controller: _scrollController,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      itemCount: _messages.length,
-      itemBuilder: (context, index) {
-        final msg = _messages[index];
-        final isUser = msg.isUser;
-        return Align(
-          alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            curve: Curves.easeOut,
-            margin: const EdgeInsets.symmetric(vertical: 6),
-            child: Column(
-              crossAxisAlignment:
-                  isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-              children: [
-                if (!isUser)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 6, bottom: 3),
-                    child: CircleAvatar(
-                      radius: 10,
-                      backgroundColor: Colors.grey.shade300,
-                      backgroundImage:
-                          const AssetImage('assets/images/support_avatar.png'),
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({required this.msg, required this.cs});
+
+  final _ChatMessage msg;
+  final ColorScheme cs;
+
+  @override
+  Widget build(BuildContext context) {
+    final isMe = msg.isMe;
+
+    final bubbleColor = isMe ? cs.primaryContainer : Colors.white;
+    final textColor = isMe ? cs.onPrimaryContainer : Colors.black87;
+
+    final align = isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: align,
+        children: [
+          Row(
+            mainAxisAlignment: isMe
+                ? MainAxisAlignment.end
+                : MainAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (!isMe) ...[
+                const CircleAvatar(
+                  radius: 14,
+                  child: Icon(Icons.support_agent, size: 16),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Flexible(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: bubbleColor,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: isMe ? Colors.transparent : Colors.black12,
                     ),
                   ),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  constraints: const BoxConstraints(maxWidth: 280),
-                  decoration: BoxDecoration(
-                    color: isUser ? Colors.blueAccent : Colors.grey.shade200,
-                    borderRadius: BorderRadius.only(
-                      topLeft: const Radius.circular(16),
-                      topRight: const Radius.circular(16),
-                      bottomLeft: Radius.circular(isUser ? 16 : 0),
-                      bottomRight: Radius.circular(isUser ? 0 : 16),
-                    ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
                   ),
                   child: Text(
                     msg.text,
                     style: TextStyle(
-                      color: isUser ? Colors.white : Colors.black87,
-                      fontSize: 14,
-                      height: 1.4,
+                      color: textColor,
+                      height: 1.25,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  _dateFmt.format(msg.time),
-                  style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+              ),
+              if (isMe) ...[
+                const SizedBox(width: 8),
+                const CircleAvatar(
+                  radius: 14,
+                  child: Icon(Icons.person, size: 16),
                 ),
               ],
-            ),
+            ],
           ),
-        );
-      },
-    );
-  }
-
-  // 輸入區
-  Widget _buildInputBar() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      child: SafeArea(
-        top: false,
-        child: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.mic_none_rounded, color: Colors.grey),
-              onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('語音輸入功能示範中')),
-                );
-              },
-            ),
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (v) => _addUserMessage(v),
-                decoration: InputDecoration(
-                  hintText: '輸入訊息...',
-                  filled: true,
-                  fillColor: Colors.grey.shade100,
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(20),
-                      borderSide: BorderSide.none),
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            IconButton(
-              tooltip: '發送訊息',
-              icon: const Icon(Icons.send_rounded, color: Colors.blueAccent),
-              onPressed: () => _addUserMessage(_controller.text),
-            ),
-          ],
-        ),
+          const SizedBox(height: 4),
+          Text(
+            msg.timeLabel,
+            style: const TextStyle(color: Colors.black45, fontSize: 11),
+          ),
+        ],
       ),
     );
   }
 }
 
-/// 聊天訊息資料模型
 class _ChatMessage {
+  final bool isMe;
   final String text;
-  final bool isUser;
-  final DateTime time;
-  _ChatMessage({required this.text, required this.isUser, required this.time});
-}
+  final DateTime createdAt;
 
-/// 客服「正在輸入中」動畫效果
-class _TypingIndicator extends StatefulWidget {
-  const _TypingIndicator();
+  /// ✅ prefer_initializing_formals
+  _ChatMessage({
+    required this.isMe,
+    required this.text,
+    required this.createdAt,
+  });
 
-  @override
-  State<_TypingIndicator> createState() => _TypingIndicatorState();
-}
+  /// ⚠️ 這裡不能 const，因為 DateTime.now() 不是 compile-time constant
+  factory _ChatMessage.me(String text) =>
+      _ChatMessage(isMe: true, text: text, createdAt: DateTime.now());
 
-class _TypingIndicatorState extends State<_TypingIndicator>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
+  factory _ChatMessage.bot(String text) =>
+      _ChatMessage(isMe: false, text: text, createdAt: DateTime.now());
 
-  @override
-  void initState() {
-    super.initState();
-    _controller =
-        AnimationController(vsync: this, duration: const Duration(seconds: 1))
-          ..repeat();
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: List.generate(3, (i) {
-        return FadeTransition(
-          opacity: Tween(begin: 0.2, end: 1.0)
-              .chain(CurveTween(curve: Interval(i * 0.2, 1.0)))
-              .animate(_controller),
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 2),
-            width: 6,
-            height: 6,
-            decoration: const BoxDecoration(
-                color: Colors.grey, shape: BoxShape.circle),
-          ),
-        );
-      }),
-    );
+  String get timeLabel {
+    final h = createdAt.hour.toString().padLeft(2, '0');
+    final m = createdAt.minute.toString().padLeft(2, '0');
+    return '$h:$m';
   }
 }

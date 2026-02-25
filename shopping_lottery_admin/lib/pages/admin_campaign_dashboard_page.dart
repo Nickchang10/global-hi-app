@@ -1,375 +1,456 @@
 // lib/pages/admin_campaign_dashboard_page.dart
 //
-// ✅ AdminCampaignDashboardPage（最終完整版｜活動報表總覽）
+// ✅ AdminCampaignDashboardPage（活動/投放 Dashboard｜可編譯完整版）
 // ------------------------------------------------------------
-// Firestore:
-// - campaigns/{id}
-// - campaigns/{id}/participants
-// - orders (campaignId)
-// - coupons (campaignId)
+// 修正點：
+// - 移除錯誤的 `package:recharts/recharts.dart`（那是 React 套件，Flutter 不存在）
+// - 改用 Flutter 可用的 `fl_chart` 畫 BarChart
+// - ✅ 修正：withOpacity deprecated → withValues(alpha: ...)
+// - ✅ 修正：curly_braces_in_flow_control_structures（加上大括號）
+//
+// 功能：
+// - 顯示 campaigns/coupons/orders 基本 KPI
+// - 近 14 天訂單每日數量柱狀圖
+// - 近 7/30 天訂單數 + 金額（取樣加總）
+// - 欄位兼容：createdAt(Timestamp)；金額 payment.total / totals.total / total / amount / payAmount
+//
+// 依賴：
+// - cloud_firestore
+// - intl
+// - fl_chart
 // ------------------------------------------------------------
 
-import 'dart:math';
+import 'dart:math' as math;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
-import 'package:recharts/recharts.dart';
-import '../services/admin_gate.dart';
 
 class AdminCampaignDashboardPage extends StatefulWidget {
   const AdminCampaignDashboardPage({super.key});
 
   @override
-  State<AdminCampaignDashboardPage> createState() => _AdminCampaignDashboardPageState();
+  State<AdminCampaignDashboardPage> createState() =>
+      _AdminCampaignDashboardPageState();
 }
 
-class _AdminCampaignDashboardPageState extends State<AdminCampaignDashboardPage> {
+class _AdminCampaignDashboardPageState
+    extends State<AdminCampaignDashboardPage> {
   final _db = FirebaseFirestore.instance;
-  bool _loading = true;
-  List<_CampaignSummary> _campaigns = [];
-  List<_DailyPoint> _trend = [];
-  Map<String, int> _sourceMap = {};
-  Map<String, int> _statusMap = {'啟用': 0, '停用': 0};
+
+  late Future<_DashData> _future;
 
   @override
   void initState() {
     super.initState();
-    _loadAll();
+    _future = _load();
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  Future<_DashData> _load() async {
+    final now = DateTime.now();
+    final since7 = now.subtract(const Duration(days: 7));
+    final since30 = now.subtract(const Duration(days: 30));
+
+    final campaigns = await _safeCount(_db.collection('campaigns'));
+    final coupons = await _safeCount(_db.collection('coupons'));
+
+    final orders7 = await _safeCount(
+      _db
+          .collection('orders')
+          .where(
+            'createdAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(since7),
+          ),
+    );
+    final orders30 = await _safeCount(
+      _db
+          .collection('orders')
+          .where(
+            'createdAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(since30),
+          ),
+    );
+
+    final amount7 = await _safeSumOrdersSince(since7, limit: 2000);
+    final amount30 = await _safeSumOrdersSince(since30, limit: 2000);
+
+    final series14 = await _loadDailyOrderCount(days: 14, limit: 2500);
+
+    return _DashData(
+      updatedAt: now,
+      campaigns: campaigns,
+      coupons: coupons,
+      orders7d: orders7,
+      orders30d: orders30,
+      amount7d: amount7,
+      amount30d: amount30,
+      daily14: series14,
+    );
   }
 
-  Future<void> _loadAll() async {
-    setState(() => _loading = true);
+  Future<int> _safeCount(Query<Map<String, dynamic>> q) async {
     try {
-      final gate = context.read<AdminGate>();
-      final info = await gate.getRoleInfo(forceRefresh: false);
-      final role = (info?.role ?? '').toLowerCase().trim();
-      final isAdmin = role == 'admin';
-      final vendorId = (info?.vendorId ?? '').trim();
-
-      Query<Map<String, dynamic>> q = _db.collection('campaigns');
-      if (!isAdmin && vendorId.isNotEmpty) {
-        q = q.where('vendorId', isEqualTo: vendorId);
-      }
-
-      final snap = await q.get();
-      final campaigns = <_CampaignSummary>[];
-
-      for (final c in snap.docs) {
-        final d = c.data();
-        final id = c.id;
-        final title = (d['title'] ?? id).toString();
-        final isActive = d['isActive'] == true;
-        final startAt = (d['startAt'] as Timestamp?)?.toDate();
-        final endAt = (d['endAt'] as Timestamp?)?.toDate();
-        final vendorId = d['vendorId'];
-
-        // participants
-        final pSnap = await _db.collection('campaigns').doc(id).collection('participants').get();
-        final pCount = pSnap.size;
-
-        // orders
-        final oSnap = await _db.collection('orders').where('campaignId', isEqualTo: id).get();
-        final oCount = oSnap.size;
-
-        // coupons
-        final cSnap = await _db.collection('coupons').where('campaignId', isEqualTo: id).get();
-        final cCount = cSnap.size;
-
-        final conversion = pCount > 0 ? oCount / pCount : 0.0;
-        final sum = _CampaignSummary(
-          id: id,
-          title: title,
-          vendorId: vendorId ?? '',
-          isActive: isActive,
-          participants: pCount,
-          orders: oCount,
-          coupons: cCount,
-          conversionRate: conversion,
-          startAt: startAt,
-          endAt: endAt,
-        );
-        campaigns.add(sum);
-
-        // 狀態統計
-        _statusMap[isActive ? '啟用' : '停用'] = (_statusMap[isActive ? '啟用' : '停用'] ?? 0) + 1;
-
-        // 來源統計
-        for (final p in pSnap.docs) {
-          final src = (p['source'] ?? 'unknown').toString();
-          _sourceMap[src] = (_sourceMap[src] ?? 0) + 1;
-        }
-
-        // 趨勢統計
-        final df = DateFormat('MM-dd');
-        for (final p in pSnap.docs) {
-          final date = (p['joinedAt'] as Timestamp?)?.toDate();
-          if (date == null) continue;
-          final key = df.format(date);
-          final existing = _trend.firstWhere(
-            (t) => t.date == key,
-            orElse: () => _DailyPoint(date: key, participants: 0, orders: 0),
-          );
-          existing.participants++;
-          if (!_trend.contains(existing)) _trend.add(existing);
-        }
-        for (final o in oSnap.docs) {
-          final date = (o['createdAt'] as Timestamp?)?.toDate();
-          if (date == null) continue;
-          final key = DateFormat('MM-dd').format(date);
-          final existing = _trend.firstWhere(
-            (t) => t.date == key,
-            orElse: () => _DailyPoint(date: key, participants: 0, orders: 0),
-          );
-          existing.orders++;
-          if (!_trend.contains(existing)) _trend.add(existing);
-        }
-      }
-
-      campaigns.sort((a, b) => b.orders.compareTo(a.orders));
-      _trend.sort((a, b) => a.date.compareTo(b.date));
-
-      if (mounted) {
-        setState(() {
-          _campaigns = campaigns;
-          _loading = false;
-        });
-      }
-    } catch (e) {
-      _snack('載入失敗：$e');
-      if (mounted) setState(() => _loading = false);
+      final agg = await q.count().get();
+      return agg.count ?? 0;
+    } catch (_) {
+      final snap = await q.limit(2000).get();
+      return snap.size;
     }
+  }
+
+  Future<num> _safeSumOrdersSince(DateTime since, {required int limit}) async {
+    try {
+      final snap = await _db
+          .collection('orders')
+          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(since))
+          .orderBy('createdAt', descending: true)
+          .limit(limit)
+          .get();
+
+      num total = 0;
+      for (final doc in snap.docs) {
+        final d = doc.data();
+        final payment = (d['payment'] is Map)
+            ? Map<String, dynamic>.from(d['payment'])
+            : <String, dynamic>{};
+        final totals = (d['totals'] is Map)
+            ? Map<String, dynamic>.from(d['totals'])
+            : <String, dynamic>{};
+
+        total += _toNum(
+          payment['total'] ??
+              totals['total'] ??
+              d['total'] ??
+              d['amount'] ??
+              d['payAmount'] ??
+              0,
+        );
+      }
+      return total;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<List<_DailyPoint>> _loadDailyOrderCount({
+    required int days,
+    required int limit,
+  }) async {
+    final now = DateTime.now();
+    final start = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(Duration(days: days - 1));
+
+    // 初始化 days 筆（確保沒訂單也會顯示 0）
+    final map = <DateTime, int>{};
+    for (int i = 0; i < days; i++) {
+      final d = DateTime(
+        start.year,
+        start.month,
+        start.day,
+      ).add(Duration(days: i));
+      map[d] = 0;
+    }
+
+    try {
+      final snap = await _db
+          .collection('orders')
+          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .orderBy('createdAt', descending: false)
+          .limit(limit)
+          .get();
+
+      for (final doc in snap.docs) {
+        final d = doc.data();
+        final ts = d['createdAt'];
+        if (ts is! Timestamp) continue;
+        final dt = ts.toDate();
+        final day = DateTime(dt.year, dt.month, dt.day);
+        if (map.containsKey(day)) {
+          map[day] = (map[day] ?? 0) + 1;
+        }
+      }
+    } catch (_) {
+      // ignore, keep zeros
+    }
+
+    final keys = map.keys.toList()..sort((a, b) => a.compareTo(b));
+    return keys.map((k) => _DailyPoint(day: k, count: map[k] ?? 0)).toList();
+  }
+
+  num _toNum(dynamic v) {
+    if (v is num) return v;
+    return num.tryParse((v ?? '0').toString()) ?? 0;
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final money = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
+    final dtFmt = DateFormat('yyyy/MM/dd HH:mm');
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('活動報表總覽'),
+        title: const Text(
+          '活動 Dashboard',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadAll),
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: () => setState(() => _future = _load()),
+            icon: const Icon(Icons.refresh),
+          ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _loadAll,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
+      body: FutureBuilder<_DashData>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snap.hasError) {
+            return Center(child: Text('載入失敗：${snap.error}'));
+          }
+          final d = snap.data!;
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Card(
+                elevation: 0,
+                // ✅ 修正：withOpacity deprecated → withValues(alpha: ...)
+                color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    '更新時間：${dtFmt.format(d.updatedAt)}',
+                    style: TextStyle(color: cs.onSurfaceVariant),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              _kpiGrid(
                 children: [
-                  _buildSummaryCard(),
-                  const SizedBox(height: 20),
-                  _buildTopChart(),
-                  const SizedBox(height: 20),
-                  _buildTrendChart(),
-                  const SizedBox(height: 20),
-                  _buildPieCharts(),
+                  _kpiCard('Campaigns', '${d.campaigns}'),
+                  _kpiCard('Coupons', '${d.coupons}'),
+                  _kpiCard('近 7 天訂單數', '${d.orders7d}'),
+                  _kpiCard('近 30 天訂單數', '${d.orders30d}'),
+                  _kpiCard('近 7 天金額（取樣）', money.format(d.amount7d)),
+                  _kpiCard('近 30 天金額（取樣）', money.format(d.amount30d)),
                 ],
               ),
-            ),
+
+              const SizedBox(height: 12),
+
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '近 14 天訂單數（每日）',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        height: 260,
+                        child: _OrdersBarChart(points: d.daily14),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        '註：為避免 Web 大集合過慢，圖表資料最多讀取 2500 筆近 14 天訂單。',
+                        style: TextStyle(
+                          color: cs.onSurfaceVariant,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Text(
+                    '欄位假設：orders.createdAt 必須是 Timestamp。\n'
+                    '金額來源：payment.total / totals.total / total / amount / payAmount。',
+                    style: TextStyle(color: cs.onSurfaceVariant),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 
-  Widget _buildSummaryCard() {
-    final total = _campaigns.length;
-    final totalOrders = _campaigns.fold<int>(0, (s, e) => s + e.orders);
-    final totalParticipants = _campaigns.fold<int>(0, (s, e) => s + e.participants);
-    final avgConversion = totalParticipants > 0 ? totalOrders / totalParticipants : 0;
+  Widget _kpiGrid({required List<Widget> children}) {
+    return LayoutBuilder(
+      builder: (context, c) {
+        final wide = c.maxWidth >= 900;
+        if (!wide) {
+          return Column(
+            children: children
+                .map(
+                  (w) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: w,
+                  ),
+                )
+                .toList(),
+          );
+        }
+        return GridView.count(
+          crossAxisCount: 2,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 3.2,
+          children: children,
+        );
+      },
+    );
+  }
 
+  Widget _kpiCard(String title, String value) {
     return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Wrap(
-          spacing: 30,
-          runSpacing: 8,
+        padding: const EdgeInsets.all(14),
+        child: Row(
           children: [
-            _summaryTile('活動總數', '$total'),
-            _summaryTile('總參加人數', '$totalParticipants'),
-            _summaryTile('總訂單數', '$totalOrders'),
-            _summaryTile('平均轉換率', '${(avgConversion * 100).toStringAsFixed(1)}%'),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    value,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.insights_outlined),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _summaryTile(String label, String value) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
-        Text(label),
-      ],
-    );
-  }
+class _OrdersBarChart extends StatelessWidget {
+  final List<_DailyPoint> points;
+  const _OrdersBarChart({required this.points});
 
-  Widget _buildTopChart() {
-    final top10 = _campaigns.take(10).toList();
-
-    if (top10.isEmpty) {
-      return const Center(child: Text('尚無活動資料'));
+  @override
+  Widget build(BuildContext context) {
+    if (points.isEmpty) {
+      return const Center(child: Text('沒有資料'));
     }
 
-    return SizedBox(
-      height: 300,
-      child: Card(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: BarChart(
-            data: top10,
-            variables: {
-              'title': Variable<String>(accessor: (d) => d.title),
-              '訂單數': Variable<num>(accessor: (d) => d.orders),
-            },
-            marks: [IntervalMark(color: Colors.blue)],
-            axes: [Defaults.horizontalAxis, Defaults.verticalAxis],
+    final peak = points
+        .map((e) => e.count)
+        .fold<int>(0, (a, b) => math.max(a, b));
+    final maxY = math.max(3, peak).toDouble();
+
+    return BarChart(
+      BarChartData(
+        maxY: maxY + 1,
+        gridData: const FlGridData(show: true),
+        borderData: FlBorderData(show: false),
+        titlesData: FlTitlesData(
+          topTitles: const AxisTitles(
+            sideTitles: SideTitles(showTitles: false),
+          ),
+          rightTitles: const AxisTitles(
+            sideTitles: SideTitles(showTitles: false),
+          ),
+          leftTitles: const AxisTitles(
+            sideTitles: SideTitles(showTitles: true, reservedSize: 34),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 30,
+              interval: 2,
+              getTitlesWidget: (value, meta) {
+                final idx = value.toInt();
+                // ✅ 修正：curly braces lint
+                if (idx < 0 || idx >= points.length) {
+                  return const SizedBox.shrink();
+                }
+                final d = points[idx].day;
+                final label = '${d.month}/${d.day}';
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(label, style: const TextStyle(fontSize: 10)),
+                );
+              },
+            ),
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildTrendChart() {
-    if (_trend.isEmpty) {
-      return const Center(child: Text('尚無趨勢資料'));
-    }
-
-    return SizedBox(
-      height: 280,
-      child: Card(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: LineChart(
-            data: _trend,
-            variables: {
-              'date': Variable<String>(accessor: (d) => d.date),
-              'participants': Variable<num>(accessor: (d) => d.participants),
-              'orders': Variable<num>(accessor: (d) => d.orders),
-            },
-            marks: [
-              LineMark(
-                x: (d) => d['date'] as String,
-                y: (d) => d['participants'] as num,
-                color: Colors.orange,
-              ),
-              LineMark(
-                x: (d) => d['date'] as String,
-                y: (d) => d['orders'] as num,
-                color: Colors.blue,
+        barGroups: List.generate(points.length, (i) {
+          final y = points[i].count.toDouble();
+          return BarChartGroupData(
+            x: i,
+            barRods: [
+              BarChartRodData(
+                toY: y,
+                width: 10,
+                borderRadius: BorderRadius.circular(4),
               ),
             ],
-            axes: [Defaults.horizontalAxis, Defaults.verticalAxis],
-          ),
-        ),
+          );
+        }),
       ),
-    );
-  }
-
-  Widget _buildPieCharts() {
-    final totalStatus = _statusMap.values.fold<int>(0, (s, e) => s + e);
-    final totalSource = _sourceMap.values.fold<int>(0, (s, e) => s + e);
-
-    return Wrap(
-      spacing: 20,
-      runSpacing: 20,
-      children: [
-        SizedBox(
-          width: 350,
-          height: 300,
-          child: Card(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: PieChart(
-                data: _statusMap.entries
-                    .map((e) => {'label': e.key, 'value': e.value})
-                    .toList(),
-                variables: {
-                  'label': Variable<String>(accessor: (d) => d['label'] as String),
-                  'value': Variable<num>(accessor: (d) => d['value'] as num),
-                },
-                marks: [
-                  ArcLabelMark(
-                    label: (d) =>
-                        '${d['label']} ${(d['value'] / (totalStatus == 0 ? 1 : totalStatus) * 100).toStringAsFixed(1)}%',
-                    labelStyle: Defaults.arcLabelStyle,
-                  ),
-                ],
-                coord: PolarCoord(transposed: true),
-              ),
-            ),
-          ),
-        ),
-        SizedBox(
-          width: 350,
-          height: 300,
-          child: Card(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: PieChart(
-                data: _sourceMap.entries
-                    .map((e) => {'label': e.key, 'value': e.value})
-                    .toList(),
-                variables: {
-                  'label': Variable<String>(accessor: (d) => d['label'] as String),
-                  'value': Variable<num>(accessor: (d) => d['value'] as num),
-                },
-                marks: [
-                  ArcLabelMark(
-                    label: (d) =>
-                        '${d['label']} ${(d['value'] / (totalSource == 0 ? 1 : totalSource) * 100).toStringAsFixed(1)}%',
-                    labelStyle: Defaults.arcLabelStyle,
-                  ),
-                ],
-                coord: PolarCoord(transposed: true),
-              ),
-            ),
-          ),
-        ),
-      ],
     );
   }
 }
 
-class _CampaignSummary {
-  final String id;
-  final String title;
-  final String vendorId;
-  final bool isActive;
-  final int participants;
-  final int orders;
+class _DashData {
+  final DateTime updatedAt;
+  final int campaigns;
   final int coupons;
-  final double conversionRate;
-  final DateTime? startAt;
-  final DateTime? endAt;
+  final int orders7d;
+  final int orders30d;
+  final num amount7d;
+  final num amount30d;
+  final List<_DailyPoint> daily14;
 
-  _CampaignSummary({
-    required this.id,
-    required this.title,
-    required this.vendorId,
-    required this.isActive,
-    required this.participants,
-    required this.orders,
+  _DashData({
+    required this.updatedAt,
+    required this.campaigns,
     required this.coupons,
-    required this.conversionRate,
-    this.startAt,
-    this.endAt,
+    required this.orders7d,
+    required this.orders30d,
+    required this.amount7d,
+    required this.amount30d,
+    required this.daily14,
   });
 }
 
 class _DailyPoint {
-  final String date;
-  int participants;
-  int orders;
-
-  _DailyPoint({required this.date, this.participants = 0, this.orders = 0});
+  final DateTime day;
+  final int count;
+  _DailyPoint({required this.day, required this.count});
 }

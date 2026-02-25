@@ -11,6 +11,8 @@
 // - 移除收藏 / 清空收藏
 // - 空狀態 UI
 // - Web 友善：不使用 dart:io / cached_network_image
+//
+// ✅ 修正：withOpacity(deprecated) → withValues(alpha: ...)
 // =====================================================
 
 import 'dart:math';
@@ -105,19 +107,16 @@ class WishlistPage extends StatelessWidget {
       final price = _toDouble(p['price']);
       final image = (p['image'] ?? p['imageUrl'] ?? '').toString();
 
-      return {
-        ...p,
-        'id': id,
-        'name': name,
-        'price': price,
-        'image': image,
-      };
+      return {...p, 'id': id, 'name': name, 'price': price, 'image': image};
     }).toList();
   }
 
   // -----------------------------------------------------
   // CartService 加入購物車：相容 addItem(map) / addToCart(map) / addItem(named)
-  Future<void> _addToCartSafe(BuildContext context, Map<String, dynamic> p) async {
+  Future<void> _addToCartSafe(
+    BuildContext context,
+    Map<String, dynamic> p,
+  ) async {
     final cart = context.read<CartService>();
 
     final line = {
@@ -163,7 +162,11 @@ class WishlistPage extends StatelessWidget {
 
   // -----------------------------------------------------
   // WishlistService 移除：相容 remove(id) / removeItem(id) / removeFromWishlist(id) / toggleWishlist(p)
-  Future<void> _removeWishSafe(BuildContext context, dynamic wishlist, Map<String, dynamic> p) async {
+  Future<void> _removeWishSafe(
+    BuildContext context,
+    dynamic wishlist,
+    Map<String, dynamic> p,
+  ) async {
     final id = (p['id'] ?? '').toString();
     final dyn = wishlist as dynamic;
 
@@ -222,7 +225,11 @@ class WishlistPage extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
         ),
         alignment: Alignment.center,
-        child: const Icon(Icons.image_not_supported_outlined, size: 26, color: Colors.grey),
+        child: const Icon(
+          Icons.image_not_supported_outlined,
+          size: 26,
+          color: Colors.grey,
+        ),
       );
     }
 
@@ -241,7 +248,11 @@ class WishlistPage extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
           ),
           alignment: Alignment.center,
-          child: const Icon(Icons.image_not_supported_outlined, size: 26, color: Colors.grey),
+          child: const Icon(
+            Icons.image_not_supported_outlined,
+            size: 26,
+            color: Colors.grey,
+          ),
         ),
       ),
     );
@@ -261,18 +272,29 @@ class WishlistPage extends StatelessWidget {
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 8),
-            Text('去逛逛商品，把喜歡的加入收藏吧。', style: TextStyle(color: Colors.grey.shade600)),
+            Text(
+              '去逛逛商品，把喜歡的加入收藏吧。',
+              style: TextStyle(color: Colors.grey.shade600),
+            ),
             const SizedBox(height: 18),
             ElevatedButton.icon(
               onPressed: () => Navigator.popUntil(context, (r) => r.isFirst),
               icon: const Icon(Icons.storefront_outlined),
-              label: const Text('回首頁逛逛', style: TextStyle(fontWeight: FontWeight.w900)),
+              label: const Text(
+                '回首頁逛逛',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.orangeAccent,
                 foregroundColor: Colors.white,
                 elevation: 0,
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 12,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(999),
+                ),
               ),
             ),
           ],
@@ -304,7 +326,10 @@ class WishlistPage extends StatelessWidget {
                 await _clearWishSafe(wishlist);
                 if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('已清空收藏'), behavior: SnackBarBehavior.floating),
+                  const SnackBar(
+                    content: Text('已清空收藏'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
                 );
               },
             ),
@@ -330,7 +355,8 @@ class WishlistPage extends StatelessWidget {
                     border: Border.all(color: Colors.grey.shade200),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.04),
+                        // ✅ withOpacity(deprecated) → withValues(alpha: ...)
+                        color: Colors.black.withValues(alpha: 0.04),
                         blurRadius: 10,
                         offset: const Offset(0, 6),
                       ),
@@ -352,7 +378,10 @@ class WishlistPage extends StatelessWidget {
                               name,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 15,
+                              ),
                             ),
                             const SizedBox(height: 6),
                             Text(
@@ -376,7 +405,10 @@ class WishlistPage extends StatelessWidget {
                           children: [
                             IconButton(
                               tooltip: '加入購物車',
-                              icon: const Icon(Icons.add_shopping_cart, color: Colors.blueAccent),
+                              icon: const Icon(
+                                Icons.add_shopping_cart,
+                                color: Colors.blueAccent,
+                              ),
                               onPressed: () async {
                                 await _addToCartSafe(context, p);
                                 if (!context.mounted) return;
@@ -391,7 +423,10 @@ class WishlistPage extends StatelessWidget {
                             ),
                             IconButton(
                               tooltip: '移除收藏',
-                              icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                              icon: const Icon(
+                                Icons.delete_outline,
+                                color: Colors.redAccent,
+                              ),
                               onPressed: () async {
                                 await _removeWishSafe(context, wishlist, p);
                                 if (!context.mounted) return;

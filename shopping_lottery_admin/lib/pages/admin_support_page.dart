@@ -1,24 +1,24 @@
 // lib/pages/admin_support_page.dart
 //
-// ✅ AdminSupportPage v7.6 Final（客服中心管理｜FAQ + 聯絡我們設定）
+// ✅ AdminSupportPage（單檔完整版｜可編譯可用｜修正 deprecated withOpacity -> withValues(alpha:)）
 // ------------------------------------------------------------
-// Firestore 結構：
-// faq_items/{id}
-//   - question: String
-//   - answer: String
-//   - category: String
-//   - isActive: bool
-//   - order: int
-//   - createdAt, updatedAt
+// Firestore:
+// support_tickets/{ticketId}
+//  - uid: String
+//  - userEmail: String
+//  - title: String
+//  - content: String
+//  - status: "open" | "pending" | "closed"
+//  - assignee: String (可空)
+//  - tags: List<String> (可空)
+//  - createdAt: Timestamp
+//  - updatedAt: Timestamp
+//  - closedAt: Timestamp? (可空)
 //
-// site_settings/support
-//   - email: String
-//   - phone: String
-//   - workingHours: String
-//   - formNote: String
-//
-// ------------------------------------------------------------
-// 依賴：cloud_firestore, intl
+// support_tickets/{ticketId}/messages/{messageId}
+//  - sender: "admin" | "user"
+//  - text: String
+//  - createdAt: Timestamp
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -33,443 +33,907 @@ class AdminSupportPage extends StatefulWidget {
 }
 
 class _AdminSupportPageState extends State<AdminSupportPage> {
-  final _db = FirebaseFirestore.instance;
-  int _tabIndex = 0;
+  // ✅ 修正：_db 真的用在 query / 更新 / 回覆
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  late final CollectionReference<Map<String, dynamic>> _col = _db.collection(
+    'support_tickets',
+  );
+
+  final _searchCtrl = TextEditingController();
+  SupportFilter _filter = SupportFilter.open;
+  String _q = '';
 
   @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('客服中心管理'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(icon: Icon(Icons.question_answer_outlined), text: '常見問題 FAQ'),
-              Tab(icon: Icon(Icons.support_agent_outlined), text: '聯絡我們設定'),
-            ],
-          ),
-        ),
-        body: TabBarView(
-          children: [
-            _FaqManager(),
-            _SupportSettings(),
-          ],
-        ),
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  DateTime? _toDt(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+    return null;
+  }
+
+  String _fmtDt(DateTime? d) {
+    if (d == null) return '—';
+    return DateFormat('yyyy/MM/dd HH:mm').format(d);
+  }
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  bool _match(Map<String, dynamic> m) {
+    final q = _q.trim().toLowerCase();
+    if (q.isEmpty) return true;
+
+    final text = <String>[
+      _s(m['uid']),
+      _s(m['userEmail']),
+      _s(m['title']),
+      _s(m['content']),
+      _s(m['status']),
+      _s(m['assignee']),
+      if (m['tags'] is List) (m['tags'] as List).join(' '),
+    ].join(' ').toLowerCase();
+
+    return text.contains(q);
+  }
+
+  Query<Map<String, dynamic>> _baseQuery() {
+    // 為避免資料缺欄位直接炸，先用 docId 排序；顯示再以 updatedAt/createdAt 客端排序
+    return _col.orderBy(FieldPath.documentId).limit(500);
+  }
+
+  List<SupportTicket> _apply(List<SupportTicket> list) {
+    Iterable<SupportTicket> out = list;
+
+    switch (_filter) {
+      case SupportFilter.open:
+        out = out.where((t) => t.status == 'open');
+        break;
+      case SupportFilter.pending:
+        out = out.where((t) => t.status == 'pending');
+        break;
+      case SupportFilter.closed:
+        out = out.where((t) => t.status == 'closed');
+        break;
+      case SupportFilter.all:
+        break;
+    }
+
+    if (_q.trim().isNotEmpty) {
+      out = out.where((t) => _match(t.raw));
+    }
+
+    final sorted = out.toList()
+      ..sort((a, b) {
+        final atA =
+            a.updatedAt ??
+            a.createdAt ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        final atB =
+            b.updatedAt ??
+            b.createdAt ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        return atB.compareTo(atA);
+      });
+
+    return sorted;
+  }
+
+  Future<void> _openDetail(String ticketId) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AdminSupportTicketDetailPage(ticketId: ticketId),
       ),
     );
   }
-}
 
-// ------------------------------------------------------------
-// ✅ FAQ 管理區塊
-// ------------------------------------------------------------
-class _FaqManager extends StatefulWidget {
-  @override
-  State<_FaqManager> createState() => _FaqManagerState();
-}
-
-class _FaqManagerState extends State<_FaqManager> {
-  final _db = FirebaseFirestore.instance;
-  bool _busyReorder = false;
-  String _keyword = '';
-  String _category = '全部';
-
-  void _snack(String msg) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-
-  String _fmt(dynamic v) =>
-      v is Timestamp ? DateFormat('yyyy/MM/dd HH:mm').format(v.toDate()) : '-';
-
-  Query<Map<String, dynamic>> _query() =>
-      _db.collection('faq_items').orderBy('order').limit(300);
-
-  Future<void> _create() async {
-    final ref = _db.collection('faq_items').doc();
-    final now = FieldValue.serverTimestamp();
-    await ref.set({
-      'question': '新問題',
-      'answer': '請輸入答案內容',
-      'category': '一般',
-      'isActive': true,
-      'order': DateTime.now().millisecondsSinceEpoch,
-      'createdAt': now,
-      'updatedAt': now,
-    });
-    await _edit(ref.id);
+  Future<void> _updateStatus(String ticketId, String next) async {
+    try {
+      final patch = <String, dynamic>{
+        'status': next,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (next == 'closed') {
+        patch['closedAt'] = FieldValue.serverTimestamp();
+      }
+      await _col.doc(ticketId).set(patch, SetOptions(merge: true));
+      _snack('已更新狀態：$next');
+    } catch (e) {
+      _snack('更新失敗：$e');
+    }
   }
 
-  Future<void> _edit(String id) async {
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => _FaqEditSheet(id: id),
-    );
+  Future<void> _setAssignee(String ticketId, String assignee) async {
+    try {
+      await _col.doc(ticketId).set({
+        'assignee': assignee.trim(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      _snack('已更新指派');
+    } catch (e) {
+      _snack('更新失敗：$e');
+    }
   }
 
-  Future<void> _toggleActive(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final cur = doc.data()?['isActive'] == true;
-    await doc.reference.update({'isActive': !cur});
-  }
-
-  Future<void> _delete(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final q = (doc.data()?['question'] ?? '').toString();
+  Future<void> _deleteTicket(String ticketId) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('刪除 FAQ'),
-        content: Text('確定要刪除「$q」嗎？'),
+        title: const Text('刪除工單'),
+        content: const Text('確定刪除此工單？此操作不可復原。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
-    if (ok == true) {
-      await doc.reference.delete();
-      _snack('已刪除');
-    }
-  }
+    if (ok != true) return;
 
-  Future<void> _applyReorder(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) async {
-    if (_busyReorder) return;
-    setState(() => _busyReorder = true);
     try {
-      final batch = _db.batch();
-      for (int i = 0; i < docs.length; i++) {
-        batch.update(docs[i].reference, {'order': i + 1});
-      }
-      await batch.commit();
-    } finally {
-      setState(() => _busyReorder = false);
+      await _col.doc(ticketId).delete();
+      _snack('已刪除工單');
+    } catch (e) {
+      _snack('刪除失敗：$e');
     }
-  }
-
-  bool _match(Map<String, dynamic> d) {
-    final kw = _keyword.toLowerCase().trim();
-    final cat = _category;
-    final q = (d['question'] ?? '').toString().toLowerCase();
-    final a = (d['answer'] ?? '').toString().toLowerCase();
-    final c = (d['category'] ?? '').toString().trim();
-    if (kw.isNotEmpty && !q.contains(kw) && !a.contains(kw)) return false;
-    if (cat != '全部' && c != cat) return false;
-    return true;
   }
 
   @override
   Widget build(BuildContext context) {
-    final stream = _query().snapshots();
+    final cs = Theme.of(context).colorScheme;
 
-    return Column(
-      children: [
-        _buildFilterBar(),
-        Expanded(
-          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: stream,
-            builder: (context, snap) {
-              if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-              final all = snap.data!.docs;
-              if (all.isEmpty) return const Center(child: Text('目前沒有 FAQ'));
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(
+          '客服工單',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
+        actions: [
+          IconButton(
+            tooltip: '重新整理',
+            icon: const Icon(Icons.refresh),
+            onPressed: () => setState(() {}),
+          ),
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      hintText: '搜尋 uid / email / 標題 / 內容 / 指派 / 標籤',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (v) => setState(() => _q = v),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                DropdownButton<SupportFilter>(
+                  value: _filter,
+                  onChanged: (v) =>
+                      setState(() => _filter = v ?? SupportFilter.open),
+                  items: const [
+                    DropdownMenuItem(
+                      value: SupportFilter.open,
+                      child: Text('未處理'),
+                    ),
+                    DropdownMenuItem(
+                      value: SupportFilter.pending,
+                      child: Text('處理中'),
+                    ),
+                    DropdownMenuItem(
+                      value: SupportFilter.closed,
+                      child: Text('已結案'),
+                    ),
+                    DropdownMenuItem(
+                      value: SupportFilter.all,
+                      child: Text('全部'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _baseQuery().snapshots(),
+              builder: (context, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snap.hasError) {
+                  return _ErrorView(
+                    title: '載入失敗',
+                    message: snap.error.toString(),
+                    onRetry: () => setState(() {}),
+                  );
+                }
 
-              final cats = <String>{'全部'};
-              for (final d in all) {
-                final c = (d['category'] ?? '').toString();
-                if (c.isNotEmpty) cats.add(c);
-              }
+                final docs = snap.data?.docs ?? const [];
+                final tickets = docs
+                    .map((d) => SupportTicket.fromDoc(d, toDt: _toDt))
+                    .toList();
 
-              final filtered = all.where((d) => _match(d.data())).toList();
+                final filtered = _apply(tickets);
 
-              return Stack(
-                children: [
-                  ReorderableListView.builder(
-                    itemCount: filtered.length,
-                    onReorder: (oldIndex, newIndex) async {
-                      if (newIndex > oldIndex) newIndex--;
-                      final moved = filtered.removeAt(oldIndex);
-                      filtered.insert(newIndex, moved);
-                      await _applyReorder(filtered);
-                    },
-                    itemBuilder: (context, i) {
-                      final d = filtered[i].data();
-                      final q = (d['question'] ?? '').toString();
-                      final a = (d['answer'] ?? '').toString();
-                      final cat = (d['category'] ?? '').toString();
-                      final active = d['isActive'] == true;
-                      final updated = _fmt(d['updatedAt']);
+                if (filtered.isEmpty) {
+                  return Center(
+                    child: Text(
+                      '沒有符合條件的工單',
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                    ),
+                  );
+                }
 
-                      return Card(
-                        key: ValueKey(filtered[i].id),
-                        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        child: ListTile(
-                          leading: Icon(Icons.help_outline,
-                              color: active ? Colors.blue : Colors.grey),
-                          title: Text(q, style: const TextStyle(fontWeight: FontWeight.w900)),
-                          subtitle: Text([
-                            '分類：$cat',
-                            '狀態：${active ? '上架' : '下架'}',
-                            '更新：$updated'
-                          ].join('｜')),
-                          trailing: PopupMenuButton<String>(
-                            onSelected: (v) async {
-                              if (v == 'edit') await _edit(filtered[i].id);
-                              if (v == 'toggle') await _toggleActive(filtered[i]);
-                              if (v == 'delete') await _delete(filtered[i]);
-                            },
-                            itemBuilder: (_) => [
-                              const PopupMenuItem(value: 'edit', child: Text('編輯')),
-                              PopupMenuItem(
-                                  value: 'toggle', child: Text(active ? '下架' : '上架')),
-                              const PopupMenuItem(value: 'delete', child: Text('刪除')),
-                            ],
+                return ListView.separated(
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final t = filtered[i];
+                    final statusText = _statusLabel(t.status);
+                    final statusColor = _statusColor(context, t.status);
+
+                    final subtitle = <String>[
+                      if (t.uid.isNotEmpty) 'uid:${t.uid}',
+                      if (t.userEmail.isNotEmpty) 'email:${t.userEmail}',
+                      if (t.assignee.isNotEmpty) '指派:${t.assignee}',
+                      '更新:${_fmtDt(t.updatedAt ?? t.createdAt)}',
+                      if (t.tags.isNotEmpty) 'tags:${t.tags.join(",")}',
+                    ].join('｜');
+
+                    return ListTile(
+                      title: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              t.title.isEmpty ? '(未命名工單)' : t.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
                           ),
-                          onTap: () => _edit(filtered[i].id),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              // ✅ FIX: withOpacity -> withValues(alpha:)
+                              color: statusColor.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              statusText,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 12,
+                                color: statusColor,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      subtitle: Text(
+                        subtitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: PopupMenuButton<String>(
+                        onSelected: (v) async {
+                          if (v == 'open') await _openDetail(t.id);
+                          if (v == 'to_open') await _updateStatus(t.id, 'open');
+                          if (v == 'to_pending') {
+                            await _updateStatus(t.id, 'pending');
+                          }
+                          if (v == 'to_closed') {
+                            await _updateStatus(t.id, 'closed');
+                          }
+                          if (v == 'assignee') {
+                            final a = await _promptText(
+                              title: '指派人（assignee）',
+                              hint: '可填 admin email / uid / 名稱',
+                              initial: t.assignee,
+                            );
+                            if (a != null) await _setAssignee(t.id, a);
+                          }
+                          if (v == 'delete') await _deleteTicket(t.id);
+                        },
+                        itemBuilder: (_) => [
+                          const PopupMenuItem(
+                            value: 'open',
+                            child: Text('查看/回覆'),
+                          ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: 'to_open',
+                            child: Text('標記：未處理'),
+                          ),
+                          const PopupMenuItem(
+                            value: 'to_pending',
+                            child: Text('標記：處理中'),
+                          ),
+                          const PopupMenuItem(
+                            value: 'to_closed',
+                            child: Text('標記：已結案'),
+                          ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: 'assignee',
+                            child: Text('設定指派'),
+                          ),
+                          PopupMenuItem(
+                            value: 'delete',
+                            child: Text(
+                              '刪除',
+                              style: TextStyle(
+                                color: cs.error,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      onTap: () => _openDetail(t.id),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _statusLabel(String s) {
+    switch (s) {
+      case 'open':
+        return '未處理';
+      case 'pending':
+        return '處理中';
+      case 'closed':
+        return '已結案';
+      default:
+        return s.isEmpty ? '未處理' : s;
+    }
+  }
+
+  Color _statusColor(BuildContext context, String s) {
+    final cs = Theme.of(context).colorScheme;
+    switch (s) {
+      case 'open':
+        return cs.primary;
+      case 'pending':
+        return Colors.orange.shade800;
+      case 'closed':
+        return Colors.green.shade800;
+      default:
+        return cs.onSurfaceVariant;
+    }
+  }
+
+  Future<String?> _promptText({
+    required String title,
+    required String hint,
+    String initial = '',
+  }) async {
+    final ctrl = TextEditingController(text: initial);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          decoration: InputDecoration(
+            hintText: hint,
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('儲存'),
+          ),
+        ],
+      ),
+    );
+    final v = ctrl.text.trim();
+    ctrl.dispose();
+    if (ok == true) return v;
+    return null;
+  }
+}
+
+// ============================== Detail Page ==============================
+
+class AdminSupportTicketDetailPage extends StatefulWidget {
+  final String ticketId;
+  const AdminSupportTicketDetailPage({super.key, required this.ticketId});
+
+  @override
+  State<AdminSupportTicketDetailPage> createState() =>
+      _AdminSupportTicketDetailPageState();
+}
+
+class _AdminSupportTicketDetailPageState
+    extends State<AdminSupportTicketDetailPage> {
+  final _db = FirebaseFirestore.instance;
+  late final DocumentReference<Map<String, dynamic>> _doc = _db
+      .collection('support_tickets')
+      .doc(widget.ticketId);
+
+  final _replyCtrl = TextEditingController();
+  bool _sending = false;
+
+  DateTime? _toDt(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+    return null;
+  }
+
+  String _fmtDt(DateTime? d) {
+    if (d == null) return '—';
+    return DateFormat('yyyy/MM/dd HH:mm').format(d);
+  }
+
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  @override
+  void dispose() {
+    _replyCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _sendReply(String ticketId) async {
+    final text = _replyCtrl.text.trim();
+    if (text.isEmpty) {
+      _snack('回覆不可為空');
+      return;
+    }
+    if (_sending) return;
+
+    setState(() => _sending = true);
+    try {
+      final now = FieldValue.serverTimestamp();
+
+      // messages 子集合
+      await _doc.collection('messages').add({
+        'sender': 'admin',
+        'text': text,
+        'createdAt': now,
+      });
+
+      // 更新工單 updatedAt / status
+      await _doc.set({
+        'updatedAt': now,
+        'status': 'pending',
+      }, SetOptions(merge: true));
+
+      _replyCtrl.clear();
+      _snack('已送出回覆');
+    } catch (e) {
+      _snack('送出失敗：$e');
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Future<void> _setStatus(String status) async {
+    try {
+      final patch = <String, dynamic>{
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (status == 'closed') patch['closedAt'] = FieldValue.serverTimestamp();
+      await _doc.set(patch, SetOptions(merge: true));
+      _snack('已更新狀態：$status');
+    } catch (e) {
+      _snack('更新失敗：$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          '工單：${widget.ticketId}',
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (v) async {
+              if (v == 'open') await _setStatus('open');
+              if (v == 'pending') await _setStatus('pending');
+              if (v == 'closed') await _setStatus('closed');
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'open', child: Text('標記：未處理')),
+              PopupMenuItem(value: 'pending', child: Text('標記：處理中')),
+              PopupMenuItem(value: 'closed', child: Text('標記：已結案')),
+            ],
+          ),
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: _doc.snapshots(),
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snap.hasError) {
+            return _ErrorView(
+              title: '載入失敗',
+              message: snap.error.toString(),
+              onRetry: () => setState(() {}),
+            );
+          }
+          final data = snap.data?.data();
+          if (data == null) {
+            return const Center(child: Text('工單不存在或已刪除'));
+          }
+
+          final title = _s(data['title']);
+          final content = _s(data['content']);
+          final status = _s(data['status']).isEmpty
+              ? 'open'
+              : _s(data['status']);
+          final uid = _s(data['uid']);
+          final email = _s(data['userEmail']);
+          final assignee = _s(data['assignee']);
+          final tags = (data['tags'] is List)
+              ? (data['tags'] as List).map((e) => e.toString()).toList()
+              : <String>[];
+          final createdAt = _toDt(data['createdAt']);
+          final updatedAt = _toDt(data['updatedAt']);
+          final closedAt = _toDt(data['closedAt']);
+
+          return Column(
+            children: [
+              Card(
+                elevation: 0,
+                margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title.isEmpty ? '(未命名工單)' : title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(content.isEmpty ? '(無內容)' : content),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _pill(cs, '狀態：$status'),
+                          if (uid.isNotEmpty) _pill(cs, 'uid：$uid'),
+                          if (email.isNotEmpty) _pill(cs, 'email：$email'),
+                          if (assignee.isNotEmpty) _pill(cs, '指派：$assignee'),
+                          _pill(cs, '建立：${_fmtDt(createdAt)}'),
+                          _pill(cs, '更新：${_fmtDt(updatedAt)}'),
+                          if (closedAt != null)
+                            _pill(cs, '結案：${_fmtDt(closedAt)}'),
+                          if (tags.isNotEmpty)
+                            _pill(cs, 'tags：${tags.join(",")}'),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _doc
+                      .collection('messages')
+                      .orderBy('createdAt', descending: false)
+                      .limit(500)
+                      .snapshots(),
+                  builder: (context, msnap) {
+                    if (msnap.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final msgs = msnap.data?.docs ?? const [];
+                    if (msgs.isEmpty) {
+                      return Center(
+                        child: Text(
+                          '尚無對話紀錄',
+                          style: TextStyle(color: cs.onSurfaceVariant),
                         ),
                       );
-                    },
-                  ),
-                  if (_busyReorder)
-                    const Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: Material(
-                        elevation: 10,
-                        child: Padding(
-                          padding: EdgeInsets.all(8),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2)),
-                              SizedBox(width: 8),
-                              Text('更新排序中...',
-                                  style: TextStyle(fontWeight: FontWeight.bold)),
-                            ],
+                    }
+
+                    return ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                      itemCount: msgs.length,
+                      itemBuilder: (_, i) {
+                        final m = msgs[i].data();
+                        final sender = _s(m['sender']);
+                        final text = _s(m['text']);
+                        final at = _toDt(m['createdAt']);
+                        final isAdmin = sender == 'admin';
+
+                        return Align(
+                          alignment: isAdmin
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 560),
+                            child: Card(
+                              elevation: 0,
+                              color: isAdmin
+                                  ? cs.primaryContainer
+                                  : cs.surfaceContainerHighest,
+                              child: Padding(
+                                padding: const EdgeInsets.all(10),
+                                child: Column(
+                                  crossAxisAlignment: isAdmin
+                                      ? CrossAxisAlignment.end
+                                      : CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      text,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color: isAdmin
+                                            ? cs.onPrimaryContainer
+                                            : cs.onSurface,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      _fmtDt(at),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        // ✅ FIX: withOpacity -> withValues(alpha:)
+                                        color: isAdmin
+                                            ? cs.onPrimaryContainer.withValues(
+                                                alpha: 0.8,
+                                              )
+                                            : cs.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+
+              // reply box
+              SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _replyCtrl,
+                          minLines: 1,
+                          maxLines: 4,
+                          decoration: const InputDecoration(
+                            hintText: '輸入回覆（送出後會自動標記為 pending）',
+                            border: OutlineInputBorder(),
+                            isDense: true,
                           ),
                         ),
                       ),
-                    ),
-                ],
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFilterBar() {
-    return Padding(
-      padding: const EdgeInsets.all(10),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.search),
-                hintText: '搜尋問題或答案',
-                isDense: true,
-                border: OutlineInputBorder(),
-              ),
-              onChanged: (v) => setState(() => _keyword = v),
-            ),
-          ),
-          const SizedBox(width: 10),
-          DropdownButton<String>(
-            value: _category,
-            items: ['全部', '一般', '帳號', '付款', '其他']
-                .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                .toList(),
-            onChanged: (v) => setState(() => _category = v ?? '全部'),
-          ),
-          const SizedBox(width: 10),
-          IconButton(onPressed: _create, icon: const Icon(Icons.add_outlined)),
-        ],
-      ),
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// ✅ BottomSheet：編輯 FAQ 資料
-// ------------------------------------------------------------
-class _FaqEditSheet extends StatefulWidget {
-  final String id;
-  const _FaqEditSheet({required this.id});
-
-  @override
-  State<_FaqEditSheet> createState() => _FaqEditSheetState();
-}
-
-class _FaqEditSheetState extends State<_FaqEditSheet> {
-  final _db = FirebaseFirestore.instance;
-  final _qCtrl = TextEditingController();
-  final _aCtrl = TextEditingController();
-  final _catCtrl = TextEditingController();
-  bool _active = true;
-  bool _loading = true;
-  bool _saving = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final doc = await _db.collection('faq_items').doc(widget.id).get();
-    if (doc.exists) {
-      final d = doc.data()!;
-      _qCtrl.text = (d['question'] ?? '').toString();
-      _aCtrl.text = (d['answer'] ?? '').toString();
-      _catCtrl.text = (d['category'] ?? '').toString();
-      _active = d['isActive'] == true;
-    }
-    setState(() => _loading = false);
-  }
-
-  Future<void> _save() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      await _db.collection('faq_items').doc(widget.id).set({
-        'question': _qCtrl.text.trim(),
-        'answer': _aCtrl.text.trim(),
-        'category': _catCtrl.text.trim(),
-        'isActive': _active,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      if (!mounted) return;
-      Navigator.pop(context);
-    } finally {
-      setState(() => _saving = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) return const SafeArea(child: Center(child: CircularProgressIndicator()));
-
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 14,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              const Text('編輯 FAQ', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-              const SizedBox(height: 10),
-              TextField(controller: _qCtrl, decoration: const InputDecoration(labelText: '問題')),
-              const SizedBox(height: 8),
-              TextField(controller: _aCtrl, maxLines: 4, decoration: const InputDecoration(labelText: '答案')),
-              const SizedBox(height: 8),
-              TextField(controller: _catCtrl, decoration: const InputDecoration(labelText: '分類')),
-              const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('上架'),
-                value: _active,
-                onChanged: (v) => setState(() => _active = v),
-              ),
-              FilledButton.icon(
-                onPressed: _save,
-                icon: const Icon(Icons.save_outlined),
-                label: const Text('儲存'),
+                      const SizedBox(width: 10),
+                      FilledButton.icon(
+                        onPressed: _sending
+                            ? null
+                            : () => _sendReply(widget.ticketId),
+                        icon: _sending
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.send),
+                        label: Text(_sending ? '送出中...' : '送出'),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
-          ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _pill(ColorScheme cs, String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: cs.onSurfaceVariant,
+          fontWeight: FontWeight.w700,
+          fontSize: 12,
         ),
       ),
     );
   }
 }
 
-// ------------------------------------------------------------
-// ✅ 聯絡我們設定區塊
-// ------------------------------------------------------------
-class _SupportSettings extends StatefulWidget {
-  @override
-  State<_SupportSettings> createState() => _SupportSettingsState();
+// ============================== Models ==============================
+
+class SupportTicket {
+  final String id;
+  final Map<String, dynamic> raw;
+
+  final String uid;
+  final String userEmail;
+  final String title;
+  final String content;
+  final String status; // open/pending/closed
+  final String assignee;
+  final List<String> tags;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  SupportTicket({
+    required this.id,
+    required this.raw,
+    required this.uid,
+    required this.userEmail,
+    required this.title,
+    required this.content,
+    required this.status,
+    required this.assignee,
+    required this.tags,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  factory SupportTicket.fromDoc(
+    DocumentSnapshot<Map<String, dynamic>> doc, {
+    required DateTime? Function(dynamic) toDt,
+  }) {
+    final m = doc.data() ?? <String, dynamic>{};
+
+    final tags = <String>[];
+    if (m['tags'] is List) {
+      for (final e in (m['tags'] as List)) {
+        final s = (e ?? '').toString().trim();
+        if (s.isNotEmpty) tags.add(s);
+      }
+    }
+
+    final status = (m['status'] ?? 'open').toString().trim();
+    return SupportTicket(
+      id: doc.id,
+      raw: m,
+      uid: (m['uid'] ?? '').toString(),
+      userEmail: (m['userEmail'] ?? '').toString(),
+      title: (m['title'] ?? '').toString(),
+      content: (m['content'] ?? '').toString(),
+      status: status.isEmpty ? 'open' : status,
+      assignee: (m['assignee'] ?? '').toString(),
+      tags: tags,
+      createdAt: toDt(m['createdAt']),
+      updatedAt: toDt(m['updatedAt']),
+    );
+  }
 }
 
-class _SupportSettingsState extends State<_SupportSettings> {
-  final _db = FirebaseFirestore.instance;
-  final _emailCtrl = TextEditingController();
-  final _phoneCtrl = TextEditingController();
-  final _hoursCtrl = TextEditingController();
-  final _noteCtrl = TextEditingController();
-  bool _loading = true;
-  bool _saving = false;
+// ============================== UI Helpers ==============================
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
+enum SupportFilter { open, pending, closed, all }
 
-  Future<void> _load() async {
-    final doc = await _db.collection('site_settings').doc('support').get();
-    if (doc.exists) {
-      final d = doc.data()!;
-      _emailCtrl.text = (d['email'] ?? '').toString();
-      _phoneCtrl.text = (d['phone'] ?? '').toString();
-      _hoursCtrl.text = (d['workingHours'] ?? '').toString();
-      _noteCtrl.text = (d['formNote'] ?? '').toString();
-    }
-    setState(() => _loading = false);
-  }
+class _ErrorView extends StatelessWidget {
+  final String title;
+  final String message;
+  final VoidCallback onRetry;
 
-  Future<void> _save() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      await _db.collection('site_settings').doc('support').set({
-        'email': _emailCtrl.text.trim(),
-        'phone': _phoneCtrl.text.trim(),
-        'workingHours': _hoursCtrl.text.trim(),
-        'formNote': _noteCtrl.text.trim(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已儲存設定')));
-    } finally {
-      setState(() => _saving = false);
-    }
-  }
+  const _ErrorView({
+    required this.title,
+    required this.message,
+    required this.onRetry,
+  });
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    final cs = Theme.of(context).colorScheme;
 
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: ListView(
-        children: [
-          const Text('客服聯絡設定', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-          const SizedBox(height: 10),
-          TextField(controller: _emailCtrl, decoration: const InputDecoration(labelText: '客服信箱')),
-          const SizedBox(height: 8),
-          TextField(controller: _phoneCtrl, decoration: const InputDecoration(labelText: '電話')),
-          const SizedBox(height: 8),
-          TextField(controller: _hoursCtrl, decoration: const InputDecoration(labelText: '服務時間')),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _noteCtrl,
-            maxLines: 3,
-            decoration: const InputDecoration(labelText: '表單提示文字（顯示於前台）'),
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Card(
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline, size: 44, color: cs.error),
+                  const SizedBox(height: 10),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重試'),
+                  ),
+                ],
+              ),
+            ),
           ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: _save,
-            icon: const Icon(Icons.save_outlined),
-            label: const Text('儲存設定'),
-          ),
-        ],
+        ),
       ),
     );
   }

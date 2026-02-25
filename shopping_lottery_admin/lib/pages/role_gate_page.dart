@@ -29,6 +29,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // ✅ 修正：Clipboard 需要
 
 class RoleGatePage extends StatefulWidget {
   const RoleGatePage({
@@ -58,7 +59,10 @@ class _RoleGatePageState extends State<RoleGatePage> {
   String _s(dynamic v) => (v ?? '').toString().trim();
 
   Future<_RoleResult> _resolve(User user) async {
-    final doc = await _db.collection(widget.usersCollection).doc(user.uid).get();
+    final doc = await _db
+        .collection(widget.usersCollection)
+        .doc(user.uid)
+        .get();
     final data = doc.data() ?? <String, dynamic>{};
 
     final role = _s(data['role']).toLowerCase();
@@ -86,10 +90,16 @@ class _RoleGatePageState extends State<RoleGatePage> {
     try {
       await FirebaseAuth.instance.signOut();
       if (!mounted) return;
-      Navigator.pushNamedAndRemoveUntil(context, widget.loginRoute, (r) => false);
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        widget.loginRoute,
+        (r) => false,
+      );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('登出失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('登出失敗：$e')));
     }
   }
 
@@ -103,7 +113,9 @@ class _RoleGatePageState extends State<RoleGatePage> {
         final user = authSnap.data;
 
         if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
 
         if (user == null) {
@@ -120,12 +132,24 @@ class _RoleGatePageState extends State<RoleGatePage> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Text('尚未登入', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+                        const Text(
+                          '尚未登入',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 18,
+                          ),
+                        ),
                         const SizedBox(height: 10),
-                        Text('請先登入後再進入後台。', style: TextStyle(color: cs.onSurfaceVariant)),
+                        Text(
+                          '請先登入後再進入後台。',
+                          style: TextStyle(color: cs.onSurfaceVariant),
+                        ),
                         const SizedBox(height: 14),
                         FilledButton(
-                          onPressed: () => Navigator.pushReplacementNamed(context, widget.loginRoute),
+                          onPressed: () => Navigator.pushReplacementNamed(
+                            context,
+                            widget.loginRoute,
+                          ),
                           child: const Text('前往登入'),
                         ),
                       ],
@@ -147,7 +171,9 @@ class _RoleGatePageState extends State<RoleGatePage> {
           future: _future,
           builder: (context, snap) {
             if (snap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
 
             if (snap.hasError) {
@@ -175,16 +201,27 @@ class _RoleGatePageState extends State<RoleGatePage> {
                             mainAxisSize: MainAxisSize.min,
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text('讀取角色失敗', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+                              const Text(
+                                '讀取角色失敗',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 18,
+                                ),
+                              ),
                               const SizedBox(height: 10),
-                              Text('${snap.error}', style: TextStyle(color: cs.error)),
+                              Text(
+                                '${snap.error}',
+                                style: TextStyle(color: cs.error),
+                              ),
                               const SizedBox(height: 14),
                               Wrap(
                                 spacing: 10,
                                 runSpacing: 10,
                                 children: [
                                   FilledButton.icon(
-                                    onPressed: () => setState(() => _future = _resolve(user)),
+                                    onPressed: () => setState(
+                                      () => _future = _resolve(user),
+                                    ),
                                     icon: const Icon(Icons.refresh),
                                     label: const Text('重試'),
                                   ),
@@ -211,7 +248,9 @@ class _RoleGatePageState extends State<RoleGatePage> {
             // ✅ 自動導頁（pushReplacementNamed）
             if (role == 'admin') {
               _go(widget.adminRoute);
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
 
             if (role == 'vendor') {
@@ -223,7 +262,8 @@ class _RoleGatePageState extends State<RoleGatePage> {
                     actions: [
                       IconButton(
                         tooltip: '重新讀取',
-                        onPressed: () => setState(() => _future = _resolve(user)),
+                        onPressed: () =>
+                            setState(() => _future = _resolve(user)),
                         icon: const Icon(Icons.refresh),
                       ),
                     ],
@@ -241,7 +281,13 @@ class _RoleGatePageState extends State<RoleGatePage> {
                               mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text('此帳號尚未綁定廠商', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+                                const Text(
+                                  '此帳號尚未綁定廠商',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 18,
+                                  ),
+                                ),
                                 const SizedBox(height: 10),
                                 Text(
                                   '你的 users/{uid}.role = vendor，但 vendorId 為空。\n'
@@ -250,7 +296,10 @@ class _RoleGatePageState extends State<RoleGatePage> {
                                 ),
                                 const SizedBox(height: 12),
                                 _KeyValue(label: 'uid', value: r.uid),
-                                _KeyValue(label: 'email', value: r.email ?? '-'),
+                                _KeyValue(
+                                  label: 'email',
+                                  value: r.email ?? '-',
+                                ),
                                 _KeyValue(label: 'role', value: r.role),
                                 const SizedBox(height: 14),
                                 Wrap(
@@ -258,7 +307,9 @@ class _RoleGatePageState extends State<RoleGatePage> {
                                   runSpacing: 10,
                                   children: [
                                     FilledButton.icon(
-                                      onPressed: () => setState(() => _future = _resolve(user)),
+                                      onPressed: () => setState(
+                                        () => _future = _resolve(user),
+                                      ),
                                       icon: const Icon(Icons.refresh),
                                       label: const Text('我已綁定，重新檢查'),
                                     ),
@@ -280,7 +331,9 @@ class _RoleGatePageState extends State<RoleGatePage> {
               }
 
               _go(widget.vendorRoute);
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
 
             // 其他 / unknown
@@ -308,7 +361,13 @@ class _RoleGatePageState extends State<RoleGatePage> {
                           mainAxisSize: MainAxisSize.min,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('此帳號沒有後台權限', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+                            const Text(
+                              '此帳號沒有後台權限',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                fontSize: 18,
+                              ),
+                            ),
                             const SizedBox(height: 10),
                             Text(
                               r.hasUserDoc
@@ -320,14 +379,16 @@ class _RoleGatePageState extends State<RoleGatePage> {
                             _KeyValue(label: 'uid', value: r.uid),
                             _KeyValue(label: 'email', value: r.email ?? '-'),
                             _KeyValue(label: 'role', value: r.role),
-                            if (r.vendorId.isNotEmpty) _KeyValue(label: 'vendorId', value: r.vendorId),
+                            if (r.vendorId.isNotEmpty)
+                              _KeyValue(label: 'vendorId', value: r.vendorId),
                             const SizedBox(height: 14),
                             Wrap(
                               spacing: 10,
                               runSpacing: 10,
                               children: [
                                 FilledButton.icon(
-                                  onPressed: () => setState(() => _future = _resolve(user)),
+                                  onPressed: () =>
+                                      setState(() => _future = _resolve(user)),
                                   icon: const Icon(Icons.refresh),
                                   label: const Text('重試'),
                                 ),
@@ -341,7 +402,10 @@ class _RoleGatePageState extends State<RoleGatePage> {
                             const SizedBox(height: 10),
                             Text(
                               '提示：請在 users/{uid} 設定 role=admin 或 role=vendor（vendor 需有 vendorId）。',
-                              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                              style: TextStyle(
+                                color: cs.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
                             ),
                           ],
                         ),
@@ -392,8 +456,19 @@ class _KeyValue extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
         children: [
-          SizedBox(width: 90, child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12))),
-          Expanded(child: Text(value, style: const TextStyle(fontWeight: FontWeight.w800))),
+          SizedBox(
+            width: 90,
+            child: Text(
+              label,
+              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
           IconButton(
             tooltip: '複製',
             onPressed: value.trim().isEmpty
@@ -401,7 +476,9 @@ class _KeyValue extends StatelessWidget {
                 : () async {
                     await Clipboard.setData(ClipboardData(text: value.trim()));
                     if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製')));
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已複製')));
                   },
             icon: const Icon(Icons.copy, size: 18),
           ),

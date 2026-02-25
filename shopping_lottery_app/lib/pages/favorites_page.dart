@@ -1,376 +1,462 @@
-// lib/pages/favorites_page.dart
-// =======================================================
-// ✅ FavoritesPage - 我的收藏（Wishlist）完整版（最終優化版）
-// =======================================================
-
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
-import '../services/cart_service.dart';
-import '../services/firestore_mock_service.dart';
-import '../services/wishlist_service.dart';
-import 'product_detail_page.dart';
+/// ✅ FavoritesPage（我的收藏｜完整版｜移除 FirestoreMockService.fetchProductById）
+/// ------------------------------------------------------------
+/// 修正重點：
+/// - 不使用 FirestoreMockService
+/// - 直接從 Firestore 讀收藏與商品：
+///   - users/{uid}/favorites/{productId}
+///     - productId: String（可選，沒寫就用 doc.id）
+///     - createdAt: Timestamp（可選）
+///
+///   - products/{productId}
+///     - title / name: String
+///     - imageUrl: String（可選）
+///     - price: num（可選）
+///     - isActive: bool（可選）
+///
+/// 注意：為了避免你資料缺欄位導致 runtime error，
+/// 本頁不強制 orderBy（純 client-side 顯示）。
+/// ------------------------------------------------------------
+class FavoritesPage extends StatefulWidget {
+  final String? uid;
 
-class FavoritesPage extends StatelessWidget {
-  const FavoritesPage({super.key});
+  const FavoritesPage({super.key, this.uid});
+
+  @override
+  State<FavoritesPage> createState() => _FavoritesPageState();
+}
+
+class _FavoritesPageState extends State<FavoritesPage> {
+  final _auth = FirebaseAuth.instance;
+  final _fs = FirebaseFirestore.instance;
+
+  bool _busy = false;
+
+  User? get _user => _auth.currentUser;
+
+  String _s(dynamic v, [String fallback = '']) => (v ?? fallback).toString();
+
+  num _asNum(dynamic v, {num fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is num) return v;
+    if (v is String) return num.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  CollectionReference<Map<String, dynamic>> _favoritesRef(String uid) =>
+      _fs.collection('users').doc(uid).collection('favorites');
+
+  DocumentReference<Map<String, dynamic>> _productRef(String productId) =>
+      _fs.collection('products').doc(productId);
 
   @override
   Widget build(BuildContext context) {
-    final wishlist = context.watch<WishlistService>();
-    final cart = context.watch<CartService>();
-
-    final items = wishlist.toProductList(); // ✅ 使用標準化輸出
-    final cartCount = _cartCount(cart);
+    final uid = widget.uid ?? _user?.uid;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7F9),
       appBar: AppBar(
-        title: const Text(
-          '我的收藏',
-          style: TextStyle(fontWeight: FontWeight.w900),
-        ),
-        centerTitle: true,
-        backgroundColor: Colors.white,
-        elevation: 0.8,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black87, size: 18),
-          onPressed: () => Navigator.pop(context),
-        ),
+        title: const Text('我的收藏'),
         actions: [
-          if (items.isNotEmpty)
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh),
+          ),
+          if (uid != null)
             IconButton(
               tooltip: '清空收藏',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () async {
-                final ok = await showDialog<bool>(
-                  context: context,
-                  builder: (_) => AlertDialog(
-                    title: const Text('清空收藏', style: TextStyle(fontWeight: FontWeight.bold)),
-                    content: const Text('確定要移除全部收藏商品嗎？'),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: const Text('取消'),
-                      ),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.redAccent,
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                        ),
-                        child: const Text('清空'),
-                      ),
-                    ],
-                  ),
-                );
-                if (ok == true) {
-                  await wishlist.clearAll();
-                  _toast(context, '已清空收藏');
-                }
-              },
+              onPressed: _busy ? null : () => _clearAll(uid),
+              icon: const Icon(Icons.delete_sweep_outlined),
             ),
         ],
       ),
-      body: SafeArea(
-        child: items.isEmpty
-            ? _buildEmptyView(context)
-            : ListView.builder(
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 96),
-                itemCount: items.length,
-                itemBuilder: (_, i) {
-                  final p = items[i];
-                  final id = (p['id'] ?? '').toString();
-                  final name = (p['name'] ?? '商品').toString();
-                  final price = (p['price'] is num)
-                      ? (p['price'] as num).toDouble()
-                      : double.tryParse('${p['price']}') ?? 0.0;
-                  final image = (p['image'] ?? '').toString();
-
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.grey.shade200),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.04),
-                          blurRadius: 6,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(12),
-                                child: Container(
-                                  width: 64,
-                                  height: 64,
-                                  color: Colors.grey.shade100,
-                                  child: image.isEmpty
-                                      ? const Icon(Icons.image_outlined, color: Colors.grey)
-                                      : Image.network(
-                                          image,
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (_, __, ___) => const Icon(
-                                            Icons.broken_image_outlined,
-                                            color: Colors.grey,
-                                          ),
-                                        ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      name,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 15,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      'NT\$${price.toStringAsFixed(0)}',
-                                      style: const TextStyle(
-                                        color: Colors.orangeAccent,
-                                        fontWeight: FontWeight.w900,
-                                        fontSize: 14,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              IconButton(
-                                tooltip: '移除收藏',
-                                onPressed: () async {
-                                  await wishlist.removeFromWishlist(id);
-                                  _toast(context, '已移除收藏');
-                                },
-                                icon: const Icon(Icons.favorite, color: Colors.redAccent),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: () async {
-                                    final detail = FirestoreMockService.instance
-                                            .fetchProductById(id) ??
-                                        p;
-                                    await Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) =>
-                                            ProductDetailPage(product: detail),
-                                      ),
-                                    );
-                                  },
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: Colors.blueGrey,
-                                    side: BorderSide(color: Colors.grey.shade300),
-                                    padding: const EdgeInsets.symmetric(vertical: 10),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    '查看',
-                                    style: TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: ElevatedButton(
-                                  onPressed: () => _addToCart(context, p),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.blueAccent,
-                                    foregroundColor: Colors.white,
-                                    elevation: 0,
-                                    padding: const EdgeInsets.symmetric(vertical: 10),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    '加入購物車',
-                                    style: TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-      ),
-      bottomNavigationBar: cartCount <= 0
-          ? null
-          : SafeArea(
-              top: false,
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-                color: Colors.white,
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '購物車：$cartCount 件',
-                        style: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: () => Navigator.pushNamed(context, '/cart'),
-                      icon: const Icon(Icons.shopping_cart_checkout),
-                      label: const Text('查看購物車'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orangeAccent,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+      body: uid == null ? _needLogin(context) : _body(uid),
     );
   }
 
-  // =======================================================
-  // ✅ 空收藏畫面
-  // =======================================================
-  Widget _buildEmptyView(BuildContext context) {
+  Widget _needLogin(BuildContext context) {
     return Center(
-      child: ListView(
-        shrinkWrap: true,
-        padding: const EdgeInsets.symmetric(horizontal: 24),
-        children: [
-          const SizedBox(height: 120),
-          Icon(Icons.favorite_border, size: 100, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          const Center(
-            child: Text(
-              '尚未收藏任何商品',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Center(
-            child: Text(
-              '在商品頁面點擊「愛心」即可加入收藏。',
-              style: TextStyle(color: Colors.grey, fontSize: 14),
-            ),
-          ),
-          const SizedBox(height: 26),
-          Center(
-            child: ElevatedButton.icon(
-              onPressed: () => Navigator.pushNamed(context, '/shop'),
-              icon: const Icon(Icons.storefront),
-              label: const Text('去逛逛'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blueAccent,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lock_outline, size: 56, color: Colors.grey),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '請先登入才能查看收藏',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 12),
+                  ElevatedButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                      rootNavigator: true,
+                    ).pushNamed('/login'),
+                    child: const Text('前往登入'),
+                  ),
+                ],
               ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }
 
-  // =======================================================
-  // ✅ 加入購物車
-  // =======================================================
-  void _addToCart(BuildContext context, Map<String, dynamic> p) async {
-    final dynamic cart = context.read<CartService>();
-    final id = (p['id'] ?? '').toString();
-    final name = (p['name'] ?? '商品').toString();
-    final price = double.tryParse('${p['price']}') ?? 0.0;
-    final image = (p['image'] ?? '').toString();
+  Widget _body(String uid) {
+    final stream = _favoritesRef(uid).limit(300).snapshots();
 
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: stream,
+      builder: (context, snap) {
+        if (snap.hasError) return _error('讀取收藏失敗：${snap.error}');
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final favDocs = snap.data!.docs;
+
+        if (favDocs.isEmpty) {
+          return _empty('你目前沒有收藏任何商品');
+        }
+
+        // client-side sort：若 favorites 有 createdAt，就以 createdAt desc；沒有就照原序
+        favDocs.sort((a, b) {
+          final ta = a.data()['createdAt'];
+          final tb = b.data()['createdAt'];
+          DateTime? da;
+          DateTime? db;
+          if (ta is Timestamp) da = ta.toDate();
+          if (tb is Timestamp) db = tb.toDate();
+          if (da == null && db == null) return 0;
+          if (da == null) return 1;
+          if (db == null) return -1;
+          return db.compareTo(da);
+        });
+
+        return ListView.builder(
+          padding: const EdgeInsets.all(12),
+          itemCount: favDocs.length,
+          itemBuilder: (context, i) {
+            final fav = favDocs[i];
+            final favData = fav.data();
+
+            // ✅ productId 來源：優先欄位 productId，沒有就用 doc.id
+            final productId = _s(favData['productId'], fav.id).trim();
+            if (productId.isEmpty) {
+              return _badFavTile(fav.id, uid);
+            }
+
+            return _favoriteProductTile(
+              uid: uid,
+              favoriteDocId: fav.id,
+              productId: productId,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _badFavTile(String favDocId, String uid) {
+    return Card(
+      elevation: 1,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        leading: const CircleAvatar(child: Icon(Icons.error_outline)),
+        title: const Text(
+          '收藏資料異常',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
+        subtitle: Text('favoriteDocId=$favDocId（缺少 productId）'),
+        trailing: IconButton(
+          tooltip: '移除此筆',
+          onPressed: _busy ? null : () => _removeFavorite(uid, favDocId),
+          icon: const Icon(Icons.delete_outline),
+        ),
+      ),
+    );
+  }
+
+  Widget _favoriteProductTile({
+    required String uid,
+    required String favoriteDocId,
+    required String productId,
+  }) {
+    return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      future: _productRef(productId).get(),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          // ✅ 修正：可 const 的 Card（消除 prefer_const_constructors）
+          return const Card(
+            elevation: 1,
+            margin: EdgeInsets.only(bottom: 10),
+            child: ListTile(
+              leading: CircleAvatar(child: Icon(Icons.favorite)),
+              title: Text('載入商品中…'),
+              subtitle: Text('請稍候'),
+            ),
+          );
+        }
+
+        if (snap.hasError) {
+          return Card(
+            elevation: 1,
+            margin: const EdgeInsets.only(bottom: 10),
+            child: ListTile(
+              leading: const CircleAvatar(
+                child: Icon(Icons.warning_amber_outlined),
+              ),
+              title: const Text(
+                '商品讀取失敗',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+              subtitle: Text('productId=$productId\n${snap.error}'),
+              trailing: IconButton(
+                tooltip: '移除此收藏',
+                onPressed: _busy
+                    ? null
+                    : () => _removeFavorite(uid, favoriteDocId),
+                icon: const Icon(Icons.delete_outline),
+              ),
+            ),
+          );
+        }
+
+        final doc = snap.data;
+        final data = doc?.data();
+
+        if (doc == null || !doc.exists || data == null) {
+          // 商品不存在：顯示可移除
+          return Card(
+            elevation: 1,
+            margin: const EdgeInsets.only(bottom: 10),
+            child: ListTile(
+              leading: const CircleAvatar(
+                child: Icon(Icons.inventory_2_outlined),
+              ),
+              title: const Text(
+                '商品不存在或已下架',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+              subtitle: Text('productId=$productId'),
+              trailing: IconButton(
+                tooltip: '移除此收藏',
+                onPressed: _busy
+                    ? null
+                    : () => _removeFavorite(uid, favoriteDocId),
+                icon: const Icon(Icons.delete_outline),
+              ),
+            ),
+          );
+        }
+
+        final title = _s(data['title'], _s(data['name'], '未命名商品'));
+        final imageUrl = _s(data['imageUrl']).trim();
+        final price = _asNum(data['price'], fallback: 0);
+        final isActive = (data['isActive'] ?? true) == true;
+
+        return Card(
+          elevation: 1,
+          margin: const EdgeInsets.only(bottom: 10),
+          child: ListTile(
+            leading: _thumb(imageUrl, title),
+            title: Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+            subtitle: Text(
+              [
+                'ID：$productId',
+                '價格：$price',
+                if (!isActive) '狀態：可能已下架',
+              ].join('  •  '),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  tooltip: '移除收藏',
+                  onPressed: _busy
+                      ? null
+                      : () => _removeFavorite(uid, favoriteDocId),
+                  icon: const Icon(Icons.favorite, color: Colors.red),
+                ),
+              ],
+            ),
+            onTap: () => _openProduct(productId),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _thumb(String imageUrl, String title) {
+    if (imageUrl.isEmpty) {
+      return CircleAvatar(
+        child: Text(title.isNotEmpty ? title.substring(0, 1) : '?'),
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Image.network(
+        imageUrl,
+        width: 48,
+        height: 48,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => CircleAvatar(
+          child: Text(title.isNotEmpty ? title.substring(0, 1) : '?'),
+        ),
+      ),
+    );
+  }
+
+  void _openProduct(String productId) {
+    // ✅ 不強依賴你是否有商品詳情路由：沒有就提示
     try {
-      await cart.addItem({
-        'id': id,
-        'productId': id,
-        'name': name,
-        'price': price,
-        'qty': 1,
-        'image': image,
-      });
-      _toast(context, '已加入購物車：$name');
+      Navigator.of(
+        context,
+      ).pushNamed('/product', arguments: {'productId': productId});
     } catch (_) {
-      _toast(context, '加入購物車失敗');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('尚未設定 /product 路由（productId=$productId）')),
+      );
     }
   }
 
-  // =======================================================
-  // ✅ SnackBar 通知
-  // =======================================================
-  void _toast(BuildContext context, String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(milliseconds: 1300),
+  Future<void> _removeFavorite(String uid, String favoriteDocId) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+
+    try {
+      await _favoritesRef(uid).doc(favoriteDocId).delete();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已移除收藏')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('移除失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _clearAll(String uid) async {
+    if (_busy) return;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('清空收藏'),
+        content: const Text('確定要清空所有收藏嗎？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    setState(() => _busy = true);
+    try {
+      final snap = await _favoritesRef(uid).limit(500).get();
+      final batch = _fs.batch();
+      for (final d in snap.docs) {
+        batch.delete(d.reference);
+      }
+      await batch.commit();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已清空收藏')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('清空失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget _empty(String text) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.favorite_border,
+                    size: 56,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    text,
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
 
-  // =======================================================
-  // ✅ 計算購物車數量
-  // =======================================================
-  int _cartCount(dynamic cart) {
-    try {
-      final v = cart.totalCount;
-      if (v is int) return v;
-    } catch (_) {}
-    try {
-      final items = cart.items;
-      if (items is List) {
-        int sum = 0;
-        for (final it in items) {
-          if (it == null) continue;
-          final dynamic any = it;
-          try {
-            final q = any.qty;
-            if (q is int) sum += q;
-            else sum += 1;
-          } catch (_) {
-            sum += 1;
-          }
-        }
-        return sum;
-      }
-    } catch (_) {}
-    return 0;
+  Widget _error(String text) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline, size: 56, color: Colors.red),
+                  const SizedBox(height: 12),
+                  Text(text, textAlign: TextAlign.center),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

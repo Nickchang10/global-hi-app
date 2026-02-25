@@ -1,27 +1,24 @@
-// lib/pages/me_page.dart
-// =====================================================
-// ✅ MePage（我的頁｜功能全開完整版）
-// -----------------------------------------------------
-// - 快捷入口：我的訂單 / 優惠券 / 收藏 / 購物車 / 通知 / 客服（全部可點）
-// - Badge：收藏數、未讀通知數（自動顯示）
-// - 裝置狀態：前往配對
-// - 健康摘要：步數/睡眠/心率/血壓（可點進健康頁）
-// - 安全功能：SOS（可點進 SOS 頁）
-// - 個人資料：編輯、登出、積分顯示（SharedPreferences + FirestoreMockService 兼容）
-// - 導頁採「優先 pushNamed，沒有 route 時提示」避免你專案檔名不同導致編譯炸裂
-// =====================================================
-
-import 'dart:convert';
-
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-import '../services/cart_service.dart';
-import '../services/wishlist_service.dart';
-import '../services/notification_service.dart';
-import '../services/firestore_mock_service.dart';
-
+/// ✅ MePage（我的頁｜最終完整版｜移除 FirestoreMockService.init）
+/// ------------------------------------------------------------
+/// - ✅ 不使用 FirestoreMockService（避免 init 不存在）
+/// - ✅ 直接用 FirebaseAuth + Firestore 讀取 users/{uid}
+/// - ✅ 首次登入自動補齊 user 文件（merge）
+/// - ✅ 修正 lint：use_build_context_synchronously（await 後使用 context 前先 mounted 檢查；dialog pop 用 ctx）
+///
+/// Firestore 建議結構：
+/// - users/{uid}
+///   - displayName: String (optional)
+///   - email: String (optional)
+///   - phone: String (optional)
+///   - role: String (optional)
+///   - points: num (optional)
+///   - createdAt: Timestamp (optional)
+///   - updatedAt: Timestamp (optional)
+/// ------------------------------------------------------------
 class MePage extends StatefulWidget {
   const MePage({super.key});
 
@@ -30,26 +27,25 @@ class MePage extends StatefulWidget {
 }
 
 class _MePageState extends State<MePage> {
-  static const Color _bg = Color(0xFFF4F6F9);
-  static const Color _brand = Colors.blueAccent;
+  final _auth = FirebaseAuth.instance;
+  final _fs = FirebaseFirestore.instance;
 
-  static const String _prefsProfileKey = 'os_me_profile_v1';
-  static const String _prefsHealthKey = 'os_health_summary_v1';
+  bool _booting = true;
+  String? _bootError;
 
-  String _name = 'Demo';
-  String _phone = '09xx-xxx-xxx';
-  int _points = 0;
+  User? get _user => _auth.currentUser;
 
-  bool _deviceConnected = false;
+  String _s(dynamic v, [String fallback = '']) => (v ?? fallback).toString();
 
-  // health summary
-  int _steps = 1904;
-  double _sleepHours = 7.7;
-  int _hr = 84;
-  String _bp = '112/76';
-  DateTime? _lastSyncAt;
+  num _asNum(dynamic v, {num fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is num) return v;
+    if (v is String) return num.tryParse(v) ?? fallback;
+    return fallback;
+  }
 
-  bool _loading = true;
+  DocumentReference<Map<String, dynamic>> _userRef(String uid) =>
+      _fs.collection('users').doc(uid);
 
   @override
   void initState() {
@@ -58,753 +54,510 @@ class _MePageState extends State<MePage> {
   }
 
   Future<void> _bootstrap() async {
-    setState(() => _loading = true);
-    await _loadProfile();
-    await _loadPoints();
-    await _loadHealth();
-    await _loadDeviceStatus();
-    if (mounted) setState(() => _loading = false);
-  }
+    setState(() {
+      _booting = true;
+      _bootError = null;
+    });
 
-  Future<void> _loadProfile() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_prefsProfileKey);
-      if (raw == null) return;
-      final m = jsonDecode(raw);
-      if (m is Map) {
-        final mm = Map<String, dynamic>.from(m);
-        _name = (mm['name'] ?? _name).toString();
-        _phone = (mm['phone'] ?? _phone).toString();
+      final u = _user;
+      if (u == null) {
+        if (!mounted) return;
+        setState(() => _booting = false);
+        return;
       }
-    } catch (_) {}
-  }
 
-  Future<void> _saveProfile() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        _prefsProfileKey,
-        jsonEncode({'name': _name, 'phone': _phone}),
-      );
-    } catch (_) {}
-  }
+      // ✅ 確保 users/{uid} 文件存在（不覆蓋既有欄位）
+      final ref = _userRef(u.uid);
+      final snap = await ref.get();
 
-  Future<void> _loadPoints() async {
-    // 兼容 FirestoreMockService（若你有 points API 就讀；沒有就用本地）
-    int local = _points;
-    try {
-      await FirestoreMockService.instance.init();
-      final dyn = FirestoreMockService.instance as dynamic;
+      final base = <String, dynamic>{
+        'email': u.email,
+        'displayName': u.displayName,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
 
-      // 嘗試：getPoints()
-      try {
-        final v = await dyn.getPoints();
-        if (v is num) local = v.toInt();
-      } catch (_) {}
-
-      // 嘗試：points / userPoints 欄位
-      try {
-        final v = dyn.points;
-        if (v is num) local = v.toInt();
-      } catch (_) {}
-      try {
-        final v = dyn.userPoints;
-        if (v is num) local = v.toInt();
-      } catch (_) {}
-    } catch (_) {}
-
-    _points = local;
-  }
-
-  Future<void> _loadHealth() async {
-    // 有健康 service 就接，沒有就用本地 prefs + 預設 demo
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_prefsHealthKey);
-      if (raw != null) {
-        final m = jsonDecode(raw);
-        if (m is Map) {
-          final mm = Map<String, dynamic>.from(m);
-          _steps = _toInt(mm['steps'], fallback: _steps);
-          _sleepHours = _toDouble(mm['sleepHours'], fallback: _sleepHours);
-          _hr = _toInt(mm['hr'], fallback: _hr);
-          _bp = (mm['bp'] ?? _bp).toString();
-          final ts = _toInt(mm['lastSyncAt'], fallback: 0);
-          _lastSyncAt = ts > 0 ? DateTime.fromMillisecondsSinceEpoch(ts) : _lastSyncAt;
-        }
-      }
-    } catch (_) {}
-
-    // 嘗試從 FirestoreMockService 讀（如果你有 health snapshot）
-    try {
-      await FirestoreMockService.instance.init();
-      final dyn = FirestoreMockService.instance as dynamic;
-
-      try {
-        final snap = await dyn.getHealthSummary();
-        if (snap is Map) {
-          final mm = Map<String, dynamic>.from(snap);
-          _steps = _toInt(mm['steps'], fallback: _steps);
-          _sleepHours = _toDouble(mm['sleepHours'], fallback: _sleepHours);
-          _hr = _toInt(mm['hr'], fallback: _hr);
-          _bp = (mm['bp'] ?? _bp).toString();
-          final ts = _toInt(mm['lastSyncAt'], fallback: 0);
-          _lastSyncAt = ts > 0 ? DateTime.fromMillisecondsSinceEpoch(ts) : _lastSyncAt;
-        }
-      } catch (_) {}
-    } catch (_) {}
-
-    _lastSyncAt ??= DateTime.now();
-  }
-
-  Future<void> _loadDeviceStatus() async {
-    // 若你有裝置 service，這裡可替換；目前用 mock（未連線）
-    // 也嘗試從 FirestoreMockService 讀 connected
-    bool connected = false;
-    try {
-      final dyn = FirestoreMockService.instance as dynamic;
-      try {
-        final v = dyn.isDeviceConnected;
-        if (v is bool) connected = v;
-      } catch (_) {}
-      try {
-        final v = await dyn.getDeviceConnected();
-        if (v is bool) connected = v;
-      } catch (_) {}
-    } catch (_) {}
-
-    _deviceConnected = connected;
-  }
-
-  int _cartCount(dynamic cartItems) {
-    // 兼容 items 可能是 List<Map> 或 List<CartItem>
-    if (cartItems is! List) return 0;
-    int sum = 0;
-    for (final it in cartItems) {
-      if (it is Map) {
-        sum += _toInt(it['qty'] ?? it['quantity'], fallback: 1).clamp(1, 999);
+      if (!snap.exists) {
+        await ref.set({
+          ...base,
+          'role': 'user',
+          'points': 0,
+          'createdAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
       } else {
-        try {
-          final any = it as dynamic;
-          sum += _toInt(any.qty ?? any.quantity ?? any.count, fallback: 1).clamp(1, 999);
-        } catch (_) {
-          sum += 1;
-        }
+        await ref.set(base, SetOptions(merge: true));
       }
-    }
-    return sum;
-  }
 
-  int _wishlistCount(WishlistService ws) {
-    // 兼容不同命名
-    try {
-      final list = (ws as dynamic).items;
-      if (list is List) return list.length;
-    } catch (_) {}
-    try {
-      final list = (ws as dynamic).wishlist;
-      if (list is List) return list.length;
-    } catch (_) {}
-    return 0;
-  }
-
-  int _unreadNotiCount() {
-    // 兼容 NotificationService 不同欄位
-    final ns = NotificationService.instance;
-    try {
-      final v = (ns as dynamic).unreadCount;
-      if (v is num) return v.toInt();
-    } catch (_) {}
-    try {
-      final list = (ns as dynamic).notifications;
-      if (list is List) {
-        // 若每筆有 read:false
-        final unread = list.where((e) {
-          try {
-            final m = e as dynamic;
-            return (m['read'] == false) || (m.read == false);
-          } catch (_) {
-            return false;
-          }
-        }).length;
-        return unread;
-      }
-    } catch (_) {}
-    return 0;
-  }
-
-  Future<void> _openNamed(String routeName) async {
-    try {
       if (!mounted) return;
-      await Navigator.pushNamed(context, routeName);
+      setState(() => _booting = false);
     } catch (e) {
-      _toast('尚未設定路由：$routeName\n請在 main.dart routes 加上對應頁面');
+      if (!mounted) return;
+      setState(() {
+        _booting = false;
+        _bootError = e.toString();
+      });
     }
   }
 
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
+  @override
+  Widget build(BuildContext context) {
+    final u = _user;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('我的'),
+        actions: [
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: _bootstrap,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: u == null
+          ? _needLogin(context)
+          : (_booting
+                ? const Center(child: CircularProgressIndicator())
+                : (_bootError != null
+                      ? _error('初始化失敗：$_bootError')
+                      : _body(u.uid))),
     );
   }
 
-  Future<void> _editProfile() async {
-    final nameCtl = TextEditingController(text: _name);
-    final phoneCtl = TextEditingController(text: _phone);
-
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: _bg,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-      ),
-      builder: (ctx) {
-        return Padding(
-          padding: EdgeInsets.fromLTRB(
-            16,
-            14,
-            16,
-            16 + MediaQuery.of(ctx).viewInsets.bottom,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 42,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text('編輯個人資料',
-                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-              const SizedBox(height: 12),
-              TextField(
-                controller: nameCtl,
-                decoration: const InputDecoration(
-                  labelText: '姓名',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: phoneCtl,
-                decoration: const InputDecoration(
-                  labelText: '手機',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: ElevatedButton(
-                  onPressed: () async {
-                    setState(() {
-                      _name = nameCtl.text.trim().isEmpty ? _name : nameCtl.text.trim();
-                      _phone = phoneCtl.text.trim().isEmpty ? _phone : phoneCtl.text.trim();
-                    });
-                    await _saveProfile();
-                    if (mounted) Navigator.pop(ctx);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _brand,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    elevation: 0,
+  Widget _needLogin(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lock_outline, size: 56, color: Colors.grey),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '請先登入才能查看我的頁面',
+                    style: TextStyle(fontWeight: FontWeight.w900),
                   ),
-                  child: const Text('儲存', style: TextStyle(fontWeight: FontWeight.w900)),
-                ),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                      rootNavigator: true,
+                    ).pushNamed('/login'),
+                    child: const Text('前往登入'),
+                  ),
+                ],
               ),
-              const SizedBox(height: 10),
-            ],
+            ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _body(String uid) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _userRef(uid).snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) return _error('讀取使用者資料失敗：${snap.error}');
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final data = snap.data!.data() ?? const <String, dynamic>{};
+
+        final displayName = _s(
+          data['displayName'],
+          _user?.displayName ?? '',
+        ).trim();
+        final email = _s(data['email'], _user?.email ?? '').trim();
+        final phone = _s(data['phone'], '').trim();
+        final role = _s(data['role'], 'user').trim();
+        final points = _asNum(data['points'], fallback: 0).toInt();
+
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _profileCard(
+              uid: uid,
+              displayName: displayName,
+              email: email,
+              phone: phone,
+              role: role,
+              points: points,
+            ),
+            const SizedBox(height: 12),
+
+            _sectionTitle('功能'),
+            const SizedBox(height: 8),
+            _menuCard(
+              children: [
+                _navTile(
+                  icon: Icons.receipt_long,
+                  title: '我的訂單',
+                  subtitle: '查看訂單狀態與紀錄',
+                  routeName: '/orders',
+                ),
+                _navTile(
+                  icon: Icons.card_giftcard,
+                  title: '我的優惠券',
+                  subtitle: '查看可用優惠券',
+                  routeName: '/coupons',
+                ),
+                _navTile(
+                  icon: Icons.location_on_outlined,
+                  title: '地址管理',
+                  subtitle: '收件地址/常用地址',
+                  routeName: '/addresses',
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
+            _sectionTitle('抽獎 / 獎勵'),
+            const SizedBox(height: 8),
+            _menuCard(
+              children: [
+                _navTile(
+                  icon: Icons.casino_outlined,
+                  title: '抽獎活動',
+                  subtitle: '參加進行中的抽獎',
+                  routeName: '/lottery',
+                ),
+                _navTile(
+                  icon: Icons.history_outlined,
+                  title: '獎勵紀錄',
+                  subtitle: '排行榜獎勵領取紀錄',
+                  routeName: '/leaderboard/reward/history',
+                ),
+                _navTile(
+                  icon: Icons.query_stats_outlined,
+                  title: '獎勵統計',
+                  subtitle: '領取率/趨勢/分佈',
+                  routeName: '/leaderboard/reward/stats',
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
+            _sectionTitle('設定'),
+            const SizedBox(height: 8),
+            _menuCard(
+              children: [
+                _navTile(
+                  icon: Icons.settings_outlined,
+                  title: '設定',
+                  subtitle: '通知/偏好/帳號',
+                  routeName: '/settings',
+                ),
+                ListTile(
+                  leading: const Icon(Icons.logout),
+                  title: const Text(
+                    '登出',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  subtitle: const Text('退出目前帳號'),
+                  onTap: _confirmSignOut,
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 16),
+            const Text(
+              '註：此頁已移除 FirestoreMockService.init，全部改用 FirebaseAuth + Firestore users/{uid}。',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+          ],
         );
       },
     );
   }
 
-  Future<void> _logout() async {
-    // 若你有 AuthService，這裡可串 logout；目前先回首頁（或 pop 到 root）
-    try {
-      Navigator.popUntil(context, (r) => r.isFirst);
-      _toast('已登出（示範）');
-    } catch (_) {}
-  }
+  Widget _profileCard({
+    required String uid,
+    required String displayName,
+    required String email,
+    required String phone,
+    required String role,
+    required int points,
+  }) {
+    final shownName = displayName.isNotEmpty
+        ? displayName
+        : (email.isNotEmpty ? email : uid);
 
-  @override
-  Widget build(BuildContext context) {
-    final cart = context.watch<CartService>();
-    final wishlist = context.watch<WishlistService>();
-
-    final cartItems = cart.items;
-    final cartCount = _cartCount(cartItems);
-    final favCount = _wishlistCount(wishlist);
-    final unread = _unreadNotiCount();
-
-    return Scaffold(
-      backgroundColor: _bg,
-      body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: _bootstrap,
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
-            children: [
-              _buildHeader(),
-              const SizedBox(height: 14),
-
-              _sectionTitle(
-                title: '快捷入口',
-                trailing: TextButton(
-                  onPressed: () => _openNamed('/notifications'),
-                  child: const Text('查看通知'),
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 24,
+                  child: Text(shownName.substring(0, 1).toUpperCase()),
                 ),
-              ),
-              const SizedBox(height: 10),
-              _buildQuickGrid(
-                cartCount: cartCount,
-                favCount: favCount,
-                unread: unread,
-              ),
-
-              const SizedBox(height: 14),
-              _sectionTitle(
-                title: '裝置狀態',
-                trailing: TextButton(
-                  onPressed: () => _openNamed('/pairing'),
-                  child: const Text('前往配對'),
-                ),
-              ),
-              const SizedBox(height: 10),
-              _buildDeviceCard(),
-
-              const SizedBox(height: 14),
-              _sectionTitle(
-                title: '健康摘要',
-                trailing: TextButton(
-                  onPressed: () => _openNamed('/health'),
-                  child: const Text('進入健康'),
-                ),
-              ),
-              const SizedBox(height: 10),
-              _buildHealthCard(),
-
-              const SizedBox(height: 14),
-              _sectionTitle(
-                title: '安全功能',
-                trailing: TextButton(
-                  onPressed: () => _openNamed('/safety'),
-                  child: const Text('即時追蹤'),
-                ),
-              ),
-              const SizedBox(height: 10),
-              _buildSafetyCard(),
-
-              const SizedBox(height: 12),
-              if (_loading)
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Center(
-                    child: Text(
-                      '載入中…',
-                      style: TextStyle(color: Colors.grey.shade600),
-                    ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        shownName,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        [
+                          if (email.isNotEmpty) email,
+                          if (phone.isNotEmpty) phone,
+                        ].join('  •  '),
+                        style: const TextStyle(color: Colors.grey),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'UID：$uid',
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: _brand,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 22,
-            backgroundColor: Colors.white.withOpacity(0.22),
-            child: const Icon(Icons.person, color: Colors.white),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(
-                _name,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w900,
-                  fontSize: 16,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _phone,
-                style: TextStyle(color: Colors.white.withOpacity(0.95)),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _pill('一般會員'),
-                  _pill('積分 $_points'),
-                  InkWell(
-                    onTap: _logout,
-                    child: Text(
-                      '登出',
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.95),
-                        fontWeight: FontWeight.w800,
+                const SizedBox(width: 8),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    const Text('點數', style: TextStyle(color: Colors.grey)),
+                    Text(
+                      points.toString(),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 20,
                       ),
                     ),
-                  ),
-                ],
-              ),
-            ]),
-          ),
-          TextButton(
-            onPressed: _editProfile,
-            style: TextButton.styleFrom(foregroundColor: Colors.white),
-            child: const Text('編輯', style: TextStyle(fontWeight: FontWeight.w900)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _pill(String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.16),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
-      ),
-    );
-  }
-
-  Widget _sectionTitle({required String title, required Widget trailing}) {
-    return Row(
-      children: [
-        Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w900))),
-        trailing,
-      ],
-    );
-  }
-
-  Widget _buildQuickGrid({required int cartCount, required int favCount, required int unread}) {
-    return GridView.count(
-      crossAxisCount: 3,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
-      childAspectRatio: 1.15,
-      children: [
-        _QuickEntry(
-          icon: Icons.receipt_long_outlined,
-          label: '我的訂單',
-          onTap: () => _openNamed('/orders'),
-        ),
-        _QuickEntry(
-          icon: Icons.local_offer_outlined,
-          label: '優惠券',
-          onTap: () => _openNamed('/coupons'),
-        ),
-        _QuickEntry(
-          icon: Icons.favorite_border,
-          label: '收藏',
-          badge: favCount,
-          onTap: () => _openNamed('/wishlist'),
-        ),
-        _QuickEntry(
-          icon: Icons.shopping_cart_outlined,
-          label: '購物車',
-          badge: cartCount,
-          onTap: () => _openNamed('/cart'),
-        ),
-        _QuickEntry(
-          icon: Icons.notifications_none,
-          label: '通知',
-          badge: unread,
-          onTap: () => _openNamed('/notifications'),
-        ),
-        _QuickEntry(
-          icon: Icons.support_agent_outlined,
-          label: '客服',
-          onTap: () => _openNamed('/support'),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDeviceCard() {
-    final title = _deviceConnected ? '已連線' : '未連線';
-    final sub = _deviceConnected ? '裝置已配對並可同步資料' : '未連線';
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 18,
-            backgroundColor: Colors.grey.shade100,
-            child: Icon(
-              _deviceConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-              color: _deviceConnected ? Colors.green : Colors.grey,
+                  ],
+                ),
+              ],
             ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 3),
-              Text(sub, style: TextStyle(color: Colors.grey.shade600)),
-            ]),
-          ),
-          SizedBox(
-            height: 34,
-            child: ElevatedButton(
-              onPressed: () => _openNamed('/pairing'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _brand,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-              ),
-              child: const Text('配對', style: TextStyle(fontWeight: FontWeight.w900)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildHealthCard() {
-    final t = _lastSyncAt;
-    final syncText = t == null
-        ? '來源：模擬 · 更新：—'
-        : '來源：模擬 · 更新：${_two(t.hour)}:${_two(t.minute)}';
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.check_circle_outline, color: Colors.green),
-              const SizedBox(width: 8),
-              const Text('同步中', style: TextStyle(fontWeight: FontWeight.w900)),
-              const SizedBox(width: 10),
-              Expanded(child: Text(syncText, style: TextStyle(color: Colors.grey.shade600, fontSize: 12))),
-              IconButton(
-                tooltip: '重新整理',
-                onPressed: () async {
-                  await _loadHealth();
-                  if (mounted) setState(() {});
-                },
-                icon: const Icon(Icons.refresh),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(child: _Metric(icon: Icons.directions_walk, label: '步數', value: '$_steps')),
-              const SizedBox(width: 10),
-              Expanded(child: _Metric(icon: Icons.bedtime_outlined, label: '睡眠', value: '${_sleepHours.toStringAsFixed(1)} h')),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(child: _Metric(icon: Icons.favorite_border, label: '心率', value: '$_hr bpm')),
-              const SizedBox(width: 10),
-              Expanded(child: _Metric(icon: Icons.monitor_heart_outlined, label: '血壓', value: _bp)),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSafetyCard() {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 18,
-            backgroundColor: Colors.orange.withOpacity(0.12),
-            child: const Text('SOS', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.w900)),
-          ),
-          const SizedBox(width: 10),
-          const Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('SOS 求助', style: TextStyle(fontWeight: FontWeight.w900)),
-              SizedBox(height: 3),
-              Text('目前：未啟動', style: TextStyle(color: Colors.grey)),
-            ]),
-          ),
-          SizedBox(
-            height: 34,
-            child: OutlinedButton(
-              onPressed: () => _openNamed('/sos'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.orangeAccent,
-                side: BorderSide(color: Colors.orangeAccent.withOpacity(0.5)),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-              ),
-              child: const Text('查看', style: TextStyle(fontWeight: FontWeight.w900)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _two(int n) => n.toString().padLeft(2, '0');
-
-  int _toInt(dynamic v, {int fallback = 0}) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    return int.tryParse('${v ?? ''}') ?? fallback;
-  }
-
-  double _toDouble(dynamic v, {double fallback = 0}) {
-    if (v is double) return v;
-    if (v is num) return v.toDouble();
-    return double.tryParse('${v ?? ''}') ?? fallback;
-  }
-}
-
-class _QuickEntry extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final int badge;
-  final VoidCallback onTap;
-
-  const _QuickEntry({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    this.badge = 0,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: Ink(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.grey.shade200),
-        ),
-        child: Stack(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(icon, color: Colors.blueAccent),
-                  const SizedBox(height: 10),
-                  Text(label, style: const TextStyle(fontWeight: FontWeight.w900)),
-                ],
-              ),
-            ),
-            if (badge > 0)
-              Positioned(
-                top: 10,
-                right: 10,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.redAccent,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    badge > 99 ? '99+' : '$badge',
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(child: _pill('角色', role.isEmpty ? 'user' : role)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.tonal(
+                    onPressed: () => _editProfile(uid, displayName, phone),
+                    child: const Text('編輯資料'),
                   ),
                 ),
-              ),
+              ],
+            ),
           ],
         ),
       ),
     );
   }
-}
 
-class _Metric extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-
-  const _Metric({required this.icon, required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _pill(String k, String v) {
     return Container(
-      height: 64,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFFF7F8FA),
+        color: Colors.grey.shade100,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
       ),
       child: Row(
         children: [
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: Colors.white,
-            child: Icon(icon, size: 18, color: Colors.blueGrey),
-          ),
-          const SizedBox(width: 10),
+          Text('$k：', style: const TextStyle(color: Colors.grey)),
           Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, style: TextStyle(color: Colors.grey.shade700, fontSize: 12)),
-                const SizedBox(height: 2),
-                Text(value, style: const TextStyle(fontWeight: FontWeight.w900)),
-              ],
+            child: Text(
+              v,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _menuCard({required List<Widget> children}) {
+    return Card(
+      elevation: 1,
+      child: Column(
+        children: [
+          for (int i = 0; i < children.length; i++) ...[
+            children[i],
+            if (i != children.length - 1) const Divider(height: 1),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _navTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required String routeName,
+  }) {
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => Navigator.of(context).pushNamed(routeName),
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+    );
+  }
+
+  Widget _error(String text) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.red),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(text)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editProfile(
+    String uid,
+    String currentName,
+    String currentPhone,
+  ) async {
+    final nameCtrl = TextEditingController(text: currentName);
+    final phoneCtrl = TextEditingController(text: currentPhone);
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('編輯資料'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: '顯示名稱',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: phoneCtrl,
+                decoration: const InputDecoration(
+                  labelText: '電話',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('儲存'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+    if (!mounted) return;
+
+    try {
+      await _userRef(uid).set({
+        'displayName': nameCtrl.text.trim(),
+        'phone': phoneCtrl.text.trim(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('✅ 已更新資料')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 更新失敗：$e')));
+    }
+  }
+
+  Future<void> _confirmSignOut() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('登出'),
+        content: const Text('確定要登出嗎？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('登出'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      await _auth.signOut();
+      if (!mounted) return;
+
+      Navigator.of(
+        context,
+        rootNavigator: true,
+      ).pushNamedAndRemoveUntil('/login', (route) => false);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 登出失敗：$e')));
+    }
   }
 }

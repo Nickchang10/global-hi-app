@@ -17,7 +17,10 @@ class _AdminDashboardAppState extends State<AdminDashboardApp> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Osmile 管理後台', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          'Osmile 管理後台',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
         centerTitle: true,
         backgroundColor: cs.surface,
         elevation: 0.5,
@@ -37,20 +40,29 @@ class _AdminDashboardAppState extends State<AdminDashboardApp> {
             const SizedBox(height: 16),
 
             // 今日摘要
-            const Text('今日摘要', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text(
+              '今日摘要',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
             const SizedBox(height: 12),
             _buildSummaryCards(cs),
             const SizedBox(height: 24),
 
             // 最新訂單
-            const Text('最新訂單', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text(
+              '最新訂單',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
             const SizedBox(height: 12),
             _buildLatestOrders(),
 
             const SizedBox(height: 24),
 
             // 最新商品
-            const Text('最新商品', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text(
+              '最新商品',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
             const SizedBox(height: 12),
             _buildLatestProducts(),
           ],
@@ -79,13 +91,15 @@ class _AdminDashboardAppState extends State<AdminDashboardApp> {
           return InkWell(
             borderRadius: BorderRadius.circular(16),
             onTap: () {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text('開啟：${a['label']}')));
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text('開啟：${a['label']}')));
             },
             child: Container(
               width: 100,
               decoration: BoxDecoration(
-                color: cs.surfaceVariant.withOpacity(0.3),
+                // ✅ 修正：surfaceVariant deprecated + withOpacity deprecated
+                color: cs.surfaceContainerHighest.withValues(alpha: 0.30),
                 borderRadius: BorderRadius.circular(16),
               ),
               padding: const EdgeInsets.all(12),
@@ -94,8 +108,16 @@ class _AdminDashboardAppState extends State<AdminDashboardApp> {
                 children: [
                   Icon(a['icon'] as IconData, size: 30, color: cs.primary),
                   const SizedBox(height: 8),
-                  Text(a['label'] as String,
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                  Text(
+                    a['label'] as String,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ],
               ),
             ),
@@ -110,9 +132,17 @@ class _AdminDashboardAppState extends State<AdminDashboardApp> {
       spacing: 12,
       runSpacing: 12,
       children: const [
-        AdminSummaryCard(title: '今日營收', value: 'NT\$4,980', icon: Icons.paid_outlined),
+        AdminSummaryCard(
+          title: '今日營收',
+          value: 'NT\$4,980',
+          icon: Icons.paid_outlined,
+        ),
         AdminSummaryCard(title: '今日訂單', value: '1', icon: Icons.receipt_long),
-        AdminSummaryCard(title: '商品數量', value: '5', icon: Icons.inventory_2_outlined),
+        AdminSummaryCard(
+          title: '商品數量',
+          value: '5',
+          icon: Icons.inventory_2_outlined,
+        ),
       ],
     );
   }
@@ -142,7 +172,11 @@ class _AdminDashboardAppState extends State<AdminDashboardApp> {
             final status = data['status'] ?? '未知';
             final amount = data['total'] ?? 0;
             final date = (data['createdAt'] is Timestamp)
-                ? (data['createdAt'] as Timestamp).toDate().toString().split(' ').first
+                ? (data['createdAt'] as Timestamp)
+                      .toDate()
+                      .toString()
+                      .split(' ')
+                      .first
                 : '';
 
             return Card(

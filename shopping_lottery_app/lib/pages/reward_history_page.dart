@@ -5,6 +5,7 @@
 // - 支援篩選（全部/收入/支出）
 // - 支援下拉刷新（模板）、清除全部（含確認）、單筆滑動刪除
 // - ✅ 修正 Dart 不支援「+20」這種寫法：改為 20 / 30
+// - ✅ 修正 deprecated: withOpacity → withValues(alpha: ...)
 // =====================================================
 
 import 'package:flutter/material.dart';
@@ -87,10 +88,14 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
   }
 
   Future<void> _clearAll() async {
-    final ok = await showDialog<bool>(
+    final ok =
+        await showDialog<bool>(
           context: context,
           builder: (_) => AlertDialog(
-            title: const Text('清除紀錄', style: TextStyle(fontWeight: FontWeight.w900)),
+            title: const Text(
+              '清除紀錄',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
             content: const Text('確定要清除所有積分紀錄嗎？此操作無法復原。'),
             actions: [
               TextButton(
@@ -104,7 +109,10 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
                   foregroundColor: Colors.white,
                   elevation: 0,
                 ),
-                child: const Text('清除', style: TextStyle(fontWeight: FontWeight.w900)),
+                child: const Text(
+                  '清除',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
               ),
             ],
           ),
@@ -143,7 +151,10 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        title: const Text("積分紀錄", style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          "積分紀錄",
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         backgroundColor: _brand,
         foregroundColor: Colors.white,
         elevation: 0.8,
@@ -197,7 +208,9 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
                         final time = _asDateTime(e['time']);
 
                         final isIncome = points > 0;
-                        final color = isIncome ? Colors.green : Colors.redAccent;
+                        final color = isIncome
+                            ? Colors.green
+                            : Colors.redAccent;
 
                         return Dismissible(
                           key: ValueKey('reward_$id'),
@@ -207,31 +220,48 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
                             padding: const EdgeInsets.symmetric(horizontal: 16),
                             alignment: Alignment.centerRight,
                             decoration: BoxDecoration(
-                              color: Colors.redAccent.withOpacity(0.12),
+                              color: Colors.redAccent.withValues(alpha: 0.12),
                               borderRadius: BorderRadius.circular(14),
-                              border: Border.all(color: Colors.redAccent.withOpacity(0.25)),
+                              border: Border.all(
+                                color: Colors.redAccent.withValues(alpha: 0.25),
+                              ),
                             ),
-                            child: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                            child: const Icon(
+                              Icons.delete_outline_rounded,
+                              color: Colors.redAccent,
+                            ),
                           ),
                           confirmDismiss: (dir) async {
                             return await showDialog<bool>(
                                   context: context,
                                   builder: (_) => AlertDialog(
-                                    title: const Text('刪除紀錄', style: TextStyle(fontWeight: FontWeight.w900)),
+                                    title: const Text(
+                                      '刪除紀錄',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
                                     content: const Text('確定要刪除這筆紀錄嗎？'),
                                     actions: [
                                       TextButton(
-                                        onPressed: () => Navigator.pop(context, false),
+                                        onPressed: () =>
+                                            Navigator.pop(context, false),
                                         child: const Text('取消'),
                                       ),
                                       ElevatedButton(
-                                        onPressed: () => Navigator.pop(context, true),
+                                        onPressed: () =>
+                                            Navigator.pop(context, true),
                                         style: ElevatedButton.styleFrom(
                                           backgroundColor: Colors.redAccent,
                                           foregroundColor: Colors.white,
                                           elevation: 0,
                                         ),
-                                        child: const Text('刪除', style: TextStyle(fontWeight: FontWeight.w900)),
+                                        child: const Text(
+                                          '刪除',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
                                       ),
                                     ],
                                   ),
@@ -248,7 +278,7 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
                               border: Border.all(color: Colors.grey.shade200),
                               boxShadow: [
                                 BoxShadow(
-                                  color: color.withOpacity(0.08),
+                                  color: color.withValues(alpha: 0.08),
                                   blurRadius: 8,
                                   offset: const Offset(0, 4),
                                 ),
@@ -256,13 +286,20 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
                             ),
                             child: ListTile(
                               leading: CircleAvatar(
-                                backgroundColor: color.withOpacity(0.18),
+                                backgroundColor: color.withValues(alpha: 0.18),
                                 child: Icon(
-                                  isIncome ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+                                  isIncome
+                                      ? Icons.arrow_upward_rounded
+                                      : Icons.arrow_downward_rounded,
                                   color: color,
                                 ),
                               ),
-                              title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+                              title: Text(
+                                title,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
                               subtitle: Text(_timeFmt.format(time)),
                               trailing: Text(
                                 '${points >= 0 ? '+' : ''}$points',
@@ -370,9 +407,9 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.08),
+        color: color.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withOpacity(0.16)),
+        border: Border.all(color: color.withValues(alpha: 0.16)),
       ),
       child: Row(
         children: [
@@ -380,7 +417,7 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
             width: 34,
             height: 34,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.18),
+              color: color.withValues(alpha: 0.18),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(icon, color: color, size: 18),
@@ -390,9 +427,18 @@ class _RewardHistoryPageState extends State<RewardHistoryPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: TextStyle(fontWeight: FontWeight.w900, color: Colors.grey.shade800)),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: Colors.grey.shade800,
+                  ),
+                ),
                 const SizedBox(height: 2),
-                Text(value, style: TextStyle(fontWeight: FontWeight.w900, color: color)),
+                Text(
+                  value,
+                  style: TextStyle(fontWeight: FontWeight.w900, color: color),
+                ),
               ],
             ),
           ),

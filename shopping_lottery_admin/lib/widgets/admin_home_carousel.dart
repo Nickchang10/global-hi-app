@@ -41,7 +41,7 @@ class _AdminHomeCarouselState extends State<AdminHomeCarousel> {
           return Container(
             height: 140,
             decoration: BoxDecoration(
-              color: cs.surfaceVariant.withOpacity(0.3),
+              color: cs.surfaceContainerHighest.withValues(alpha: 0.30),
               borderRadius: BorderRadius.circular(16),
             ),
           );
@@ -49,7 +49,10 @@ class _AdminHomeCarouselState extends State<AdminHomeCarousel> {
 
         final docs = snap.data!.docs;
         if (docs.isEmpty) {
-          return const SizedBox(height: 140, child: Center(child: Text('目前沒有公告')));
+          return const SizedBox(
+            height: 140,
+            child: Center(child: Text('目前沒有公告')),
+          );
         }
 
         return Column(
@@ -62,25 +65,30 @@ class _AdminHomeCarouselState extends State<AdminHomeCarousel> {
                 onPageChanged: (i) => setState(() => _index = i),
                 itemBuilder: (_, i) {
                   final data = docs[i].data() as Map<String, dynamic>;
-                  final title = data['title'] ?? '';
-                  final desc = data['desc'] ?? '';
-                  final img = data['imageUrl'] ?? '';
+                  final title = (data['title'] ?? '').toString();
+                  final desc = (data['desc'] ?? '').toString();
+                  final img = (data['imageUrl'] ?? '').toString();
+
                   return ClipRRect(
                     borderRadius: BorderRadius.circular(16),
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        img != ''
+                        img.isNotEmpty
                             ? Image.network(img, fit: BoxFit.cover)
-                            : Container(color: cs.surfaceVariant.withOpacity(0.3)),
+                            : Container(
+                                color: cs.surfaceContainerHighest.withValues(
+                                  alpha: 0.30,
+                                ),
+                              ),
                         Container(
                           decoration: BoxDecoration(
                             gradient: LinearGradient(
                               begin: Alignment.topCenter,
                               end: Alignment.bottomCenter,
                               colors: [
-                                Colors.black.withOpacity(0.1),
-                                Colors.black.withOpacity(0.6),
+                                Colors.black.withValues(alpha: 0.10),
+                                Colors.black.withValues(alpha: 0.60),
                               ],
                             ),
                           ),
@@ -91,16 +99,24 @@ class _AdminHomeCarouselState extends State<AdminHomeCarousel> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               const Spacer(),
-                              Text(title,
-                                  style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.bold)),
+                              Text(
+                                title,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                               const SizedBox(height: 4),
-                              Text(desc,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                              Text(
+                                desc,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 12,
+                                ),
+                              ),
                             ],
                           ),
                         ),

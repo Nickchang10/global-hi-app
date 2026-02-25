@@ -1,7 +1,7 @@
 // lib/widgets/common_appbar.dart
 import 'package:flutter/material.dart';
 import '../pages/cart_page.dart';
-import '../pages/notifications_page.dart';
+import '../pages/notification_page.dart';
 
 PreferredSizeWidget buildCommonAppBar(BuildContext context, String title) {
   return AppBar(
@@ -10,10 +10,7 @@ PreferredSizeWidget buildCommonAppBar(BuildContext context, String title) {
     elevation: 0,
     title: Text(
       title,
-      style: const TextStyle(
-        color: Colors.white,
-        fontWeight: FontWeight.bold,
-      ),
+      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
     ),
     actions: [
       IconButton(

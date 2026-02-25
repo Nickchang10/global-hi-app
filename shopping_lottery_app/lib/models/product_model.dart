@@ -1,5 +1,5 @@
 // lib/models/product.dart
-import 'package:flutter/foundation.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 /// 商品資料模型：
 /// - 支援標籤 / 收藏 / 評分 / 評價數
@@ -83,6 +83,12 @@ class ProductModel {
     this.quantity = 1,
   });
 
+  /// 是否有折扣（oldPrice 大於 price 才算）
+  bool get hasDiscount => oldPrice != null && oldPrice! > price;
+
+  /// 折扣金額（元）
+  int get discountAmount => hasDiscount ? (oldPrice! - price) : 0;
+
   /// 方便在 Provider 裡做「+1 / -1 / 更新部分欄位」
   ProductModel copyWith({
     String? id,
@@ -165,29 +171,144 @@ class ProductModel {
   /// 從 Map 建立（配合 API 回傳）
   factory ProductModel.fromJson(Map<String, dynamic> json) {
     return ProductModel(
-      id: json['id'] as String,
-      title: json['title'] as String,
-      subtitle: json['subtitle'] as String? ?? '',
-      brand: json['brand'] as String? ?? '',
-      categoryId: json['categoryId'] as String,
-      price: json['price'] as int,
-      oldPrice: json['oldPrice'] as int?,
-      images: (json['images'] as List?)?.cast<String>() ?? const [],
-      stock: json['stock'] as int? ?? 0,
-      description: json['description'] as String? ?? '',
-      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
-      hotScore: json['hotScore'] as int? ?? 0,
-      tags: (json['tags'] as List?)?.cast<String>() ?? const [],
-      color: json['color'] as String? ?? '',
-      version: json['version'] as String? ?? '',
-      colorOptions: (json['colorOptions'] as List?)?.cast<String>() ?? const [],
-      versionOptions: (json['versionOptions'] as List?)?.cast<String>() ?? const [],
-      packageOptions: (json['packageOptions'] as List?)?.cast<String>() ?? const [],
-      isFavorite: json['isFavorite'] as bool? ?? false,
+      id: (json['id'] ?? '').toString(),
+      title: (json['title'] ?? '').toString(),
+      subtitle: (json['subtitle'] ?? '').toString(),
+      brand: (json['brand'] ?? '').toString(),
+      categoryId: (json['categoryId'] ?? '').toString(),
+      price: _toInt(json['price'], fallback: 0),
+      oldPrice: json['oldPrice'] == null
+          ? null
+          : _toInt(json['oldPrice'], fallback: 0),
+      images: (json['images'] is List)
+          ? List<String>.from((json['images'] as List).map((e) => e.toString()))
+          : const [],
+      stock: _toInt(json['stock'], fallback: 0),
+      description: (json['description'] ?? '').toString(),
+      createdAt: _toDateTime(json['createdAt']) ?? DateTime.now(),
+      hotScore: _toInt(json['hotScore'], fallback: 0),
+      tags: (json['tags'] is List)
+          ? List<String>.from((json['tags'] as List).map((e) => e.toString()))
+          : const [],
+      color: (json['color'] ?? '').toString(),
+      version: (json['version'] ?? '').toString(),
+      colorOptions: (json['colorOptions'] is List)
+          ? List<String>.from(
+              (json['colorOptions'] as List).map((e) => e.toString()),
+            )
+          : const [],
+      versionOptions: (json['versionOptions'] is List)
+          ? List<String>.from(
+              (json['versionOptions'] as List).map((e) => e.toString()),
+            )
+          : const [],
+      packageOptions: (json['packageOptions'] is List)
+          ? List<String>.from(
+              (json['packageOptions'] as List).map((e) => e.toString()),
+            )
+          : const [],
+      isFavorite: (json['isFavorite'] ?? false) == true,
       rating: (json['rating'] as num?)?.toDouble() ?? 4.5,
-      reviewCount: json['reviewCount'] as int? ?? 0,
-      quantity: json['quantity'] as int? ?? 1,
+      reviewCount: _toInt(json['reviewCount'], fallback: 0),
+      quantity: _toInt(json['quantity'], fallback: 1).clamp(1, 999999),
     );
+  }
+
+  /// ✅ Firestore：寫入用 Map（createdAt 用 Timestamp，避免字串排序問題）
+  Map<String, dynamic> toFirestoreMap({bool includeId = false}) {
+    final map = <String, dynamic>{
+      'title': title,
+      'subtitle': subtitle,
+      'brand': brand,
+      'categoryId': categoryId,
+      'price': price,
+      'oldPrice': oldPrice,
+      'images': images,
+      'stock': stock,
+      'description': description,
+      'createdAt': Timestamp.fromDate(createdAt),
+      'hotScore': hotScore,
+      'tags': tags,
+      'color': color,
+      'version': version,
+      'colorOptions': colorOptions,
+      'versionOptions': versionOptions,
+      'packageOptions': packageOptions,
+      'isFavorite': isFavorite,
+      'rating': rating,
+      'reviewCount': reviewCount,
+      'quantity': quantity,
+    };
+    if (includeId) map['id'] = id;
+    return map;
+  }
+
+  /// ✅ Firestore：從 Document 讀取（createdAt 支援 Timestamp / String）
+  factory ProductModel.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data() ?? const <String, dynamic>{};
+    return ProductModel.fromFirestoreMap(doc.id, data);
+  }
+
+  /// ✅ Firestore：從 Map 讀取（id 由 docId 傳入）
+  factory ProductModel.fromFirestoreMap(String id, Map<String, dynamic> data) {
+    return ProductModel(
+      id: id,
+      title: (data['title'] ?? '').toString(),
+      subtitle: (data['subtitle'] ?? '').toString(),
+      brand: (data['brand'] ?? '').toString(),
+      categoryId: (data['categoryId'] ?? '').toString(),
+      price: _toInt(data['price'], fallback: 0),
+      oldPrice: data['oldPrice'] == null
+          ? null
+          : _toInt(data['oldPrice'], fallback: 0),
+      images: (data['images'] is List)
+          ? List<String>.from((data['images'] as List).map((e) => e.toString()))
+          : const [],
+      stock: _toInt(data['stock'], fallback: 0),
+      description: (data['description'] ?? '').toString(),
+      createdAt: _toDateTime(data['createdAt']) ?? DateTime.now(),
+      hotScore: _toInt(data['hotScore'], fallback: 0),
+      tags: (data['tags'] is List)
+          ? List<String>.from((data['tags'] as List).map((e) => e.toString()))
+          : const [],
+      color: (data['color'] ?? '').toString(),
+      version: (data['version'] ?? '').toString(),
+      colorOptions: (data['colorOptions'] is List)
+          ? List<String>.from(
+              (data['colorOptions'] as List).map((e) => e.toString()),
+            )
+          : const [],
+      versionOptions: (data['versionOptions'] is List)
+          ? List<String>.from(
+              (data['versionOptions'] as List).map((e) => e.toString()),
+            )
+          : const [],
+      packageOptions: (data['packageOptions'] is List)
+          ? List<String>.from(
+              (data['packageOptions'] as List).map((e) => e.toString()),
+            )
+          : const [],
+      isFavorite: (data['isFavorite'] ?? false) == true,
+      rating: (data['rating'] as num?)?.toDouble() ?? 4.5,
+      reviewCount: _toInt(data['reviewCount'], fallback: 0),
+      quantity: _toInt(data['quantity'], fallback: 1).clamp(1, 999999),
+    );
+  }
+
+  static int _toInt(dynamic v, {required int fallback}) {
+    if (v is int) return v;
+    if (v is double) return v.round();
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  static DateTime? _toDateTime(dynamic v) {
+    if (v == null) return null;
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    if (v is String) return DateTime.tryParse(v);
+    return null;
   }
 
   @override
@@ -204,3 +325,6 @@ class ProductModel {
   @override
   int get hashCode => id.hashCode;
 }
+
+/// ✅ 相容別名：讓其他地方若用 Product 也能直接編譯
+typedef Product = ProductModel;

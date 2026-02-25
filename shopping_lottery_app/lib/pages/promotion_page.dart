@@ -1,10 +1,20 @@
-import 'dart:async';
+// lib/pages/promotion_page.dart
+//
+// ✅ PromotionPage（最終完整版｜修正 invalid_assignment）
+// ------------------------------------------------------------
+// 你錯誤原因：
+//   var q = FirebaseFirestore.instance.collection('promotions');
+//   這行 Dart 會把 q 推斷成 CollectionReference<...>
+//   後面 q = q.where(...) / q = q.orderBy(...) 回傳 Query<...>
+//   -> Query 不能再指派回 CollectionReference 型別（invalid_assignment）
+//
+// ✅ 修法：一開始就把 q 宣告成 Query<Map<String, dynamic>>（或直接用 Query 變數）
+//
+// 直接整檔覆蓋即可。
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-
-import '../services/firestore_service.dart';
 
 class PromotionPage extends StatefulWidget {
   const PromotionPage({super.key});
@@ -14,235 +24,220 @@ class PromotionPage extends StatefulWidget {
 }
 
 class _PromotionPageState extends State<PromotionPage> {
-  final String uid = FirebaseAuth.instance.currentUser!.uid;
+  static const Color _brand = Color(0xFF3B82F6);
 
-  bool _loading = true;
-  bool _expired = false;
-  DateTime? _endTime;
-  Timer? _timer;
-
-  String _title = "AI 行銷中心";
-  String? _subtitle;
-
-  List<Map<String, dynamic>> _recommended = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadCampaignFromCloud();
-  }
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _filter = '全部'; // 全部 / 進行中 / 已結束
+  bool _onlyFeatured = false;
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
-  /// 從 Firestore 讀取活動設定：
-  /// promotions/global_campaign
-  Future<void> _loadCampaignFromCloud() async {
-    setState(() {
-      _loading = true;
-    });
+  String _s(dynamic v) => v?.toString() ?? '';
 
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('promotions')
-          .doc('global_campaign')
-          .get();
-
-      if (!doc.exists) {
-        setState(() {
-          _loading = false;
-          _expired = true;
-          _recommended = [];
-          _subtitle = "目前沒有進行中的活動，敬請期待。";
-        });
-        return;
-      }
-
-      final data = doc.data() ?? {};
-      final bool isActive = data['isActive'] == true;
-
-      _title = data['title'] ?? "AI 行銷中心";
-      _subtitle = data['subtitle'];
-
-      final ts = data['endTime'];
-      if (ts is Timestamp) {
-        _endTime = ts.toDate();
-      }
-
-      // 讀取推薦商品清單（陣列）
-      final itemsRaw = data['items'];
-      if (itemsRaw is List) {
-        _recommended =
-            itemsRaw.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e)).toList();
-      } else {
-        _recommended = [];
-      }
-
-      final now = DateTime.now();
-      final bool timeExpired =
-          _endTime != null && now.isAfter(_endTime!);
-
-      setState(() {
-        _loading = false;
-        _expired = !isActive || timeExpired;
-      });
-
-      // 活動還有效才啟動倒數
-      if (!_expired && _endTime != null) {
-        _startCountdown();
-      }
-    } catch (e) {
-      setState(() {
-        _loading = false;
-        _expired = true;
-        _subtitle = "讀取活動資料失敗，請稍後再試。";
-      });
-    }
+  DateTime? _dt(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    return null;
   }
 
-  /// 啟動倒數計時
-  void _startCountdown() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-      final now = DateTime.now();
-      if (_endTime == null || now.isAfter(_endTime!)) {
-        setState(() {
-          _expired = true;
-        });
-        timer.cancel();
-      } else {
-        setState(() {});
-      }
-    });
+  bool _isEnded(Map<String, dynamic> m) {
+    final endAt = _dt(m['endAt']);
+    if (endAt == null) return false;
+    return endAt.isBefore(DateTime.now());
   }
 
-  /// 加入購物車（活動結束時自動禁用）
-  Future<void> _addToCart(Map<String, dynamic> item) async {
-    if (_expired) return;
-
-    final data = {
-      "name": item["name"],
-      "price": item["price"],
-      "quantity": 1,
-      "category": item["category"],
-      "time": DateTime.now(),
-    };
-
-    await FirestoreService.addCartItem(uid, data);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("${item["name"]} 已加入購物車 🛒"),
-          backgroundColor: const Color(0xFF007BFF),
-        ),
-      );
-    }
+  bool _isStarted(Map<String, dynamic> m) {
+    final startAt = _dt(m['startAt']);
+    if (startAt == null) return true;
+    return !startAt.isAfter(DateTime.now());
   }
 
-  /// 計算剩餘時間文字
-  String _remainingText() {
-    if (_endTime == null) {
-      return "本次活動時間尚未設定";
+  String _dateText(DateTime? d) {
+    if (d == null) return '-';
+    return '${d.year}/${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}';
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(milliseconds: 1600),
+      ),
+    );
+  }
+
+  // ✅ 修正：一開始就用 Query 型別
+  Query<Map<String, dynamic>> _baseQuery() {
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection(
+      'promotions',
+    );
+
+    if (_onlyFeatured) {
+      q = q.where('featured', isEqualTo: true);
     }
-    if (_expired) {
-      return "本次限時優惠已結束";
-    }
 
-    final now = DateTime.now();
-    Duration diff = _endTime!.difference(now);
-    if (diff.isNegative) diff = Duration.zero;
+    // 若你的資料沒有 updatedAt，改成 createdAt 或移除
+    q = q.orderBy('updatedAt', descending: true);
 
-    String two(int n) => n.toString().padLeft(2, '0');
-    final h = two(diff.inHours);
-    final m = two(diff.inMinutes.remainder(60));
-    final s = two(diff.inSeconds.remainder(60));
-
-    return "本次限時優惠倒數：$h:$m:$s";
+    return q.limit(200);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFEAF3FF),
+      backgroundColor: const Color(0xFFF6F7F8),
       appBar: AppBar(
-        title: Text(_title),
+        title: const Text('活動優惠'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: "重新載入活動",
-            onPressed: _loadCampaignFromCloud,
+            tooltip: _onlyFeatured ? '顯示全部活動' : '只看精選',
+            onPressed: () => setState(() => _onlyFeatured = !_onlyFeatured),
+            icon: Icon(
+              _onlyFeatured ? Icons.star_rounded : Icons.star_border_rounded,
+            ),
+          ),
+          const SizedBox(width: 2),
+          _filterMenu(),
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: Column(
+        children: [
+          _topBar(),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _baseQuery().snapshots(),
+              builder: (context, snap) {
+                if (snap.hasError) {
+                  return _empty(
+                    icon: Icons.error_outline,
+                    title: '讀取失敗',
+                    subtitle: snap.error.toString(),
+                  );
+                }
+                if (!snap.hasData) {
+                  return const Center(
+                    child: CircularProgressIndicator.adaptive(),
+                  );
+                }
+
+                final docs = snap.data!.docs;
+
+                // client search + filter
+                final kw = _searchCtrl.text.trim().toLowerCase();
+                final filtered = docs.where((d) {
+                  final m = d.data();
+
+                  if (kw.isNotEmpty) {
+                    final title = _s(m['title']).toLowerCase();
+                    final desc = _s(m['description']).toLowerCase();
+                    final tag = _s(m['tag']).toLowerCase();
+                    if (!(title.contains(kw) ||
+                        desc.contains(kw) ||
+                        tag.contains(kw))) {
+                      return false;
+                    }
+                  }
+
+                  final started = _isStarted(m);
+                  final ended = _isEnded(m);
+
+                  if (_filter == '進行中') return started && !ended;
+                  if (_filter == '已結束') return ended;
+                  return true;
+                }).toList();
+
+                if (filtered.isEmpty) {
+                  return _empty(
+                    icon: Icons.local_offer_outlined,
+                    title: '沒有符合的活動',
+                    subtitle: '試試更換篩選或搜尋關鍵字。',
+                  );
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
+                  itemCount: filtered.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (_, i) {
+                    final d = filtered[i];
+                    return _promoCard(d.id, d.data());
+                  },
+                );
+              },
+            ),
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                _buildCountdownHeader(),
-                if (_subtitle != null) ...[
-                  Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                    child: Text(
-                      _subtitle!,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: Colors.black54,
-                      ),
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 4),
-                Expanded(
-                  child: _recommended.isEmpty
-                      ? const Center(
-                          child: Text(
-                            "目前沒有推薦商品。",
-                            style: TextStyle(color: Colors.black54),
-                          ),
-                        )
-                      : ListView.builder(
-                          padding: const EdgeInsets.all(16),
-                          itemCount: _recommended.length,
-                          itemBuilder: (context, index) {
-                            final item = _recommended[index];
-                            return _buildPromoCard(item);
-                          },
-                        ),
-                ),
-              ],
-            ),
     );
   }
 
-  /// 頂部倒數顯示區
-  Widget _buildCountdownHeader() {
+  Widget _filterMenu() {
+    return PopupMenuButton<String>(
+      tooltip: '篩選',
+      initialValue: _filter,
+      onSelected: (v) => setState(() => _filter = v),
+      itemBuilder: (_) => const [
+        PopupMenuItem(value: '全部', child: Text('全部')),
+        PopupMenuItem(value: '進行中', child: Text('進行中')),
+        PopupMenuItem(value: '已結束', child: Text('已結束')),
+      ],
+      icon: const Icon(Icons.filter_list_rounded),
+    );
+  }
+
+  Widget _topBar() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: _expired ? Colors.grey.shade300 : const Color(0xFF007BFF),
-        borderRadius: BorderRadius.circular(16),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8),
+        ],
       ),
       child: Row(
         children: [
-          Icon(
-            _expired ? Icons.timer_off_outlined : Icons.timer_outlined,
-            color: _expired ? Colors.black54 : Colors.white,
-          ),
-          const SizedBox(width: 10),
           Expanded(
-            child: Text(
-              _remainingText(),
-              style: TextStyle(
-                color: _expired ? Colors.black87 : Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
+            child: Container(
+              height: 44,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF6F7F9),
+                borderRadius: BorderRadius.circular(22),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.search, size: 18, color: Colors.grey),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _searchCtrl,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        hintText: '搜尋活動標題 / 標籤 / 內容',
+                        border: InputBorder.none,
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  if (_searchCtrl.text.trim().isNotEmpty)
+                    GestureDetector(
+                      onTap: () => setState(() => _searchCtrl.clear()),
+                      child: const Icon(
+                        Icons.close,
+                        size: 18,
+                        color: Colors.grey,
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
@@ -251,119 +246,367 @@ class _PromotionPageState extends State<PromotionPage> {
     );
   }
 
-  /// 單張推薦卡片（會依 _expired 狀態變化 UI）
-  Widget _buildPromoCard(Map<String, dynamic> item) {
-    final isDisabled = _expired;
+  Widget _promoCard(String id, Map<String, dynamic> m) {
+    final title = _s(m['title']).trim().isEmpty
+        ? '活動優惠'
+        : _s(m['title']).trim();
+    final desc = _s(m['description']).trim();
+    final tag = _s(m['tag']).trim();
+    final cover = _s(m['coverUrl']).trim().isNotEmpty
+        ? _s(m['coverUrl']).trim()
+        : _s(m['imageUrl']).trim();
 
-    return Opacity(
-      opacity: isDisabled ? 0.6 : 1.0,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 16),
-        padding: const EdgeInsets.all(14),
+    final startAt = _dt(m['startAt']);
+    final endAt = _dt(m['endAt']);
+
+    final ended = _isEnded(m);
+    final started = _isStarted(m);
+
+    final statusText = ended ? '已結束' : (started ? '進行中' : '未開始');
+    final statusColor = ended
+        ? Colors.grey
+        : (started ? Colors.green : Colors.orange);
+
+    final featured = (m['featured'] == true);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () => _openDetailDialog(id, m),
+      child: Ink(
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.grey.shade200),
           boxShadow: [
             BoxShadow(
-              color: Colors.black12.withOpacity(0.05),
-              blurRadius: 5,
-              offset: const Offset(0, 2),
+              color: Colors.black.withValues(alpha: 0.03),
+              blurRadius: 10,
+              offset: const Offset(0, 6),
             ),
           ],
         ),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (item["image"] != null)
+            if (cover.isNotEmpty)
               ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.network(
-                  item["image"],
-                  width: 80,
-                  height: 80,
-                  fit: BoxFit.contain,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(16),
+                ),
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Image.network(
+                    cover,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(
+                      color: Colors.grey.shade200,
+                      alignment: Alignment.center,
+                      child: const Icon(
+                        Icons.broken_image_outlined,
+                        color: Colors.grey,
+                        size: 42,
+                      ),
+                    ),
+                  ),
                 ),
               )
             else
               Container(
-                width: 80,
-                height: 80,
-                alignment: Alignment.center,
+                height: 140,
                 decoration: BoxDecoration(
-                  color: const Color(0xFFEAF3FF),
-                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.grey.shade100,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(16),
+                  ),
                 ),
-                child: const Icon(Icons.image_not_supported_outlined,
-                    color: Color(0xFF007BFF)),
+                alignment: Alignment.center,
+                child: const Icon(
+                  Icons.campaign_outlined,
+                  size: 44,
+                  color: Colors.grey,
+                ),
               ),
-            const SizedBox(width: 14),
-            Expanded(
+            Padding(
+              padding: const EdgeInsets.all(14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    item["name"] ?? "未命名商品",
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  if (item["discount"] != null)
-                    Text(
-                      "優惠：${item["discount"]}",
-                      style: const TextStyle(
-                          color: Color(0xFF007BFF), fontSize: 13),
-                    ),
-                  const SizedBox(height: 4),
-                  if (item["price"] != null)
-                    Text(
-                      "NT\$${item["price"]}",
-                      style: const TextStyle(
-                        fontSize: 16,
-                        color: Colors.black87,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  const SizedBox(height: 8),
                   Row(
                     children: [
-                      if (item["tag"] != null)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              vertical: 2, horizontal: 8),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF007BFF),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            item["tag"],
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 12),
+                      Expanded(
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 16,
                           ),
                         ),
-                      const Spacer(),
-                      ElevatedButton.icon(
-                        onPressed: isDisabled ? null : () => _addToCart(item),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF007BFF),
-                          disabledBackgroundColor: Colors.grey,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                              vertical: 6, horizontal: 10),
+                      ),
+                      if (featured) ...[
+                        const SizedBox(width: 8),
+                        const Icon(
+                          Icons.star_rounded,
+                          color: Colors.orange,
+                          size: 18,
                         ),
-                        icon: const Icon(Icons.add_shopping_cart, size: 16),
-                        label: Text(
-                          isDisabled ? "活動已結束" : "加入購物車",
-                          style: const TextStyle(fontSize: 12),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  if (desc.isNotEmpty)
+                    Text(
+                      desc,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.grey.shade700,
+                        height: 1.25,
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      _pill(statusText, statusColor),
+                      if (tag.isNotEmpty) _pill(tag, Colors.blueGrey),
+                      _pill('起：${_dateText(startAt)}', Colors.grey),
+                      _pill('迄：${_dateText(endAt)}', Colors.grey),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: ended
+                              ? null
+                              : () => _redeemPromotionCoupon(id, m),
+                          icon: const Icon(
+                            Icons.confirmation_number_outlined,
+                            size: 18,
+                          ),
+                          label: const Text('領券'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => _openDetailDialog(id, m),
+                          icon: const Icon(Icons.info_outline, size: 18),
+                          label: const Text('詳情'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _brand,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                          ),
                         ),
                       ),
                     ],
-                  )
+                  ),
                 ],
               ),
-            )
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pill(String text, Color c) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: c.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(color: c, fontWeight: FontWeight.w800, fontSize: 12),
+      ),
+    );
+  }
+
+  Future<void> _openDetailDialog(String id, Map<String, dynamic> m) async {
+    final title = _s(m['title']).trim().isEmpty
+        ? '活動優惠'
+        : _s(m['title']).trim();
+    final desc = _s(m['description']).trim();
+    final rule = _s(m['rule']).trim();
+    final tag = _s(m['tag']).trim();
+
+    final startAt = _dt(m['startAt']);
+    final endAt = _dt(m['endAt']);
+    final ended = _isEnded(m);
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text(title),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (tag.isNotEmpty) ...[
+                  _pill(tag, Colors.blueGrey),
+                  const SizedBox(height: 10),
+                ],
+                Text(
+                  '活動期間：${_dateText(startAt)} ～ ${_dateText(endAt)}',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 12),
+                if (desc.isNotEmpty) ...[
+                  Text(desc, style: const TextStyle(height: 1.35)),
+                  const SizedBox(height: 12),
+                ],
+                if (rule.isNotEmpty) ...[
+                  const Text(
+                    '規則/注意事項',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(rule, style: const TextStyle(height: 1.35)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('關閉'),
+            ),
+            ElevatedButton(
+              onPressed: ended
+                  ? null
+                  : () async {
+                      Navigator.pop(ctx); // ✅ 用 dialog ctx
+                      await _redeemPromotionCoupon(id, m);
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+              ),
+              child: const Text('領券'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _redeemPromotionCoupon(
+    String promoId,
+    Map<String, dynamic> m,
+  ) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      final go = await _confirmLogin();
+      if (!mounted) return;
+      if (go == true) {
+        Navigator.of(context, rootNavigator: true).pushNamed('/login');
+      }
+      return;
+    }
+
+    final uid = user.uid;
+
+    final coupon = (m['coupon'] is Map)
+        ? Map<String, dynamic>.from(m['coupon'])
+        : <String, dynamic>{};
+
+    final code = _s(coupon['code']).trim().isNotEmpty
+        ? _s(coupon['code']).trim()
+        : 'PROMO-${promoId.substring(0, promoId.length.clamp(0, 6))}'
+              .toUpperCase();
+
+    try {
+      final userCouponRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('coupons')
+          .doc('promo_$promoId');
+
+      final exists = await userCouponRef.get();
+      if (exists.exists) {
+        if (!mounted) return;
+        _toast('你已領取過此優惠券');
+        return;
+      }
+
+      await userCouponRef.set({
+        'code': code,
+        'title': coupon['title'] ?? (m['title'] ?? '活動優惠券'),
+        'description': coupon['description'] ?? (m['description'] ?? ''),
+        'discountValue': coupon['discountValue'] ?? (m['discountValue'] ?? 0),
+        'minSpend': coupon['minSpend'] ?? (m['minSpend'] ?? 0),
+        'startAt': coupon['startAt'] ?? m['startAt'],
+        'endAt': coupon['endAt'] ?? m['endAt'],
+        'status': 'available',
+        'source': 'promotion',
+        'promotionId': promoId,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+      _toast('領券成功：$code');
+    } catch (e) {
+      if (!mounted) return;
+      _toast('領券失敗：$e');
+    }
+  }
+
+  Future<bool?> _confirmLogin() {
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('需要登入'),
+          content: const Text('此功能需要先登入，是否前往登入？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _brand,
+                foregroundColor: Colors.white,
+                elevation: 0,
+              ),
+              child: const Text('前往登入'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _empty({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 52, color: Colors.grey),
+            const SizedBox(height: 10),
+            Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: const TextStyle(color: Colors.black54),
+              textAlign: TextAlign.center,
+            ),
           ],
         ),
       ),

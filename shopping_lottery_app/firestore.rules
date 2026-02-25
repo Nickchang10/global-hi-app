@@ -1,0 +1,428 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ----------------------------
+    // Helpers / 公用函式
+    // ----------------------------
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function userRef(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function userDocExists() {
+      return signedIn() && exists(userRef(request.auth.uid));
+    }
+
+    function userData() {
+      return userDocExists() ? get(userRef(request.auth.uid)).data : null;
+    }
+
+    // ✅ 取 users/{uid}.role（若無則空字串）
+    function userRole() {
+      return userDocExists() && (userData().role is string) ? userData().role : "";
+    }
+
+    // ✅ 支援 Firebase Custom Claims：
+    // request.auth.token.role = "admin"/"vendor"
+    // 或 request.auth.token.admin = true
+    function tokenRole() {
+      return signedIn() && (request.auth.token.role is string) ? request.auth.token.role : "";
+    }
+
+    function tokenIsAdmin() {
+      return signedIn() && (request.auth.token.admin == true);
+    }
+
+    function effectiveRole() {
+      // users.role 優先，沒有再用 token.role
+      return userRole() != "" ? userRole() : tokenRole();
+    }
+
+    function isAdmin() {
+      return signedIn() && (effectiveRole() == "admin" || tokenIsAdmin());
+    }
+
+    function isVendor() {
+      return signedIn() && (effectiveRole() == "vendor");
+    }
+
+    // ✅ vendorId 支援 users.vendorId 或 custom claims vendorId
+    function vendorId() {
+      return (
+        userDocExists() && (userData().vendorId is string) ? userData().vendorId :
+        (signedIn() && (request.auth.token.vendorId is string) ? request.auth.token.vendorId : "")
+      );
+    }
+
+    // ✅ 支援 vendorId (string) 與 vendorIds (list)
+    function vendorOwnsOrder() {
+      return isVendor() && (
+        ((resource.data.vendorId is string) && (resource.data.vendorId == vendorId())) ||
+        ((resource.data.vendorIds is list) && (vendorId() in resource.data.vendorIds))
+      );
+    }
+
+    function buyerOwnsOrder() {
+      return signedIn() && (resource.data.buyerUid == request.auth.uid);
+    }
+
+    function vendorAllowedOrderUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'status',
+        'statusHistory',
+        'shipping',
+        'updatedAt'
+      ]);
+    }
+
+    // ----------------------------
+    // ✅ Product / Variants helpers（為了規格管理）
+    // ----------------------------
+    function productRef(pid) {
+      return /databases/$(database)/documents/products/$(pid);
+    }
+
+    function productExists(pid) {
+      return exists(productRef(pid));
+    }
+
+    function productData(pid) {
+      return productExists(pid) ? get(productRef(pid)).data : null;
+    }
+
+    function productVendorId(pid) {
+      return (productExists(pid) && (productData(pid).vendorId is string))
+        ? productData(pid).vendorId
+        : "";
+    }
+
+    function vendorOwnsProduct(pid) {
+      return isVendor() && productVendorId(pid) != "" && productVendorId(pid) == vendorId();
+    }
+
+    // ----------------------------
+    // ✅ 通知文件欄位檢查（共用）
+    // ----------------------------
+    function notifRequiredKeys() {
+      return ['title', 'body', 'type', 'read'];
+    }
+
+    function notifOptionalKeys() {
+      return ['orderId', 'actorUid', 'actorRole', 'createdAt', 'readAt', 'extra', 'data'];
+    }
+
+    function notifAllowedKeys() {
+      return notifRequiredKeys().concat(notifOptionalKeys());
+    }
+
+    // createdAt：允許不存在 or timestamp（避免 serverTimestamp sentinel 造成 permission-denied）
+    function createdAtOk() {
+      return !(request.resource.data.keys().hasAny(['createdAt']))
+        || (request.resource.data.createdAt is timestamp);
+    }
+
+    // readAt：允許不存在 or timestamp
+    function readAtOk() {
+      return !(request.resource.data.keys().hasAny(['readAt']))
+        || (request.resource.data.readAt is timestamp);
+    }
+
+    function validNotifCreate(uid) {
+      return signedIn()
+        && (isOwner(uid) || isAdmin() || isVendor())
+
+        && request.resource.data.keys().hasAll(notifRequiredKeys())
+        && request.resource.data.keys().hasOnly(notifAllowedKeys())
+
+        && (request.resource.data.title is string)
+        && (request.resource.data.body is string)
+        && (request.resource.data.type is string)
+        && (request.resource.data.read is bool)
+
+        && (
+          !isOwner(uid)
+          || !request.resource.data.keys().hasAny(['actorUid'])
+          || request.resource.data.actorUid == request.auth.uid
+        )
+
+        // 建立時必須 unread
+        && (request.resource.data.read == false)
+
+        && createdAtOk()
+        && readAtOk();
+    }
+
+    function validNotifUpdate(uid) {
+      return isOwner(uid)
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['read', 'readAt'])
+        && (request.resource.data.read is bool)
+        && (
+          request.resource.data.read == false
+          || readAtOk()
+        );
+    }
+
+    // ----------------------------
+    // ✅ debug_link（驗證連線）
+    // ----------------------------
+    match /debug_link/{id} {
+      allow create: if signedIn();
+      allow read: if signedIn();
+      allow update, delete: if false;
+    }
+
+    // ----------------------------
+    // roles collection
+    // ----------------------------
+    match /roles/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ----------------------------
+    // ✅ users collection（安全版：禁止用戶自改 role/vendorId）
+    // ----------------------------
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasAll(['role'])
+        && request.resource.data.role == "user";
+
+      // ✅ 一般用戶只能改基本資料
+      allow update: if isOwner(uid)
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          'displayName',
+          'phone',
+          'photoUrl',
+          'updatedAt',
+          'email'
+        ]);
+
+      // ✅ 管理員可維護
+      allow update, delete: if isAdmin();
+
+      // ----------------------------
+      // ✅ users/{uid}/notifications/{notifId}
+      // ----------------------------
+      match /notifications/{notifId} {
+        allow read: if isOwner(uid) || isAdmin();
+        allow create: if validNotifCreate(uid);
+        allow update: if validNotifUpdate(uid);
+        allow delete: if isOwner(uid) || isAdmin();
+      }
+
+      // ✅（可選）AI 行銷草稿/事件（你有用到就放行）
+      match /ai_marketing_drafts/{draftId} {
+        allow read, write: if isOwner(uid) || isAdmin();
+      }
+      match /ai_marketing_events/{eventId} {
+        allow read, write: if isOwner(uid) || isAdmin();
+      }
+
+      // ✅ friends / activities（若你真的用 users/{uid}/friends & users/{uid}/activities）
+      match /friends/{friendUid} {
+        allow read, write: if isOwner(uid) || isAdmin();
+      }
+      match /activities/{activityId} {
+        allow read, write: if isOwner(uid) || isAdmin();
+      }
+      match /social_activities/{activityId} {
+        allow read, write: if isOwner(uid) || isAdmin();
+      }
+
+      // ✅ level：users/{uid}/meta/level（你 LevelService 用到）
+      match /meta/{docId} {
+        allow read, write: if isOwner(uid) || isAdmin();
+      }
+    }
+
+    // ----------------------------
+    // vendors collection
+    // ----------------------------
+    match /vendors/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // products collection
+    // ----------------------------
+    match /products/{id} {
+      allow read: if true;
+
+      allow create: if isAdmin()
+        || (isVendor() && request.resource.data.vendorId == vendorId());
+
+      allow update: if isAdmin()
+        || (
+          isVendor()
+          && resource.data.vendorId == vendorId()
+          && request.resource.data.vendorId == resource.data.vendorId
+        );
+
+      allow delete: if isAdmin()
+        || (isVendor() && resource.data.vendorId == vendorId());
+
+      // ✅ 規格子集合：products/{productId}/variants/{variantId}
+      match /variants/{variantId} {
+        allow read: if true;
+        allow create, update, delete: if isAdmin() || vendorOwnsProduct(id);
+      }
+    }
+
+    // ✅ 若你規格是「頂層集合」
+    match /product_variants/{variantId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() || (isVendor()
+        && (request.resource.data.productId is string)
+        && vendorOwnsProduct(request.resource.data.productId));
+    }
+
+    match /products_variants/{variantId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() || (isVendor()
+        && (request.resource.data.productId is string)
+        && vendorOwnsProduct(request.resource.data.productId));
+    }
+
+    // ----------------------------
+    // categories collection
+    // ----------------------------
+    match /categories/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // announcements collection
+    // ----------------------------
+    match /announcements/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // ✅ 前台 Home / Shop 動態內容（你目前 permission-denied 的主因）
+    // 只要你 APP 有讀到這些集合，這裡就要放行 read
+    // ----------------------------
+    match /banners/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /home_banners/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /shop_banners/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /sections/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /home_sections/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /shop_sections/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /blocks/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /home_blocks/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // ✅ app_config / shop_config（前台一定要讀得到）
+    // ----------------------------
+    match /app_config/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /shop_config/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // task_templates collection
+    // ----------------------------
+    match /task_templates/{id} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // coupons collection（修正版：通用券可讀）
+    // ----------------------------
+    match /coupons/{code} {
+      allow read: if signedIn() && (
+        isAdmin()
+        || (!resource.data.keys().hasAny(['uid']))
+        || (resource.data.uid == request.auth.uid)
+      );
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // ✅ notifications（你原本的路徑）
+    // notifications/{uid}/items/{notifId}
+    // ----------------------------
+    match /notifications/{uid}/items/{notifId} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if validNotifCreate(uid);
+      allow update: if validNotifUpdate(uid);
+      allow delete: if isOwner(uid) || isAdmin();
+    }
+
+    // ----------------------------
+    // orders collection
+    // ----------------------------
+    match /orders/{orderId} {
+      allow create: if signedIn() && request.resource.data.buyerUid == request.auth.uid;
+
+      allow read: if signedIn() && (
+        isAdmin()
+        || buyerOwnsOrder()
+        || vendorOwnsOrder()
+      );
+
+      allow update: if signedIn() && (
+        isAdmin()
+        || (vendorOwnsOrder() && vendorAllowedOrderUpdate())
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ----------------------------
+    // Default deny（最後防護）
+    // ----------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,1114 +1,784 @@
 // lib/pages/admin/orders/admin_orders_batch_ops_page.dart
 //
-// ✅ AdminOrdersBatchOpsPage（訂單批次操作｜完整版｜可直接編譯）
-// -----------------------------------------------------------------------------
-// 功能：
-// - 分頁載入 orders
-// - 篩選：status（all/pending/paid/shipping/completed/cancelled/refunded）
-// - 日期區間：createdAt 範圍
-// - 搜尋：列表內關鍵字過濾（local filter）
-// - 勾選多筆訂單（含本頁全選）
-// - 批次操作：
-//    1) 批次更新 status
-//    2) 批次設定出貨資訊（carrier + trackingNo + shippedAt）
-//    3) 批次更新 refundStatus（pending/approved/rejected/completed）
-//    4) 匯出已選訂單 CSV（跨平台：Web 下載 / App 桌面寫檔）
+// ✅ AdminOrdersBatchOpsPage（訂單批次操作｜完整版｜可編譯）
+// ------------------------------------------------------------
+// - 批次選取訂單（依查詢結果）
+// - 批次更新：status
+// - 批次補寫：adminNote / trackingNo
+// - ✅ FIX: control_flow_in_finally（本檔案完全不使用 finally）
 //
-// 依賴：
-// - cloud_firestore
-// - intl
-// - csv
-// - 你的 utils/report_file_saver.dart（需提供 saveReportBytes）
+// 建議路由：
+// '/admin_orders_batch_ops': (_) => const AdminOrdersBatchOpsPage(),
 //
-// 資料欄位（容錯）：
-// - createdAt (Timestamp)  ※建議必備，否則 orderBy 會報錯
-// - status (String)
-// - finalAmount (num)
-// - userEmail/userName/phone
-// - shippingCarrier/trackingNo/shippedAt
-// - refundStatus
-// -----------------------------------------------------------------------------
 
-import 'dart:convert';
-import 'dart:math' as math;
+import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:csv/csv.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
-import 'package:osmile_admin/utils/report_file_saver.dart';
+/// ✅ FIX: withOpacity deprecated → withValues(alpha: 0~1)
+Color _withOpacity(Color c, double opacity01) {
+  final o = opacity01.clamp(0.0, 1.0).toDouble();
+  return c.withValues(alpha: o);
+}
 
 class AdminOrdersBatchOpsPage extends StatefulWidget {
   const AdminOrdersBatchOpsPage({super.key});
 
   @override
-  State<AdminOrdersBatchOpsPage> createState() => _AdminOrdersBatchOpsPageState();
+  State<AdminOrdersBatchOpsPage> createState() =>
+      _AdminOrdersBatchOpsPageState();
 }
 
 class _AdminOrdersBatchOpsPageState extends State<AdminOrdersBatchOpsPage> {
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final _db = FirebaseFirestore.instance;
 
   // Filters
-  String _status = 'all';
-  DateTimeRange? _range;
-  final TextEditingController _searchCtrl = TextEditingController();
-  String _localKeyword = '';
+  final _keywordCtrl = TextEditingController();
+  Timer? _debounce;
+  String _keyword = '';
 
-  // Loading / Error
-  bool _loading = true;
-  String? _error;
-
-  // Pagination
-  static const int _pageSize = 30;
-  final List<_OrderRow> _rows = [];
-  DocumentSnapshot<Map<String, dynamic>>? _lastDoc;
-  bool _hasMore = true;
-  bool _loadingMore = false;
+  String _statusFilter = 'all';
+  static const _statusFilterOptions = <String>[
+    'all',
+    'pending',
+    'paid',
+    'shipping',
+    'shipped',
+    'done',
+    'cancelled',
+  ];
 
   // Selection
-  final Set<String> _selected = {};
-  bool _selectAllOnPage = false;
+  final Set<String> _selected = <String>{};
 
-  // Export result (optional display)
-  String? _exportResult;
+  // Batch inputs
+  String _targetStatus = 'paid';
+  static const _statusOptions = <String>[
+    'pending',
+    'paid',
+    'shipping',
+    'shipped',
+    'done',
+    'cancelled',
+  ];
 
-  @override
-  void initState() {
-    super.initState();
-    _load(reset: true);
-  }
+  final _noteCtrl = TextEditingController();
+  final _trackingCtrl = TextEditingController();
+
+  bool _busy = false;
+
+  final _df = DateFormat('yyyy/MM/dd HH:mm');
+  final _mf = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
 
   @override
   void dispose() {
-    _searchCtrl.dispose();
+    _debounce?.cancel();
+    _keywordCtrl.dispose();
+    _noteCtrl.dispose();
+    _trackingCtrl.dispose();
     super.dispose();
   }
 
-  // =============================================================================
-  // Query builder
-  // =============================================================================
-  Query<Map<String, dynamic>> _baseQuery() {
-    Query<Map<String, dynamic>> q = _db.collection('orders');
-
-    // status filter
-    if (_status != 'all') {
-      q = q.where('status', isEqualTo: _status);
-    }
-
-    // createdAt range filter (requires orderBy createdAt)
-    final r = _range;
-    if (r != null) {
-      q = q.where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(r.start));
-      q = q.where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(r.end));
-    }
-
-    // orderBy (needs createdAt field exist)
-    q = q.orderBy('createdAt', descending: true);
-
-    return q;
-  }
-
-  // =============================================================================
-  // Load
-  // =============================================================================
-  Future<void> _load({required bool reset}) async {
-    if (!mounted) return;
-
-    setState(() {
-      if (reset) _loading = true;
-      _error = null;
-      if (reset) {
-        _rows.clear();
-        _lastDoc = null;
-        _hasMore = true;
-        _selected.clear();
-        _selectAllOnPage = false;
-        _exportResult = null;
+  void _onKeywordChanged(String v) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 250), () {
+      if (!mounted) {
+        return;
       }
-    });
-
-    try {
-      Query<Map<String, dynamic>> q = _baseQuery();
-      if (!reset && _lastDoc != null) {
-        q = q.startAfterDocument(_lastDoc!);
-      }
-
-      final snap = await q.limit(_pageSize).get();
-      final docs = snap.docs;
-
-      final pageRows = docs
-          .map((d) => _OrderRow(
-                id: d.id,
-                data: d.data(),
-              ))
-          .toList();
-
-      final last = docs.isEmpty ? _lastDoc : docs.last;
-
-      if (!mounted) return;
-      setState(() {
-        _rows.addAll(pageRows);
-        _lastDoc = last;
-        _hasMore = docs.length == _pageSize;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.toString());
-    } finally {
-      if (!mounted) return;
-      if (reset) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _loadMore() async {
-    if (_loadingMore || !_hasMore) return;
-    setState(() => _loadingMore = true);
-    try {
-      await _load(reset: false);
-    } finally {
-      if (mounted) setState(() => _loadingMore = false);
-    }
-  }
-
-  // =============================================================================
-  // Filters UI actions
-  // =============================================================================
-  Future<void> _pickRange() async {
-    final now = DateTime.now();
-    final init = _range ??
-        DateTimeRange(
-          start: DateTime(now.year, now.month, 1),
-          end: DateTime(now.year, now.month, now.day, 23, 59, 59),
-        );
-
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(now.year - 3, 1, 1),
-      lastDate: DateTime(now.year, now.month, now.day, 23, 59, 59),
-      initialDateRange: init,
-      helpText: '選擇訂單日期區間（createdAt）',
-      confirmText: '套用',
-      cancelText: '取消',
-    );
-    if (picked == null) return;
-
-    setState(() {
-      _range = DateTimeRange(
-        start: DateTime(picked.start.year, picked.start.month, picked.start.day),
-        end: DateTime(picked.end.year, picked.end.month, picked.end.day, 23, 59, 59),
-      );
-    });
-    await _load(reset: true);
-  }
-
-  Future<void> _clearRange() async {
-    setState(() => _range = null);
-    await _load(reset: true);
-  }
-
-  void _applyLocalSearch() {
-    setState(() {
-      _localKeyword = _searchCtrl.text.trim().toLowerCase();
+      setState(() => _keyword = v.trim().toLowerCase());
     });
   }
 
-  void _clearLocalSearch() {
-    _searchCtrl.clear();
-    setState(() => _localKeyword = '');
-  }
-
-  // =============================================================================
-  // Selection helpers
-  // =============================================================================
-  List<_OrderRow> get _visibleRows {
-    final kw = _localKeyword;
-    if (kw.isEmpty) return _rows;
-
-    bool hit(_OrderRow r) {
-      final id = r.id.toLowerCase();
-      final status = (r.data['status'] ?? '').toString().toLowerCase();
-      final email = (r.data['userEmail'] ?? r.data['email'] ?? '').toString().toLowerCase();
-      final name = (r.data['userName'] ?? r.data['displayName'] ?? '').toString().toLowerCase();
-      final phone = (r.data['phone'] ?? r.data['userPhone'] ?? '').toString().toLowerCase();
-      final tracking = (r.data['trackingNo'] ?? '').toString().toLowerCase();
-      final carrier = (r.data['shippingCarrier'] ?? '').toString().toLowerCase();
-
-      return id.contains(kw) ||
-          status.contains(kw) ||
-          email.contains(kw) ||
-          name.contains(kw) ||
-          phone.contains(kw) ||
-          tracking.contains(kw) ||
-          carrier.contains(kw);
+  Query<Map<String, dynamic>> _query() {
+    var q = _db.collection('orders').orderBy('createdAt', descending: true);
+    if (_statusFilter != 'all') {
+      q = q.where('status', isEqualTo: _statusFilter);
     }
-
-    return _rows.where(hit).toList();
+    return q.limit(300);
   }
 
-  void _toggleSelectAllOnPage(bool v) {
-    final pageIds = _visibleRows.map((e) => e.id).toList();
-    setState(() {
-      _selectAllOnPage = v;
-      if (v) {
-        _selected.addAll(pageIds);
-      } else {
-        _selected.removeAll(pageIds);
-      }
-    });
-  }
-
-  void _toggleOne(String id, bool v) {
-    setState(() {
-      if (v) {
-        _selected.add(id);
-      } else {
-        _selected.remove(id);
-      }
-
-      // recompute selectAllOnPage
-      final pageIds = _visibleRows.map((e) => e.id).toSet();
-      _selectAllOnPage = pageIds.isNotEmpty && pageIds.every((x) => _selected.contains(x));
-    });
-  }
-
-  void _clearSelection() {
-    setState(() {
-      _selected.clear();
-      _selectAllOnPage = false;
-    });
-  }
-
-  // =============================================================================
-  // Batch operations
-  // =============================================================================
-  Future<void> _batchUpdateStatus() async {
-    if (_selected.isEmpty) return;
-
-    final newStatus = await _pickOne(
-      title: '批次更新訂單狀態',
-      items: const [
-        'pending',
-        'paid',
-        'shipping',
-        'completed',
-        'cancelled',
-        'refunded',
-      ],
-      labelOf: (s) => s,
-    );
-    if (newStatus == null) return;
-
-    final ok = await _confirm(
-      title: '確認更新',
-      message: '將 ${_selected.length} 筆訂單 status 更新為 "$newStatus"？',
-      confirmText: '更新',
-    );
-    if (!ok) return;
-
-    await _runWriteBatches(
-      ids: _selected.toList(),
-      dataOf: () => {
-        'status': newStatus,
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      successMsg: '已更新狀態',
-    );
-  }
-
-  Future<void> _batchSetShipping() async {
-    if (_selected.isEmpty) return;
-
-    final carrierCtrl = TextEditingController();
-    final trackingCtrl = TextEditingController();
-
-    final res = await showDialog<_ShippingInput>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Text('批次設定出貨資訊', style: TextStyle(fontWeight: FontWeight.w900)),
-        content: SizedBox(
-          width: 520,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: carrierCtrl,
-                decoration: InputDecoration(
-                  labelText: '物流商（shippingCarrier）',
-                  hintText: '例如：黑貓 / 新竹 / 郵局 / 宅配',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: trackingCtrl,
-                decoration: InputDecoration(
-                  labelText: '追蹤碼（trackingNo）',
-                  hintText: '可留空（若你要稍後再補）',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-              const SizedBox(height: 10),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '備註：同時會寫入 shippedAt（serverTimestamp）。\n'
-                  '如你希望批次一併把 status 改 shipping，可先用「批次更新狀態」。',
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-              context,
-              _ShippingInput(
-                carrier: carrierCtrl.text.trim(),
-                trackingNo: trackingCtrl.text.trim(),
-              ),
-            ),
-            child: const Text('套用'),
-          ),
-        ],
-      ),
-    );
-
-    if (res == null) return;
-
-    await _runWriteBatches(
-      ids: _selected.toList(),
-      dataOf: () => {
-        if (res.carrier.isNotEmpty) 'shippingCarrier': res.carrier,
-        if (res.trackingNo.isNotEmpty) 'trackingNo': res.trackingNo,
-        'shippedAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      successMsg: '已更新出貨資訊',
-    );
-  }
-
-  Future<void> _batchUpdateRefundStatus() async {
-    if (_selected.isEmpty) return;
-
-    final newStatus = await _pickOne(
-      title: '批次更新 refundStatus',
-      items: const [
-        'pending',
-        'approved',
-        'rejected',
-        'completed',
-      ],
-      labelOf: (s) => s,
-    );
-    if (newStatus == null) return;
-
-    final ok = await _confirm(
-      title: '確認更新',
-      message: '將 ${_selected.length} 筆訂單 refundStatus 更新為 "$newStatus"？',
-      confirmText: '更新',
-    );
-    if (!ok) return;
-
-    await _runWriteBatches(
-      ids: _selected.toList(),
-      dataOf: () => {
-        'refundStatus': newStatus,
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      successMsg: '已更新 refundStatus',
-    );
-  }
-
-  Future<void> _runWriteBatches({
-    required List<String> ids,
-    required Map<String, dynamic> Function() dataOf,
-    required String successMsg,
-  }) async {
-    if (!mounted) return;
-
-    // Firestore batch limit: 500 writes per batch
-    const chunkSize = 450;
-    final chunks = <List<String>>[];
-    for (int i = 0; i < ids.length; i += chunkSize) {
-      chunks.add(ids.sublist(i, math.min(i + chunkSize, ids.length)));
+  bool _hit(Map<String, dynamic> d, String id) {
+    if (_keyword.isEmpty) {
+      return true;
     }
+    final userId = (d['userId'] ?? '').toString().toLowerCase();
+    final status = (d['status'] ?? '').toString().toLowerCase();
+    final trackingNo = (d['trackingNo'] ?? '').toString().toLowerCase();
+    final note = (d['adminNote'] ?? '').toString().toLowerCase();
+    final orderId = id.toLowerCase();
 
-    _showBusyToast('處理中（${ids.length} 筆）...');
+    return userId.contains(_keyword) ||
+        status.contains(_keyword) ||
+        trackingNo.contains(_keyword) ||
+        note.contains(_keyword) ||
+        orderId.contains(_keyword);
+  }
 
-    try {
-      for (final chunk in chunks) {
-        final batch = _db.batch();
-        for (final id in chunk) {
-          final ref = _db.collection('orders').doc(id);
-          batch.set(ref, dataOf(), SetOptions(merge: true));
-        }
-        await batch.commit();
-      }
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(successMsg)));
-      await _load(reset: true);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('批次操作失敗：$e')));
+  DateTime? _toDt(dynamic v) {
+    if (v == null) {
+      return null;
     }
-  }
-
-  // =============================================================================
-  // Export CSV (selected)
-  // =============================================================================
-  Future<void> _exportSelectedCsv() async {
-    if (_selected.isEmpty) return;
-
-    // Fetch docs by ids in small whereIn chunks (safe for Firestore whereIn limits)
-    final ids = _selected.toList();
-    final fetched = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-
-    _showBusyToast('匯出中（抓取資料）...');
-
-    try {
-      const whereInLimit = 10;
-      for (int i = 0; i < ids.length; i += whereInLimit) {
-        final chunk = ids.sublist(i, math.min(i + whereInLimit, ids.length));
-        final snap = await _db
-            .collection('orders')
-            .where(FieldPath.documentId, whereIn: chunk)
-            .get();
-        fetched.addAll(snap.docs);
-      }
-
-      // Map by docId for stable ordering by selection list
-      final map = {for (final d in fetched) d.id: d.data()};
-      final rows = <Map<String, dynamic>>[];
-      for (final id in ids) {
-        rows.add(map[id] ?? <String, dynamic>{});
-      }
-
-      final bytes = _buildSelectedCsv(ids: ids, rows: rows);
-
-      final now = DateTime.now();
-      final filename = 'orders_selected_${DateFormat('yyyyMMdd_HHmm').format(now)}.csv';
-      final saved = await saveReportBytes(
-        filename: filename,
-        bytes: bytes,
-        mimeType: 'text/csv',
-      );
-
-      if (!mounted) return;
-      setState(() => _exportResult = saved);
-
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('CSV 匯出完成')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('匯出失敗：$e')));
+    if (v is Timestamp) {
+      return v.toDate();
     }
-  }
-
-  List<int> _buildSelectedCsv({
-    required List<String> ids,
-    required List<Map<String, dynamic>> rows,
-  }) {
-    final csvData = <List<dynamic>>[];
-
-    // headers
-    csvData.add([
-      'orderId',
-      'createdAt',
-      'status',
-      'finalAmount',
-      'userEmail',
-      'userName',
-      'phone',
-      'shippingCarrier',
-      'trackingNo',
-      'refundStatus',
-    ]);
-
-    String fmtDate(dynamic v) {
-      if (v is Timestamp) {
-        return DateFormat('yyyy-MM-dd HH:mm').format(v.toDate());
-      }
-      return '';
+    if (v is DateTime) {
+      return v;
     }
-
-    dynamic safe(Map<String, dynamic> m, String k) => m[k];
-
-    for (int i = 0; i < ids.length; i++) {
-      final id = ids[i];
-      final m = rows.length > i ? rows[i] : <String, dynamic>{};
-
-      csvData.add([
-        (safe(m, 'orderId') ?? id).toString(),
-        fmtDate(safe(m, 'createdAt')),
-        (safe(m, 'status') ?? '').toString(),
-        (safe(m, 'finalAmount') ?? 0).toString(),
-        (safe(m, 'userEmail') ?? safe(m, 'email') ?? '').toString(),
-        (safe(m, 'userName') ?? safe(m, 'displayName') ?? '').toString(),
-        (safe(m, 'phone') ?? safe(m, 'userPhone') ?? '').toString(),
-        (safe(m, 'shippingCarrier') ?? '').toString(),
-        (safe(m, 'trackingNo') ?? '').toString(),
-        (safe(m, 'refundStatus') ?? '').toString(),
-      ]);
+    if (v is int) {
+      return DateTime.fromMillisecondsSinceEpoch(v);
     }
-
-    final csvString = const ListToCsvConverter().convert(csvData);
-    return utf8.encode('\uFEFF$csvString'); // BOM for Excel
+    return null;
   }
 
-  // =============================================================================
-  // UI
-  // =============================================================================
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+  num _asNum(dynamic v) {
+    if (v is num) {
+      return v;
     }
-
-    if (_error != null) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('訂單批次操作', style: TextStyle(fontWeight: FontWeight.w900)),
-          actions: [IconButton(onPressed: () => _load(reset: true), icon: const Icon(Icons.refresh))],
-        ),
-        body: _ErrorView(
-          title: '載入訂單失敗',
-          message: _error!,
-          hint: '常見原因：orders 缺少 createdAt 欄位導致 orderBy 失敗、或需要建立複合索引。',
-          onRetry: () => _load(reset: true),
-        ),
-      );
-    }
-
-    final cs = Theme.of(context).colorScheme;
-    final visible = _visibleRows;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('訂單批次操作', style: TextStyle(fontWeight: FontWeight.w900)),
-        actions: [
-          IconButton(tooltip: '重新整理', onPressed: () => _load(reset: true), icon: const Icon(Icons.refresh)),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: () => _load(reset: true),
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            _filtersCard(cs),
-            const SizedBox(height: 12),
-            _selectionBar(cs, visibleCount: visible.length),
-            const SizedBox(height: 12),
-
-            if (_exportResult != null) _exportResultCard(cs),
-            if (_exportResult != null) const SizedBox(height: 12),
-
-            if (visible.isEmpty)
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    _localKeyword.isNotEmpty
-                        ? '沒有符合關鍵字的訂單。'
-                        : '目前沒有符合條件的訂單。\n\n提示：尚未上架或尚未建立測試訂單時沒有數字是正常狀況。',
-                    style: TextStyle(color: cs.onSurfaceVariant),
-                  ),
-                ),
-              )
-            else
-              ...visible.map(_orderTile).toList(),
-
-            const SizedBox(height: 12),
-
-            if (_hasMore)
-              Center(
-                child: FilledButton.tonalIcon(
-                  onPressed: _loadingMore ? null : _loadMore,
-                  icon: _loadingMore
-                      ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.expand_more),
-                  label: Text(_loadingMore ? '載入中...' : '載入更多'),
-                ),
-              ),
-
-            const SizedBox(height: 80),
-          ],
-        ),
-      ),
-      bottomNavigationBar: _selected.isEmpty ? null : _batchActionBar(cs),
-    );
+    return num.tryParse((v ?? '').toString()) ?? 0;
   }
 
-  Widget _filtersCard(ColorScheme cs) {
-    final fmt = DateFormat('yyyy/MM/dd');
-    final rangeText = _range == null ? '未設定' : '${fmt.format(_range!.start)} - ${fmt.format(_range!.end)}';
-
-    return Card(
-      elevation: 0,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('篩選與搜尋', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-            const SizedBox(height: 10),
-
-            Wrap(
-              spacing: 12,
-              runSpacing: 10,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('狀態：', style: TextStyle(fontWeight: FontWeight.w900)),
-                    const SizedBox(width: 8),
-                    DropdownButton<String>(
-                      value: _status,
-                      items: const [
-                        DropdownMenuItem(value: 'all', child: Text('全部')),
-                        DropdownMenuItem(value: 'pending', child: Text('pending')),
-                        DropdownMenuItem(value: 'paid', child: Text('paid')),
-                        DropdownMenuItem(value: 'shipping', child: Text('shipping')),
-                        DropdownMenuItem(value: 'completed', child: Text('completed')),
-                        DropdownMenuItem(value: 'cancelled', child: Text('cancelled')),
-                        DropdownMenuItem(value: 'refunded', child: Text('refunded')),
-                      ],
-                      onChanged: (v) async {
-                        if (v == null) return;
-                        setState(() => _status = v);
-                        await _load(reset: true);
-                      },
-                    ),
-                  ],
-                ),
-
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('日期：', style: TextStyle(fontWeight: FontWeight.w900)),
-                    const SizedBox(width: 8),
-                    OutlinedButton.icon(
-                      onPressed: _pickRange,
-                      icon: const Icon(Icons.date_range),
-                      label: Text(rangeText),
-                    ),
-                    if (_range != null) ...[
-                      const SizedBox(width: 8),
-                      TextButton(onPressed: _clearRange, child: const Text('清除')),
-                    ],
-                  ],
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _searchCtrl,
-                    onChanged: (_) => setState(() {}),
-                    onSubmitted: (_) => _applyLocalSearch(),
-                    decoration: InputDecoration(
-                      prefixIcon: const Icon(Icons.search),
-                      hintText: '列表內搜尋（orderId / email / name / phone / status / tracking）',
-                      isDense: true,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      suffixIcon: _searchCtrl.text.trim().isEmpty
-                          ? null
-                          : IconButton(
-                              tooltip: '清除',
-                              onPressed: () {
-                                _clearLocalSearch();
-                              },
-                              icon: const Icon(Icons.close),
-                            ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                FilledButton.icon(
-                  onPressed: _applyLocalSearch,
-                  icon: const Icon(Icons.filter_alt),
-                  label: const Text('套用'),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-            Text(
-              '提示：此搜尋為「本頁已載入清單」過濾，不是全庫搜尋。要全庫查請用訂單詳情或訂單列表頁的精準查。',
-              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
-            ),
-          ],
-        ),
-      ),
-    );
+  void _snack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  Widget _selectionBar(ColorScheme cs, {required int visibleCount}) {
-    final pageIds = _visibleRows.map((e) => e.id).toSet();
-    final selectedOnPage = pageIds.where((x) => _selected.contains(x)).length;
-
-    return Card(
-      elevation: 0,
-      color: cs.surfaceContainerHighest,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-        child: Row(
-          children: [
-            Checkbox(
-              value: _selectAllOnPage,
-              onChanged: (v) => _toggleSelectAllOnPage(v ?? false),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                '本頁可見 $visibleCount 筆｜本頁已選 $selectedOnPage 筆｜總已選 ${_selected.length} 筆',
-                style: const TextStyle(fontWeight: FontWeight.w900),
-              ),
-            ),
-            TextButton.icon(
-              onPressed: _selected.isEmpty ? null : _clearSelection,
-              icon: const Icon(Icons.clear),
-              label: const Text('清空選取'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _orderTile(_OrderRow row) {
-    final cs = Theme.of(context).colorScheme;
-    final fmtMoney = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
-
-    final createdAt = row.data['createdAt'];
-    String createdText = '-';
-    if (createdAt is Timestamp) {
-      createdText = DateFormat('yyyy/MM/dd HH:mm').format(createdAt.toDate());
-    }
-
-    final status = (row.data['status'] ?? '').toString();
-    final amount = row.data['finalAmount'];
-    final amountNum = (amount is num) ? amount : num.tryParse(amount?.toString() ?? '0') ?? 0;
-
-    final email = (row.data['userEmail'] ?? row.data['email'] ?? '').toString();
-    final name = (row.data['userName'] ?? row.data['displayName'] ?? '').toString();
-    final phone = (row.data['phone'] ?? row.data['userPhone'] ?? '').toString();
-
-    final carrier = (row.data['shippingCarrier'] ?? '').toString();
-    final tracking = (row.data['trackingNo'] ?? '').toString();
-    final refundStatus = (row.data['refundStatus'] ?? '').toString();
-
-    final isSelected = _selected.contains(row.id);
-
-    Color chipColor;
-    if (status == 'pending') chipColor = Colors.orange;
-    else if (status == 'paid') chipColor = Colors.blue;
-    else if (status == 'shipping') chipColor = Colors.purple;
-    else if (status == 'completed') chipColor = Colors.green;
-    else if (status == 'cancelled') chipColor = cs.error;
-    else chipColor = Colors.grey;
-
-    return Card(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => _toggleOne(row.id, !isSelected),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // header
-              Row(
-                children: [
-                  Checkbox(
-                    value: isSelected,
-                    onChanged: (v) => _toggleOne(row.id, v ?? false),
-                  ),
-                  Expanded(
-                    child: Text(
-                      'Order：${(row.data['orderId'] ?? row.id).toString()}',
-                      style: const TextStyle(fontWeight: FontWeight.w900),
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(999),
-                      color: chipColor.withValues(alpha: 0.12),
-                    ),
-                    child: Text(
-                      status.isEmpty ? 'unknown' : status,
-                      style: TextStyle(color: chipColor, fontWeight: FontWeight.w900, fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 8),
-
-              Wrap(
-                spacing: 14,
-                runSpacing: 6,
-                children: [
-                  _kv('建立', createdText),
-                  _kv('金額', fmtMoney.format(amountNum)),
-                  _kv('Email', email.isEmpty ? '-' : email),
-                  _kv('姓名', name.isEmpty ? '-' : name),
-                  _kv('電話', phone.isEmpty ? '-' : phone),
-                ],
-              ),
-
-              const SizedBox(height: 8),
-
-              Wrap(
-                spacing: 14,
-                runSpacing: 6,
-                children: [
-                  _kv('物流', carrier.isEmpty ? '-' : carrier),
-                  _kv('追蹤碼', tracking.isEmpty ? '-' : tracking),
-                  _kv('refundStatus', refundStatus.isEmpty ? '-' : refundStatus),
-                ],
-              ),
-
-              const Divider(height: 18),
-
-              Wrap(
-                spacing: 10,
-                runSpacing: 8,
-                children: [
-                  FilledButton.tonalIcon(
-                    onPressed: () => _goOrderDetail(row),
-                    icon: const Icon(Icons.open_in_new),
-                    label: const Text('開啟詳情'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      final text = (row.data['orderId'] ?? row.id).toString();
-                      await Clipboard.setData(ClipboardData(text: text));
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製')));
-                    },
-                    icon: const Icon(Icons.copy),
-                    label: const Text('複製編號'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _kv(String k, String v) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text('$k：', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12)),
-        Text(v, style: const TextStyle(fontSize: 12)),
-      ],
-    );
-  }
-
-  Widget _batchActionBar(ColorScheme cs) {
-    return SafeArea(
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-        decoration: BoxDecoration(
-          color: cs.surface,
-          border: Border(top: BorderSide(color: cs.outlineVariant)),
-        ),
-        child: Wrap(
-          spacing: 10,
-          runSpacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            Text('已選 ${_selected.length} 筆', style: const TextStyle(fontWeight: FontWeight.w900)),
-            FilledButton.tonalIcon(
-              onPressed: _batchUpdateStatus,
-              icon: const Icon(Icons.sync_alt),
-              label: const Text('批次改狀態'),
-            ),
-            FilledButton.tonalIcon(
-              onPressed: _batchSetShipping,
-              icon: const Icon(Icons.local_shipping_outlined),
-              label: const Text('批次出貨資訊'),
-            ),
-            FilledButton.tonalIcon(
-              onPressed: _batchUpdateRefundStatus,
-              icon: const Icon(Icons.money_off_csred_outlined),
-              label: const Text('批次 refundStatus'),
-            ),
-            OutlinedButton.icon(
-              onPressed: _exportSelectedCsv,
-              icon: const Icon(Icons.download),
-              label: const Text('匯出已選 CSV'),
-            ),
-            TextButton.icon(
-              onPressed: _clearSelection,
-              icon: const Icon(Icons.clear),
-              label: const Text('清空'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _exportResultCard(ColorScheme cs) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('匯出結果', style: TextStyle(fontWeight: FontWeight.w900)),
-            const SizedBox(height: 8),
-            Text(_exportResult ?? '-', style: TextStyle(color: cs.onSurfaceVariant)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _goOrderDetail(_OrderRow row) {
-    final id = (row.data['orderId'] ?? row.id).toString();
-    Navigator.pushNamed(context, '/admin/orders/detail', arguments: id);
-  }
-
-  // =============================================================================
-  // Dialog utils
-  // =============================================================================
   Future<bool> _confirm({
     required String title,
     required String message,
-    required String confirmText,
+    String confirmText = '確認',
+    bool danger = false,
   }) async {
+    final cs = Theme.of(context).colorScheme;
     final res = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
         content: Text(message),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(confirmText)),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: danger ? cs.error : null,
+              foregroundColor: danger ? cs.onError : null,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmText),
+          ),
         ],
       ),
     );
-    return res ?? false;
+    return res == true;
   }
 
-  Future<String?> _pickOne({
-    required String title,
-    required List<String> items,
-    required String Function(String) labelOf,
-  }) async {
-    String value = items.first;
-    final res = await showDialog<String?>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-        content: DropdownButton<String>(
-          value: value,
-          isExpanded: true,
-          items: items.map((e) => DropdownMenuItem(value: e, child: Text(labelOf(e)))).toList(),
-          onChanged: (v) => value = v ?? value,
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, value), child: const Text('確定')),
-        ],
-      ),
+  // ===========================================================
+  // Batch (✅ 本方法完全不使用 finally)
+  // ===========================================================
+  Future<void> _applyBatchUpdate() async {
+    if (_selected.isEmpty) {
+      _snack('請先選取至少 1 筆訂單');
+      return;
+    }
+
+    final note = _noteCtrl.text.trim();
+    final tracking = _trackingCtrl.text.trim();
+    final status = _targetStatus;
+
+    final ok = await _confirm(
+      title: '批次套用',
+      message:
+          '即將更新 ${_selected.length} 筆訂單：\n'
+          '- status：$status\n'
+          '${note.isEmpty ? '' : '- adminNote：$note\n'}'
+          '${tracking.isEmpty ? '' : '- trackingNo：$tracking\n'}'
+          '\n確定要套用嗎？',
+      confirmText: '套用',
+      danger: status == 'cancelled',
     );
-    return res;
+    if (!ok) {
+      return;
+    }
+
+    setState(() => _busy = true);
+
+    Object? err;
+    try {
+      final ids = _selected.toList(growable: false);
+
+      // Firestore batch 每次最多 500 → 切段
+      const chunkSize = 450;
+      for (var i = 0; i < ids.length; i += chunkSize) {
+        final chunk = ids.sublist(
+          i,
+          (i + chunkSize > ids.length) ? ids.length : i + chunkSize,
+        );
+
+        final batch = _db.batch();
+        for (final id in chunk) {
+          final ref = _db.collection('orders').doc(id);
+
+          final payload = <String, dynamic>{
+            'status': status,
+            'updatedAt': FieldValue.serverTimestamp(),
+          };
+          if (note.isNotEmpty) {
+            payload['adminNote'] = note;
+          }
+          if (tracking.isNotEmpty) {
+            payload['trackingNo'] = tracking;
+          }
+
+          batch.update(ref, payload);
+        }
+
+        await batch.commit();
+      }
+    } catch (e) {
+      err = e;
+    }
+
+    // ✅ 手動收尾（取代 finally）
+    if (mounted) {
+      setState(() => _busy = false);
+    }
+
+    if (err != null) {
+      _snack('批次更新失敗：$err');
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+    _snack('已批次更新 ${_selected.length} 筆訂單');
+    setState(() => _selected.clear());
   }
 
-  void _showBusyToast(String text) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(text), duration: const Duration(seconds: 1)),
-    );
+  void _toggleAll(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    bool on,
+  ) {
+    setState(() {
+      if (on) {
+        for (final d in docs) {
+          _selected.add(d.id);
+        }
+      } else {
+        for (final d in docs) {
+          _selected.remove(d.id);
+        }
+      }
+    });
   }
-}
 
-// =============================================================================
-// Models
-// =============================================================================
-class _OrderRow {
-  final String id;
-  final Map<String, dynamic> data;
-
-  _OrderRow({required this.id, required this.data});
-}
-
-class _ShippingInput {
-  final String carrier;
-  final String trackingNo;
-
-  _ShippingInput({required this.carrier, required this.trackingNo});
-}
-
-// =============================================================================
-// Error View
-// =============================================================================
-class _ErrorView extends StatelessWidget {
-  final String title;
-  final String message;
-  final String? hint;
-  final VoidCallback onRetry;
-
-  const _ErrorView({
-    required this.title,
-    required this.message,
-    required this.onRetry,
-    this.hint,
-  });
-
+  // ===========================================================
+  // UI
+  // ===========================================================
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Card(
-            elevation: 0,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.error_outline, size: 44, color: cs.error),
-                  const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 10),
-                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
-                  if (hint != null) ...[
-                    const SizedBox(height: 10),
-                    Text(hint!, style: TextStyle(color: cs.onSurfaceVariant)),
-                  ],
-                  const SizedBox(height: 14),
-                  FilledButton.icon(
-                    onPressed: onRetry,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('重試'),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('訂單批次操作'),
+        actions: [
+          IconButton(
+            tooltip: '清空選取',
+            onPressed: _busy
+                ? null
+                : () {
+                    setState(() => _selected.clear());
+                    _snack('已清空選取');
+                  },
+            icon: const Icon(Icons.clear_all_rounded),
+          ),
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: _busy ? null : () => setState(() {}),
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Filters + Batch panel
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            child: Column(
+              children: [
+                LayoutBuilder(
+                  builder: (context, c) {
+                    final isNarrow = c.maxWidth < 720;
+
+                    final keyword = TextField(
+                      controller: _keywordCtrl,
+                      onChanged: _onKeywordChanged,
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.search_rounded),
+                        hintText:
+                            '搜尋：orderId / userId / status / trackingNo / note',
+                        isDense: true,
+                        filled: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    );
+
+                    final statusFilter = DropdownButtonFormField<String>(
+                      key: ValueKey('statusFilter_$_statusFilter'),
+                      initialValue: _statusFilterOptions.contains(_statusFilter)
+                          ? _statusFilter
+                          : 'all',
+                      items: _statusFilterOptions
+                          .map(
+                            (e) => DropdownMenuItem(value: e, child: Text(e)),
+                          )
+                          .toList(),
+                      onChanged: _busy
+                          ? null
+                          : (v) {
+                              setState(() => _statusFilter = v ?? 'all');
+                            },
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        labelText: '狀態篩選',
+                        isDense: true,
+                        filled: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    );
+
+                    if (isNarrow) {
+                      return Column(
+                        children: [
+                          keyword,
+                          const SizedBox(height: 10),
+                          statusFilter,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Expanded(child: keyword),
+                        const SizedBox(width: 10),
+                        SizedBox(width: 240, child: statusFilter),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 10),
+                Card(
+                  elevation: 0,
+                  color: _withOpacity(cs.primaryContainer, 0.35),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: LayoutBuilder(
+                      builder: (context, c) {
+                        final isNarrow = c.maxWidth < 820;
+
+                        final targetStatus = DropdownButtonFormField<String>(
+                          key: ValueKey('targetStatus_$_targetStatus'),
+                          initialValue: _statusOptions.contains(_targetStatus)
+                              ? _targetStatus
+                              : 'paid',
+                          items: _statusOptions
+                              .map(
+                                (e) =>
+                                    DropdownMenuItem(value: e, child: Text(e)),
+                              )
+                              .toList(),
+                          onChanged: _busy
+                              ? null
+                              : (v) {
+                                  if (v == null) {
+                                    return;
+                                  }
+                                  setState(() => _targetStatus = v);
+                                },
+                          isExpanded: true,
+                          decoration: InputDecoration(
+                            labelText: '批次更新狀態',
+                            isDense: true,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        );
+
+                        final tracking = TextField(
+                          controller: _trackingCtrl,
+                          enabled: !_busy,
+                          decoration: InputDecoration(
+                            labelText: 'trackingNo（可留空）',
+                            isDense: true,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        );
+
+                        final note = TextField(
+                          controller: _noteCtrl,
+                          enabled: !_busy,
+                          maxLines: 2,
+                          decoration: InputDecoration(
+                            labelText: 'adminNote（可留空）',
+                            isDense: true,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        );
+
+                        final applyBtn = FilledButton.icon(
+                          onPressed: _busy ? null : _applyBatchUpdate,
+                          icon: _busy
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.playlist_add_check_rounded),
+                          label: Text(
+                            _busy ? '套用中…' : '套用到已選取（${_selected.length}）',
+                          ),
+                        );
+
+                        if (isNarrow) {
+                          return Column(
+                            children: [
+                              targetStatus,
+                              const SizedBox(height: 10),
+                              tracking,
+                              const SizedBox(height: 10),
+                              note,
+                              const SizedBox(height: 10),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: applyBtn,
+                              ),
+                            ],
+                          );
+                        }
+
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: targetStatus),
+                            const SizedBox(width: 10),
+                            Expanded(child: tracking),
+                            const SizedBox(width: 10),
+                            Expanded(child: note),
+                            const SizedBox(width: 10),
+                            Align(
+                              alignment: Alignment.topRight,
+                              child: applyBtn,
+                            ),
+                          ],
+                        );
+                      },
+                    ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
-        ),
+
+          const Divider(height: 1),
+
+          // List
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _query().snapshots(),
+              builder: (context, snap) {
+                if (snap.hasError) {
+                  return Center(child: Text('讀取失敗：${snap.error}'));
+                }
+                if (!snap.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final allDocs = snap.data!.docs;
+                final docs = allDocs
+                    .where((d) => _hit(d.data(), d.id))
+                    .toList(growable: false);
+
+                if (docs.isEmpty) {
+                  return const Center(child: Text('沒有符合條件的訂單'));
+                }
+
+                final allSelected =
+                    docs.isNotEmpty &&
+                    docs.every((d) => _selected.contains(d.id));
+                final anySelected = docs.any((d) => _selected.contains(d.id));
+
+                return Column(
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                      decoration: BoxDecoration(
+                        color: _withOpacity(cs.surfaceContainerHighest, 0.45),
+                        border: Border(
+                          bottom: BorderSide(
+                            color: _withOpacity(cs.outline, 0.25),
+                          ),
+                        ),
+                      ),
+                      child: Wrap(
+                        spacing: 10,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Checkbox(
+                            value: allSelected
+                                ? true
+                                : (anySelected ? null : false),
+                            tristate: true,
+                            onChanged: _busy
+                                ? null
+                                : (v) {
+                                    _toggleAll(docs, v == true);
+                                  },
+                          ),
+                          Text(
+                            '本頁 ${docs.length} 筆（已選 ${_selected.length}）',
+                            style: const TextStyle(fontWeight: FontWeight.w900),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _busy
+                                ? null
+                                : () => _toggleAll(docs, true),
+                            icon: const Icon(Icons.select_all_rounded),
+                            label: const Text('全選(本頁)'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _busy
+                                ? null
+                                : () => _toggleAll(docs, false),
+                            icon: const Icon(Icons.deselect_rounded),
+                            label: const Text('取消全選(本頁)'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                        itemCount: docs.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (context, i) {
+                          final doc = docs[i];
+                          final d = doc.data();
+
+                          final id = doc.id;
+                          final selected = _selected.contains(id);
+
+                          final status = (d['status'] ?? '').toString();
+                          final userId = (d['userId'] ?? '').toString();
+
+                          final createdAt = _toDt(d['createdAt']);
+                          final createdText = createdAt == null
+                              ? '-'
+                              : _df.format(createdAt);
+
+                          final amount = _asNum(
+                            d['finalAmount'] ?? d['total'] ?? d['amount'] ?? 0,
+                          );
+                          final amountText = _mf.format(amount);
+
+                          final tracking = (d['trackingNo'] ?? '')
+                              .toString()
+                              .trim();
+                          final note = (d['adminNote'] ?? '').toString().trim();
+
+                          return Card(
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(14),
+                              onTap: _busy
+                                  ? null
+                                  : () {
+                                      setState(() {
+                                        if (selected) {
+                                          _selected.remove(id);
+                                        } else {
+                                          _selected.add(id);
+                                        }
+                                      });
+                                    },
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Checkbox(
+                                      value: selected,
+                                      onChanged: _busy
+                                          ? null
+                                          : (v) {
+                                              setState(() {
+                                                if (v == true) {
+                                                  _selected.add(id);
+                                                } else {
+                                                  _selected.remove(id);
+                                                }
+                                              });
+                                            },
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  '訂單 $id',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.w900,
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              _StatusChip(status: status),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            'userId: $userId',
+                                            style: TextStyle(
+                                              color: Colors.grey.shade700,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            '金額：$amountText   建立：$createdText',
+                                            style: TextStyle(
+                                              color: Colors.grey.shade600,
+                                            ),
+                                          ),
+                                          if (tracking.isNotEmpty) ...[
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              'trackingNo: $tracking',
+                                              style: TextStyle(
+                                                color: Colors.grey.shade700,
+                                              ),
+                                            ),
+                                          ],
+                                          if (note.isNotEmpty) ...[
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              'note: $note',
+                                              style: TextStyle(
+                                                color: Colors.grey.shade700,
+                                              ),
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                          const SizedBox(height: 6),
+                                          Align(
+                                            alignment: Alignment.centerRight,
+                                            child: TextButton.icon(
+                                              onPressed: () {
+                                                try {
+                                                  Navigator.pushNamed(
+                                                    context,
+                                                    '/admin_order_detail',
+                                                    arguments: {'orderId': id},
+                                                  );
+                                                } catch (_) {
+                                                  _snack(
+                                                    '尚未註冊路由：/admin_order_detail',
+                                                  );
+                                                }
+                                              },
+                                              icon: const Icon(
+                                                Icons.open_in_new_rounded,
+                                                size: 18,
+                                              ),
+                                              label: const Text('查看詳情'),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({required this.status});
+  final String status;
+
+  Color _color(String s) {
+    final v = s.trim().toLowerCase();
+    switch (v) {
+      case 'paid':
+        return Colors.teal;
+      case 'shipping':
+      case 'shipped':
+        return Colors.indigo;
+      case 'done':
+        return Colors.green;
+      case 'cancelled':
+        return Colors.red;
+      case 'pending':
+      default:
+        return Colors.blueGrey;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _color(status);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: _withOpacity(c, 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: _withOpacity(c, 0.28)),
+      ),
+      child: Text(
+        status.isEmpty ? '-' : status,
+        style: TextStyle(color: c, fontWeight: FontWeight.w900),
       ),
     );
   }

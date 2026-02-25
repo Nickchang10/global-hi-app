@@ -48,7 +48,9 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
   }
 
   void _snack(String msg) {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
     );
@@ -57,7 +59,9 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
   Future<RoleInfo?> _getMyRole() async {
     final gate = context.read<AdminGate>();
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return null;
+    if (user == null) {
+      return null;
+    }
     return await gate.ensureAndGetRole(user, forceRefresh: true);
   }
 
@@ -81,8 +85,10 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
       _snack('尚未登入');
       return;
     }
-    setState(() => _targetUidCtrl.text = user.uid);
+
+    _targetUidCtrl.text = user.uid;
     setState(() => _role = role);
+
     await _apply();
   }
 
@@ -98,7 +104,8 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
       return;
     }
 
-    final targetUid = _targetUidCtrl.text.trim().isEmpty ? me.uid : _targetUidCtrl.text.trim();
+    final inputUid = _targetUidCtrl.text.trim();
+    final targetUid = inputUid.isEmpty ? me.uid : inputUid;
     final vendorId = _vendorIdCtrl.text.trim();
 
     // 基本檢查
@@ -135,11 +142,15 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
         context.read<AdminGate>().clearCache();
       }
 
-      _snack('已寫入 $_collection/$targetUid：role=$_role vendorId=${_role == 'vendor' ? vendorId : '(none)'}');
+      _snack(
+        '已寫入 $_collection/$targetUid：role=$_role vendorId=${_role == 'vendor' ? vendorId : '(none)'}',
+      );
     } catch (e) {
       _snack('寫入失敗：$e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -149,17 +160,22 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
       _snack('請先輸入 UID');
       return;
     }
+
     try {
       final snap = await _db.collection(_collection).doc(uid).get();
       if (!snap.exists) {
         _snack('找不到文件：$_collection/$uid');
         return;
       }
+
       final data = snap.data() ?? <String, dynamic>{};
       final role = (data['role'] ?? '').toString();
       final vendorId = (data['vendorId'] ?? '').toString();
 
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
+
       await showModalBottomSheet(
         context: context,
         showDragHandle: true,
@@ -170,7 +186,10 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('預覽：$_collection/$uid', style: const TextStyle(fontWeight: FontWeight.w900)),
+                Text(
+                  '預覽：$_collection/$uid',
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
                 const SizedBox(height: 10),
                 Text('role: $role'),
                 const SizedBox(height: 6),
@@ -190,9 +209,7 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
   Widget build(BuildContext context) {
     if (kReleaseMode) {
       return const Scaffold(
-        body: Center(
-          child: Text('RoleBootstrapToolPage 已在 Release 模式停用'),
-        ),
+        body: Center(child: Text('RoleBootstrapToolPage 已在 Release 模式停用')),
       );
     }
 
@@ -216,13 +233,17 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
         children: [
           Card(
             elevation: 0,
-            color: cs.primaryContainer.withOpacity(0.35),
+            // ✅ withOpacity deprecated → withValues(alpha: ...)
+            color: cs.primaryContainer.withValues(alpha: 0.35),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Text(
                 '此頁僅供開發/測試：用來快速寫入 role/vendorId 到 Firestore。\n'
                 '建議正式上線前移除路由或用更嚴格的權限控管。',
-                style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w800),
+                style: TextStyle(
+                  color: cs.onSurface,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
           ),
@@ -256,15 +277,26 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  const Text('寫入集合：', style: TextStyle(fontWeight: FontWeight.w800)),
+                  const Text(
+                    '寫入集合：',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
                   const SizedBox(width: 10),
                   DropdownButton<String>(
                     value: _collection,
                     items: const [
-                      DropdownMenuItem(value: 'users', child: Text('users/{uid}')),
-                      DropdownMenuItem(value: 'roles', child: Text('roles/{uid}')),
+                      DropdownMenuItem(
+                        value: 'users',
+                        child: Text('users/{uid}'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'roles',
+                        child: Text('roles/{uid}'),
+                      ),
                     ],
-                    onChanged: _loading ? null : (v) => setState(() => _collection = v ?? 'users'),
+                    onChanged: _loading
+                        ? null
+                        : (v) => setState(() => _collection = v ?? 'users'),
                   ),
                 ],
               ),
@@ -290,7 +322,10 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  const Text('角色：', style: TextStyle(fontWeight: FontWeight.w800)),
+                  const Text(
+                    '角色：',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
                   const SizedBox(width: 10),
                   DropdownButton<String>(
                     value: _role,
@@ -298,13 +333,20 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
                       DropdownMenuItem(value: 'admin', child: Text('admin')),
                       DropdownMenuItem(value: 'vendor', child: Text('vendor')),
                     ],
-                    onChanged: _loading ? null : (v) => setState(() => _role = v ?? 'admin'),
+                    onChanged: _loading
+                        ? null
+                        : (v) => setState(() => _role = v ?? 'admin'),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      _role == 'vendor' ? 'vendor 需要 vendorId' : 'admin 不需要 vendorId',
-                      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                      _role == 'vendor'
+                          ? 'vendor 需要 vendorId'
+                          : 'admin 不需要 vendorId',
+                      style: TextStyle(
+                        color: cs.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ],
@@ -347,7 +389,11 @@ class _RoleBootstrapToolPageState extends State<RoleBootstrapToolPage> {
           FilledButton.icon(
             onPressed: _loading ? null : _apply,
             icon: _loading
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Icon(Icons.save_outlined),
             label: const Text('寫入（Apply）'),
           ),

@@ -1,187 +1,353 @@
-// lib/pages/admin_site_content_edit_page.dart
-//
-// ✅ AdminSiteContentEditPage v4.7 Final
-// ------------------------------------------------------------
-// - 支援 Quill 富文本編輯、圖片上傳、多圖管理、Firestore 自動更新
-// ------------------------------------------------------------
-
-import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_quill/flutter_quill.dart' as quill;
 
+/// AdminSiteContentEditPage（正式版｜完整版｜可直接編譯）
+///
+/// Firestore：site_contents/{docId}
+/// 建議欄位：
+/// - title: String
+/// - slug: String              // about / terms / privacy ...
+/// - locale: String            // zh_TW / en ...
+/// - content: String           // 內文（純文字/Markdown 皆可）
+/// - enabled: bool
+/// - updatedAt, createdAt: Timestamp
 class AdminSiteContentEditPage extends StatefulWidget {
-  final String category;
-  final String? contentId;
-  const AdminSiteContentEditPage({super.key, required this.category, this.contentId});
+  const AdminSiteContentEditPage({
+    super.key,
+    required this.docId,
+    this.pageTitle,
+  });
+
+  final String docId;
+  final String? pageTitle;
 
   @override
-  State<AdminSiteContentEditPage> createState() => _AdminSiteContentEditPageState();
+  State<AdminSiteContentEditPage> createState() =>
+      _AdminSiteContentEditPageState();
 }
 
 class _AdminSiteContentEditPageState extends State<AdminSiteContentEditPage> {
-  final _db = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
-  final _formKey = GlobalKey<FormState>();
-  final _titleCtrl = TextEditingController();
-  final _quillCtrl = quill.QuillController.basic();
-  List<String> _images = [];
-  bool _active = true;
-  bool _saving = false;
-  bool _loading = false;
+  DocumentReference<Map<String, dynamic>> get _ref =>
+      FirebaseFirestore.instance.collection('site_contents').doc(widget.docId);
 
-  late final _ref = _db.collection('site_contents').doc(widget.contentId ?? _db.collection('site_contents').doc().id);
-  bool get _isEdit => widget.contentId != null;
+  final _formKey = GlobalKey<FormState>();
+
+  final _titleCtrl = TextEditingController();
+  final _slugCtrl = TextEditingController();
+  final _localeCtrl = TextEditingController(text: 'zh_TW');
+  final _contentCtrl = TextEditingController();
+
+  bool _enabled = true;
+  bool _busy = false;
+  bool _hydrated = false; // 避免 StreamBuilder 每次 rebuild 都覆蓋使用者正在輸入的文字
 
   @override
-  void initState() {
-    super.initState();
-    if (_isEdit) _load();
+  void dispose() {
+    _titleCtrl.dispose();
+    _slugCtrl.dispose();
+    _localeCtrl.dispose();
+    _contentCtrl.dispose();
+    super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    final doc = await _ref.get();
-    if (doc.exists) {
-      final d = doc.data()!;
-      _titleCtrl.text = d['title'] ?? '';
-      _active = d['isActive'] == true;
-      _images = List<String>.from(d['imageUrls'] ?? []);
-      final html = (d['bodyHtml'] ?? '').toString();
-      _quillCtrl.document = quill.Document.fromDelta(
-        quill.Delta()..insert(html.replaceAll(RegExp(r'<[^>]*>'), '') + '\n'),
-      );
-    }
-    if (mounted) setState(() => _loading = false);
+  void _snack(String msg, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: error ? Colors.red : null),
+    );
   }
 
-  Future<String?> _uploadImage() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
-    if (result == null) return null;
-    final file = result.files.first;
-    final bytes = file.bytes;
-    if (bytes == null) return null;
-    final path = 'site/${widget.category}/${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-    final ref = _storage.ref(path);
-    await ref.putData(bytes, SettableMetadata(contentType: 'image/${file.extension ?? 'jpg'}'));
-    return await ref.getDownloadURL();
+  String _fmtTs(dynamic v) {
+    DateTime? dt;
+    if (v is Timestamp) dt = v.toDate();
+    if (v is DateTime) dt = v;
+    if (dt == null) return '-';
+    final l = dt.toLocal();
+    return '${l.year.toString().padLeft(4, '0')}-'
+        '${l.month.toString().padLeft(2, '0')}-'
+        '${l.day.toString().padLeft(2, '0')} '
+        '${l.hour.toString().padLeft(2, '0')}:'
+        '${l.minute.toString().padLeft(2, '0')}';
+  }
+
+  void _hydrateFrom(Map<String, dynamic> data) {
+    if (_hydrated) return;
+
+    _titleCtrl.text = (data['title'] ?? '').toString();
+    _slugCtrl.text = (data['slug'] ?? widget.docId).toString();
+    _localeCtrl.text = (data['locale'] ?? 'zh_TW').toString();
+    _contentCtrl.text = (data['content'] ?? '').toString();
+    _enabled = data['enabled'] != false;
+
+    _hydrated = true;
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _saving = true);
-    final now = FieldValue.serverTimestamp();
-    await _ref.set({
-      'category': widget.category,
-      'title': _titleCtrl.text.trim(),
-      'bodyHtml': _quillCtrl.document.toPlainText(),
-      'imageUrls': _images,
-      'isActive': _active,
-      'updatedAt': now,
-      if (!_isEdit) 'createdAt': now,
-    }, SetOptions(merge: true));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已儲存')));
-      Navigator.pop(context);
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    setState(() => _busy = true);
+    try {
+      final now = FieldValue.serverTimestamp();
+
+      await _ref.set({
+        'title': _titleCtrl.text.trim(),
+        'slug': _slugCtrl.text.trim(),
+        'locale': _localeCtrl.text.trim().isEmpty
+            ? 'zh_TW'
+            : _localeCtrl.text.trim(),
+        'content': _contentCtrl.text,
+        'enabled': _enabled,
+        'updatedAt': now,
+        'createdAt': now,
+      }, SetOptions(merge: true));
+
+      _snack('已儲存');
+    } catch (e) {
+      _snack('儲存失敗：$e', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
-    setState(() => _saving = false);
+  }
+
+  Future<void> _resetHydrate() async {
+    // 重新從 DB 載入覆蓋目前輸入
+    setState(() => _hydrated = false);
+    _snack('已重新載入（下次畫面刷新會以資料庫為準）');
   }
 
   @override
   Widget build(BuildContext context) {
-    final title = _isEdit ? '編輯內容' : '新增內容';
-    return Scaffold(
-      appBar: AppBar(title: Text('$title - ${widget.category}')),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Form(
-              key: _formKey,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: ListView(
-                  children: [
-                    TextFormField(
-                      controller: _titleCtrl,
-                      decoration: const InputDecoration(labelText: '標題', border: OutlineInputBorder()),
-                      validator: (v) => (v ?? '').trim().isEmpty ? '請輸入標題' : null,
-                    ),
-                    const SizedBox(height: 12),
-                    SwitchListTile(
-                      title: const Text('前台上架'),
-                      value: _active,
-                      onChanged: (v) => setState(() => _active = v),
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade400)),
-                      child: Column(
-                        children: [
-                          quill.QuillToolbar.basic(
-                            controller: _quillCtrl,
-                            showVideoButton: false,
-                            showCameraButton: false,
-                            onImagePickCallback: (_) async {
-                              final url = await _uploadImage();
-                              if (url != null) {
-                                setState(() => _images.add(url));
-                                return url;
-                              }
-                              return null;
-                            },
-                          ),
-                          Container(
-                            height: 300,
-                            padding: const EdgeInsets.all(8),
-                            child: quill.QuillEditor.basic(controller: _quillCtrl, readOnly: false),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    if (_images.isNotEmpty)
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: _images
-                            .map((url) => Stack(
-                                  children: [
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: Image.network(url, width: 100, height: 100, fit: BoxFit.cover),
-                                    ),
-                                    Positioned(
-                                      right: 0,
-                                      top: 0,
-                                      child: InkWell(
-                                        onTap: () async {
-                                          setState(() => _images.remove(url));
-                                          try {
-                                            await FirebaseStorage.instance.refFromURL(url).delete();
-                                          } catch (_) {}
-                                        },
-                                        child: Container(
-                                          decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)),
-                                          padding: const EdgeInsets.all(2),
-                                          child: const Icon(Icons.close, size: 16, color: Colors.white),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ))
-                            .toList(),
-                      ),
-                    const SizedBox(height: 20),
-                    FilledButton.icon(
-                      onPressed: _saving ? null : _save,
-                      icon: const Icon(Icons.save),
-                      label: const Text('儲存'),
-                    ),
-                  ],
-                ),
+    final title = widget.pageTitle ?? '編輯頁面內容';
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _ref.snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Scaffold(
+            appBar: AppBar(title: Text(title)),
+            body: Center(
+              child: Text(
+                '讀取失敗：${snap.error}',
+                style: const TextStyle(color: Colors.red),
               ),
             ),
+          );
+        }
+        if (!snap.hasData) {
+          return Scaffold(
+            appBar: AppBar(title: Text(title)),
+            body: const Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        final doc = snap.data!;
+        final data = doc.data() ?? <String, dynamic>{};
+        _hydrateFrom(data);
+
+        final updatedAt = _fmtTs(data['updatedAt']);
+        final createdAt = _fmtTs(data['createdAt']);
+
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(title),
+            actions: [
+              IconButton(
+                tooltip: '重新載入（覆蓋目前輸入）',
+                onPressed: _busy ? null : _resetHydrate,
+                icon: const Icon(Icons.refresh),
+              ),
+              IconButton(
+                tooltip: '儲存',
+                onPressed: _busy ? null : _save,
+                icon: const Icon(Icons.save),
+              ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: Column(
+            children: [
+              if (!_enabled)
+                Container(
+                  width: double.infinity,
+                  // ✅ withOpacity(0.25) -> withValues(alpha: 64)
+                  color: Colors.amber.withValues(alpha: 64),
+                  padding: const EdgeInsets.all(10),
+                  child: const Text('此頁面目前為「停用」狀態（前台可選擇不顯示）'),
+                ),
+              Expanded(
+                child: Form(
+                  key: _formKey,
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      Card(
+                        elevation: 0.6,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                '基本資訊',
+                                style: TextStyle(fontWeight: FontWeight.w900),
+                              ),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _titleCtrl,
+                                decoration: const InputDecoration(
+                                  labelText: '標題 title（必填）',
+                                  border: OutlineInputBorder(),
+                                ),
+                                validator: (v) =>
+                                    (v ?? '').trim().isEmpty ? '必填' : null,
+                              ),
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: TextFormField(
+                                      controller: _slugCtrl,
+                                      decoration: const InputDecoration(
+                                        labelText:
+                                            'slug（例如 about / terms / privacy）',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: TextFormField(
+                                      controller: _localeCtrl,
+                                      decoration: const InputDecoration(
+                                        labelText: 'locale（例如 zh_TW / en）',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              SwitchListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('啟用 enabled'),
+                                value: _enabled,
+                                onChanged: _busy
+                                    ? null
+                                    : (v) => setState(() => _enabled = v),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                'docId: ${widget.docId}',
+                                style: TextStyle(
+                                  color: Colors.grey[700],
+                                  fontSize: 12,
+                                ),
+                              ),
+                              Text(
+                                'created: $createdAt',
+                                style: TextStyle(
+                                  color: Colors.grey[700],
+                                  fontSize: 12,
+                                ),
+                              ),
+                              Text(
+                                'updated: $updatedAt',
+                                style: TextStyle(
+                                  color: Colors.grey[700],
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Card(
+                        elevation: 0.6,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                '內容 content',
+                                style: TextStyle(fontWeight: FontWeight.w900),
+                              ),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _contentCtrl,
+                                minLines: 12,
+                                maxLines: 30,
+                                decoration: const InputDecoration(
+                                  hintText: '支援純文字/Markdown（前台如何渲染由你前台決定）',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                width: double.infinity,
+                                child: FilledButton.icon(
+                                  onPressed: _busy ? null : _save,
+                                  icon: const Icon(Icons.save),
+                                  label: const Text('儲存'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Card(
+                        elevation: 0.4,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                '預覽（純文字）',
+                                style: TextStyle(fontWeight: FontWeight.w900),
+                              ),
+                              const SizedBox(height: 10),
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    // ✅ withOpacity(0.4) -> withValues(alpha: 102)
+                                    color: Theme.of(context).colorScheme.outline
+                                        .withValues(alpha: 102),
+                                  ),
+                                ),
+                                child: SelectableText(
+                                  _contentCtrl.text.isEmpty
+                                      ? '(內容空白)'
+                                      : _contentCtrl.text,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

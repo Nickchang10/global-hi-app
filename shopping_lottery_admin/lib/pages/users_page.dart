@@ -1,127 +1,453 @@
 // lib/pages/users_page.dart
-import 'package:flutter/material.dart';
+//
+// ✅ UsersPage（修正完整版｜可編譯｜修正 DropdownButtonFormField value deprecated → initialValue）
+//
+// 功能：
+// - 後台使用者列表（Firestore: users collection）
+// - 搜尋（uid / email / name）
+// - Role 篩選（all/admin/vendor/user）
+// - AdminGate 權限保護（僅 admin 可進）
+// - AppBar 顯示 UserInfoBadge（✅ title 必填）
+// - 可點擊檢視使用者資料 Dialog（可選擇更新 role/vendorId）
+//
+// 依賴：
+// - firebase_auth
+// - cloud_firestore
+// - provider
+// - services/auth_service.dart
+// - services/admin_gate.dart
+// - widgets/user_info_badge.dart
+// - pages/login_page.dart
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
+import '../services/auth_service.dart';
 import '../services/admin_gate.dart';
-import '../widgets/notification_bell_button.dart';
 import '../widgets/user_info_badge.dart';
+import 'login_page.dart';
 
 class UsersPage extends StatefulWidget {
   const UsersPage({super.key});
+
   @override
   State<UsersPage> createState() => _UsersPageState();
 }
 
 class _UsersPageState extends State<UsersPage> {
-  String _search = '';
-  bool _loading = true;
-  List<_UserDoc> _users = [];
+  final _db = FirebaseFirestore.instance;
+
+  Future<RoleInfo>? _roleFuture;
+  String? _lastUid;
+
+  final _searchCtrl = TextEditingController();
+  String _q = '';
+  String _roleFilter = '__all__'; // __all__/admin/vendor/user/unknown
+
+  bool _saving = false;
 
   @override
-  void initState() {
-    super.initState();
-    _loadUsers();
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
-  Future<void> _loadUsers() async {
-    setState(() => _loading = true);
-    final snap = await FirebaseFirestore.instance.collection('users').get();
-    final list = snap.docs.map((d) => _UserDoc.fromFirestore(d)).toList();
-    list.sort((a, b) => a.email.compareTo(b.email));
-    setState(() {
-      _users = list;
-      _loading = false;
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  Future<void> _logout() async {
+    final gate = context.read<AdminGate>();
+    final auth = context.read<AuthService>();
+    gate.clearCache();
+    await auth.signOut();
+    if (!mounted) return;
+    Navigator.pushReplacementNamed(context, '/login');
+  }
+
+  String _badgeTitle(User user) {
+    final dn = (user.displayName ?? '').trim();
+    if (dn.isNotEmpty) return dn;
+    final em = (user.email ?? '').trim();
+    if (em.isNotEmpty) return em;
+    return user.uid;
+  }
+
+  bool _matchQuery(Map<String, dynamic> u) {
+    final q = _q.trim().toLowerCase();
+    if (q.isEmpty) return true;
+
+    final uid = _s(u['uid']).toLowerCase();
+    final email = _s(u['email']).toLowerCase();
+    final name = _s(u['name']).toLowerCase();
+
+    return uid.contains(q) || email.contains(q) || name.contains(q);
+  }
+
+  bool _matchRole(Map<String, dynamic> u) {
+    if (_roleFilter == '__all__') return true;
+    final role = _s(u['role']).toLowerCase();
+    if (_roleFilter == 'unknown') return role.isEmpty || role == 'unknown';
+    return role == _roleFilter;
+  }
+
+  Stream<List<Map<String, dynamic>>> _usersStream() {
+    // users collection（若你實際是 members/profile，改這裡即可）
+    return _db.collection('users').snapshots().map((snap) {
+      return snap.docs.map((d) {
+        final data = d.data();
+        return <String, dynamic>{'uid': d.id, ...data};
+      }).toList();
     });
   }
 
-  void _snack(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  Future<void> _updateUser(String uid, Map<String, dynamic> patch) async {
+    setState(() => _saving = true);
+    try {
+      await _db.collection('users').doc(uid).set({
+        ...patch,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      _snack('已更新 $uid');
+    } catch (e) {
+      _snack('更新失敗：$e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
-  Future<void> _updateField(_UserDoc u, String field, String value) async {
-    await FirebaseFirestore.instance.collection('users').doc(u.uid).update({field: value});
-    _snack('已更新 ${u.email} 的 $field');
-    _loadUsers();
+  Future<void> _openUserDialog(Map<String, dynamic> u) async {
+    final uid = _s(u['uid']);
+    final email = _s(u['email']);
+    final name = _s(u['name']);
+    final role = _s(u['role']).isEmpty ? 'unknown' : _s(u['role']);
+    final vendorId = _s(u['vendorId']);
+    final disabled = (u['disabled'] ?? false) == true;
+
+    final roleCtrl = TextEditingController(text: role);
+    final vendorCtrl = TextEditingController(text: vendorId);
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(name.isNotEmpty ? name : (email.isNotEmpty ? email : uid)),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText('uid: $uid'),
+              if (email.isNotEmpty) SelectableText('email: $email'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: roleCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'role（admin/vendor/user/unknown）',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                enabled: !_saving,
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: vendorCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'vendorId（可空）',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                enabled: !_saving,
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Text('disabled:'),
+                  const SizedBox(width: 8),
+                  Text(disabled ? 'true' : 'false'),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _saving ? null : () => Navigator.pop(dialogCtx, false),
+            child: const Text('關閉'),
+          ),
+          FilledButton(
+            onPressed: _saving ? null : () => Navigator.pop(dialogCtx, true),
+            child: _saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('儲存'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) {
+      roleCtrl.dispose();
+      vendorCtrl.dispose();
+      return;
+    }
+
+    final newRole = roleCtrl.text.trim().toLowerCase();
+    final newVendor = vendorCtrl.text.trim();
+
+    roleCtrl.dispose();
+    vendorCtrl.dispose();
+
+    await _updateUser(uid, {'role': newRole, 'vendorId': newVendor});
   }
 
   @override
   Widget build(BuildContext context) {
     final gate = context.read<AdminGate>();
+    final authSvc = context.read<AuthService>();
 
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, s) {
-        final user = s.data;
-        if (user == null) {
-          return const Center(child: Text('請登入後查看使用者管理'));
+      builder: (context, authSnap) {
+        if (authSnap.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
+
+        final user = authSnap.data;
+        if (user == null) {
+          gate.clearCache();
+          return const LoginPage();
+        }
+
+        if (_roleFuture == null || _lastUid != user.uid) {
+          _lastUid = user.uid;
+          _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
+        }
+
         return FutureBuilder<RoleInfo>(
-          future: gate.ensureAndGetRole(user),
-          builder: (context, r) {
-            if (!r.hasData) return const Center(child: CircularProgressIndicator());
-            final role = (r.data?.role ?? '').toLowerCase();
-            if (role != 'admin') {
-              return const Center(child: Text('非管理員帳號，無法進入此頁'));
+          future: _roleFuture,
+          builder: (context, roleSnap) {
+            if (!roleSnap.hasData) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
 
+            final role = (roleSnap.data?.role ?? 'unknown')
+                .trim()
+                .toLowerCase();
+
+            if (role != 'admin') {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('Users'),
+                  actions: [
+                    UserInfoBadge(
+                      title: _badgeTitle(user),
+                      subtitle: (user.email ?? '').trim(),
+                      role: role,
+                      uid: user.uid,
+                    ),
+                    IconButton(
+                      tooltip: '登出',
+                      icon: const Icon(Icons.logout),
+                      onPressed: _logout,
+                    ),
+                  ],
+                ),
+                body: const Center(child: Text('需要 Admin 權限')),
+              );
+            }
+
+            final badgeTitle = _badgeTitle(user);
+
             return Scaffold(
-              backgroundColor: const Color(0xFFF7F8FA),
               appBar: AppBar(
-                backgroundColor: Colors.white,
-                elevation: 0.5,
-                title: const Text('使用者管理', style: TextStyle(fontWeight: FontWeight.bold)),
-                actions: const [NotificationBellButton(), SizedBox(width: 8), UserInfoBadge()],
+                title: const Text('使用者管理'),
+                actions: [
+                  UserInfoBadge(
+                    title: badgeTitle,
+                    subtitle: (user.email ?? '').trim(),
+                    role: role,
+                    uid: user.uid,
+                  ),
+                  IconButton(
+                    tooltip: '登出',
+                    icon: const Icon(Icons.logout),
+                    onPressed: () async {
+                      gate.clearCache();
+                      await authSvc.signOut();
+                      if (!context.mounted) return;
+                      Navigator.pushReplacementNamed(context, '/login');
+                    },
+                  ),
+                  const SizedBox(width: 6),
+                ],
               ),
               body: Padding(
-                padding: const EdgeInsets.all(18),
+                padding: const EdgeInsets.all(16),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    TextField(
-                      decoration: const InputDecoration(
-                        prefixIcon: Icon(Icons.search),
-                        hintText: '搜尋 Email / Role / VendorId',
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (v) => setState(() => _search = v.trim().toLowerCase()),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _searchCtrl,
+                            decoration: const InputDecoration(
+                              prefixIcon: Icon(Icons.search),
+                              hintText: '搜尋 uid / email / name',
+                              border: OutlineInputBorder(),
+                            ),
+                            onChanged: (v) => setState(() => _q = v),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        SizedBox(
+                          width: 220,
+                          child: DropdownButtonFormField<String>(
+                            // ✅ FIX: `value:` deprecated → `initialValue:`
+                            // 為了讓外部 _roleFilter 變動時 UI 也跟著刷新，補 key
+                            key: ValueKey(_roleFilter),
+                            initialValue: _roleFilter,
+                            decoration: const InputDecoration(
+                              labelText: 'Role',
+                              border: OutlineInputBorder(),
+                              isDense: true,
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: '__all__',
+                                child: Text('全部'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'admin',
+                                child: Text('admin'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'vendor',
+                                child: Text('vendor'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'user',
+                                child: Text('user'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'unknown',
+                                child: Text('unknown/空'),
+                              ),
+                            ],
+                            onChanged: (v) => setState(() {
+                              _roleFilter = v ?? '__all__';
+                            }),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
                     Expanded(
-                      child: _loading
-                          ? const Center(child: CircularProgressIndicator())
-                          : _usersFiltered.isEmpty
-                              ? const Center(child: Text('無符合條件的使用者'))
-                              : SingleChildScrollView(
-                                  child: DataTable(
-                                    columns: const [
-                                      DataColumn(label: Text('Email')),
-                                      DataColumn(label: Text('Role')),
-                                      DataColumn(label: Text('Vendor ID')),
-                                      DataColumn(label: Text('UID')),
-                                      DataColumn(label: Text('動作')),
+                      child: StreamBuilder<List<Map<String, dynamic>>>(
+                        stream: _usersStream(),
+                        builder: (context, snap) {
+                          if (!snap.hasData) {
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
+                          }
+
+                          final all = snap.data ?? [];
+                          final list = all
+                              .where(_matchQuery)
+                              .where(_matchRole)
+                              .toList();
+
+                          if (list.isEmpty) {
+                            return const Center(child: Text('沒有符合的使用者'));
+                          }
+
+                          final isWide =
+                              MediaQuery.sizeOf(context).width >= 980;
+
+                          if (isWide) {
+                            return SingleChildScrollView(
+                              child: DataTable(
+                                columns: const [
+                                  DataColumn(label: Text('uid')),
+                                  DataColumn(label: Text('email')),
+                                  DataColumn(label: Text('name')),
+                                  DataColumn(label: Text('role')),
+                                  DataColumn(label: Text('vendorId')),
+                                  DataColumn(label: Text('操作')),
+                                ],
+                                rows: list.map((u) {
+                                  final uid = _s(u['uid']);
+                                  return DataRow(
+                                    cells: [
+                                      DataCell(SelectableText(uid)),
+                                      DataCell(Text(_s(u['email']))),
+                                      DataCell(Text(_s(u['name']))),
+                                      DataCell(
+                                        Text(
+                                          _s(u['role']).isEmpty
+                                              ? 'unknown'
+                                              : _s(u['role']),
+                                        ),
+                                      ),
+                                      DataCell(Text(_s(u['vendorId']))),
+                                      DataCell(
+                                        IconButton(
+                                          tooltip: '檢視/編輯',
+                                          icon: const Icon(Icons.edit_outlined),
+                                          onPressed: () => _openUserDialog(u),
+                                        ),
+                                      ),
                                     ],
-                                    rows: _usersFiltered.map((u) {
-                                      return DataRow(
-                                        cells: [
-                                          DataCell(Text(u.email)),
-                                          DataCell(Text(u.role)),
-                                          DataCell(Text(u.vendorId ?? '')),
-                                          DataCell(Text(u.uid.substring(0, 8))),
-                                          DataCell(Row(
-                                            children: [
-                                              IconButton(
-                                                icon: const Icon(Icons.edit),
-                                                tooltip: '編輯 Role/VendorId',
-                                                onPressed: () => _editUserDialog(u),
-                                              ),
-                                            ],
-                                          )),
-                                        ],
-                                      );
-                                    }).toList(),
+                                  );
+                                }).toList(),
+                              ),
+                            );
+                          }
+
+                          return ListView.separated(
+                            itemCount: list.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 8),
+                            itemBuilder: (context, i) {
+                              final u = list[i];
+                              final uid = _s(u['uid']);
+                              final email = _s(u['email']);
+                              final name = _s(u['name']);
+                              final role = _s(u['role']).isEmpty
+                                  ? 'unknown'
+                                  : _s(u['role']);
+
+                              return Card(
+                                child: ListTile(
+                                  title: Text(
+                                    name.isNotEmpty
+                                        ? name
+                                        : (email.isNotEmpty ? email : uid),
                                   ),
+                                  subtitle: Text('uid: $uid\nrole: $role'),
+                                  trailing: const Icon(Icons.chevron_right),
+                                  onTap: () => _openUserDialog(u),
                                 ),
+                              );
+                            },
+                          );
+                        },
+                      ),
                     ),
                   ],
                 ),
@@ -130,63 +456,6 @@ class _UsersPageState extends State<UsersPage> {
           },
         );
       },
-    );
-  }
-
-  List<_UserDoc> get _usersFiltered {
-    if (_search.isEmpty) return _users;
-    return _users.where((u) {
-      return u.email.toLowerCase().contains(_search) ||
-          u.role.toLowerCase().contains(_search) ||
-          (u.vendorId ?? '').toLowerCase().contains(_search);
-    }).toList();
-  }
-
-  Future<void> _editUserDialog(_UserDoc u) async {
-    final roleCtrl = TextEditingController(text: u.role);
-    final vendorCtrl = TextEditingController(text: u.vendorId ?? '');
-    await showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('編輯使用者：${u.email}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: roleCtrl, decoration: const InputDecoration(labelText: 'Role')),
-            const SizedBox(height: 8),
-            TextField(controller: vendorCtrl, decoration: const InputDecoration(labelText: 'VendorId')),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _updateField(u, 'role', roleCtrl.text.trim());
-              await _updateField(u, 'vendorId', vendorCtrl.text.trim());
-            },
-            child: const Text('儲存'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _UserDoc {
-  final String uid;
-  final String email;
-  final String role;
-  final String? vendorId;
-  _UserDoc({required this.uid, required this.email, required this.role, this.vendorId});
-
-  factory _UserDoc.fromFirestore(DocumentSnapshot doc) {
-    final d = doc.data() as Map<String, dynamic>? ?? {};
-    return _UserDoc(
-      uid: doc.id,
-      email: (d['email'] ?? '').toString(),
-      role: (d['role'] ?? 'user').toString(),
-      vendorId: (d['vendorId'] ?? '').toString(),
     );
   }
 }

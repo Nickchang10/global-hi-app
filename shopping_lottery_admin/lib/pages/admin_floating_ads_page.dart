@@ -22,7 +22,8 @@
 // 依賴：cloud_firestore, firebase_storage, file_picker, intl, flutter/services
 // ------------------------------------------------------------
 
-import 'dart:typed_data';
+// ✅ 修正：移除不必要的 dart:typed_data（Uint8List 已由 flutter/services.dart 提供）
+// import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
@@ -61,7 +62,8 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
   Query<Map<String, dynamic>> _baseQuery() =>
       _db.collection('floating_ads').orderBy('order').limit(200);
 
-  DateTime? _toDate(dynamic v) => v is Timestamp ? v.toDate() : (v is DateTime ? v : null);
+  DateTime? _toDate(dynamic v) =>
+      v is Timestamp ? v.toDate() : (v is DateTime ? v : null);
 
   String _fmtDateTime(DateTime? d) {
     if (d == null) return '-';
@@ -82,7 +84,8 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
     final kw = _keyword.trim().toLowerCase();
     final okKeyword = kw.isEmpty || title.contains(kw) || link.contains(kw);
 
-    final okActive = _activeFilter == '全部' ||
+    final okActive =
+        _activeFilter == '全部' ||
         (_activeFilter == '上架' && isActive) ||
         (_activeFilter == '下架' && !isActive);
 
@@ -155,7 +158,9 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
   Future<void> _delete(DocumentSnapshot<Map<String, dynamic>> doc) async {
     final d = doc.data() ?? {};
     final title = (d['title'] ?? '').toString().trim();
-    final images = (d['images'] is List) ? List<String>.from(d['images']) : <String>[];
+    final images = (d['images'] is List)
+        ? List<String>.from(d['images'])
+        : <String>[];
 
     bool deleteStorage = false;
 
@@ -181,8 +186,14 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('刪除'),
+            ),
           ],
         ),
       ),
@@ -207,7 +218,9 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
     }
   }
 
-  Future<void> _applyReorder(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) async {
+  Future<void> _applyReorder(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) async {
     if (_busyReorder) return;
     setState(() => _busyReorder = true);
 
@@ -223,14 +236,10 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
         final batch = _db.batch();
         for (int idx = 0; idx < chunk.length; idx++) {
           final globalIndex = i + idx;
-          batch.set(
-            chunk[idx].reference,
-            {
-              'order': globalIndex + 1,
-              'updatedAt': FieldValue.serverTimestamp(),
-            },
-            SetOptions(merge: true),
-          );
+          batch.set(chunk[idx].reference, {
+            'order': globalIndex + 1,
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
         }
         await batch.commit();
         i = end;
@@ -265,12 +274,18 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: q.snapshots(),
               builder: (context, snap) {
-                if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+                if (!snap.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
                 final allDocs = snap.data!.docs.toList();
-                if (allDocs.isEmpty) return const Center(child: Text('目前沒有浮動廣告'));
+                if (allDocs.isEmpty) {
+                  return const Center(child: Text('目前沒有浮動廣告'));
+                }
 
-                final filtered = allDocs.where((d) => _matchFilter(d.data())).toList();
+                final filtered = allDocs
+                    .where((d) => _matchFilter(d.data()))
+                    .toList();
                 if (filtered.isEmpty) {
                   return const Center(child: Text('沒有符合條件的資料'));
                 }
@@ -300,7 +315,9 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
                         final images = (d['images'] is List)
                             ? List<String>.from(d['images'])
                             : <String>[];
-                        final firstImage = images.isNotEmpty ? images.first.trim() : '';
+                        final firstImage = images.isNotEmpty
+                            ? images.first.trim()
+                            : '';
 
                         final startAt = _toDate(d['startAt']);
                         final endAt = _toDate(d['endAt']);
@@ -320,7 +337,10 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
 
                         return Card(
                           key: ValueKey(doc.id),
-                          margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          margin: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
                           child: ListTile(
                             leading: firstImage.isNotEmpty
                                 ? ClipRRect(
@@ -338,14 +358,22 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
                                   ),
                             title: Text(
                               title.isEmpty ? '(未命名浮動廣告)' : title,
-                              style: const TextStyle(fontWeight: FontWeight.w900),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
                             subtitle: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(subtitle),
                                 const SizedBox(height: 4),
-                                Text(timeLabel, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                Text(
+                                  timeLabel,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.black54,
+                                  ),
+                                ),
                               ],
                             ),
                             isThreeLine: true,
@@ -357,11 +385,23 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
                                 if (v == 'delete') await _delete(doc);
                               },
                               itemBuilder: (_) => [
-                                const PopupMenuItem(value: 'edit', child: Text('編輯/上傳圖片')),
-                                PopupMenuItem(value: 'toggle', child: Text(isActive ? '下架' : '上架')),
-                                const PopupMenuItem(value: 'copy', child: Text('複製連結')),
+                                const PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('編輯/上傳圖片'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'toggle',
+                                  child: Text(isActive ? '下架' : '上架'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'copy',
+                                  child: Text('複製連結'),
+                                ),
                                 const PopupMenuDivider(),
-                                const PopupMenuItem(value: 'delete', child: Text('刪除')),
+                                const PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text('刪除'),
+                                ),
                               ],
                             ),
                             onTap: () => _edit(doc.id),
@@ -377,12 +417,28 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
                         child: Material(
                           elevation: 10,
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
                             child: Row(
                               children: const [
-                                SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                                SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
                                 SizedBox(width: 10),
-                                Expanded(child: Text('更新排序中...', style: TextStyle(fontWeight: FontWeight.w800))),
+                                Expanded(
+                                  child: Text(
+                                    '更新排序中...',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -421,16 +477,21 @@ class _AdminFloatingAdsPageState extends State<AdminFloatingAdsPage> {
           ),
           DropdownButton<String>(
             value: _activeFilter,
-            items: const ['全部', '上架', '下架']
-                .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                .toList(),
+            items: const [
+              '全部',
+              '上架',
+              '下架',
+            ].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (v) => setState(() => _activeFilter = v ?? '全部'),
           ),
           DropdownButton<String>(
             value: _timeFilter,
-            items: const ['全部', '有效中', '未開始', '已結束']
-                .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                .toList(),
+            items: const [
+              '全部',
+              '有效中',
+              '未開始',
+              '已結束',
+            ].map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (v) => setState(() => _timeFilter = v ?? '全部'),
           ),
           IconButton(
@@ -498,7 +559,8 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  DateTime? _toDate(dynamic v) => v is Timestamp ? v.toDate() : (v is DateTime ? v : null);
+  DateTime? _toDate(dynamic v) =>
+      v is Timestamp ? v.toDate() : (v is DateTime ? v : null);
 
   String _fmt(DateTime? d) {
     if (d == null) return '-';
@@ -528,7 +590,9 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
         _startAt = _toDate(d['startAt']);
         _endAt = _toDate(d['endAt']);
 
-        _images = (d['images'] is List) ? List<String>.from(d['images']) : <String>[];
+        _images = (d['images'] is List)
+            ? List<String>.from(d['images'])
+            : <String>[];
       }
     } catch (e) {
       _snack('讀取失敗：$e');
@@ -548,7 +612,9 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
     );
     if (picked == null) return;
     if (!mounted) return;
-    setState(() => _startAt = DateTime(picked.year, picked.month, picked.day, 0, 0, 0));
+    setState(
+      () => _startAt = DateTime(picked.year, picked.month, picked.day, 0, 0, 0),
+    );
   }
 
   Future<void> _pickEndDate() async {
@@ -562,7 +628,10 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
     );
     if (picked == null) return;
     if (!mounted) return;
-    setState(() => _endAt = DateTime(picked.year, picked.month, picked.day, 23, 59, 59));
+    setState(
+      () =>
+          _endAt = DateTime(picked.year, picked.month, picked.day, 23, 59, 59),
+    );
   }
 
   Future<void> _uploadImage() async {
@@ -576,7 +645,7 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
     if (result == null || result.files.isEmpty) return;
 
     final f = result.files.first;
-    Uint8List? bytes = f.bytes;
+    final bytes = f.bytes;
     if (bytes == null) {
       _snack('讀取圖片失敗');
       return;
@@ -589,7 +658,10 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
       final path = 'floating_ads/${widget.id}/$fileName';
 
       final ref = _storage.ref().child(path);
-      await ref.putData(bytes, SettableMetadata(contentType: _guessContentType(f.extension)));
+      await ref.putData(
+        bytes,
+        SettableMetadata(contentType: _guessContentType(f.extension)),
+      );
       final url = await ref.getDownloadURL();
 
       if (!mounted) return;
@@ -612,8 +684,14 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
         title: const Text('刪除圖片'),
         content: const Text('確定要刪除這張圖片？（會嘗試刪除 Storage 檔案）'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
@@ -649,21 +727,18 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
 
     setState(() => _saving = true);
     try {
-      await _db.collection('floating_ads').doc(widget.id).set(
-        {
-          'title': title,
-          'link': _linkCtrl.text.trim(),
-          'openInNewTab': _openInNewTab,
-          'images': _images,
-          'isActive': _active,
-          'updatedAt': FieldValue.serverTimestamp(),
-          if (_startAt != null) 'startAt': Timestamp.fromDate(_startAt!),
-          if (_startAt == null) 'startAt': FieldValue.delete(),
-          if (_endAt != null) 'endAt': Timestamp.fromDate(_endAt!),
-          if (_endAt == null) 'endAt': FieldValue.delete(),
-        },
-        SetOptions(merge: true),
-      );
+      await _db.collection('floating_ads').doc(widget.id).set({
+        'title': title,
+        'link': _linkCtrl.text.trim(),
+        'openInNewTab': _openInNewTab,
+        'images': _images,
+        'isActive': _active,
+        'updatedAt': FieldValue.serverTimestamp(),
+        if (_startAt != null) 'startAt': Timestamp.fromDate(_startAt!),
+        if (_startAt == null) 'startAt': FieldValue.delete(),
+        if (_endAt != null) 'endAt': Timestamp.fromDate(_endAt!),
+        if (_endAt == null) 'endAt': FieldValue.delete(),
+      }, SetOptions(merge: true));
 
       if (!mounted) return;
       Navigator.pop(context, true);
@@ -678,7 +753,10 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
   Widget build(BuildContext context) {
     if (_loading) {
       return const SafeArea(
-        child: SizedBox(height: 280, child: Center(child: CircularProgressIndicator())),
+        child: SizedBox(
+          height: 280,
+          child: Center(child: CircularProgressIndicator()),
+        ),
       );
     }
 
@@ -694,7 +772,10 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('編輯浮動廣告', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+              const Text(
+                '編輯浮動廣告',
+                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+              ),
               const SizedBox(height: 14),
 
               TextField(
@@ -732,23 +813,34 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
 
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('前台上架', style: TextStyle(fontWeight: FontWeight.w800)),
+                title: const Text(
+                  '前台上架',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
                 value: _active,
                 onChanged: _saving ? null : (v) => setState(() => _active = v),
               ),
 
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('新分頁開啟', style: TextStyle(fontWeight: FontWeight.w800)),
+                title: const Text(
+                  '新分頁開啟',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
                 value: _openInNewTab,
-                onChanged: _saving ? null : (v) => setState(() => _openInNewTab = v),
+                onChanged: _saving
+                    ? null
+                    : (v) => setState(() => _openInNewTab = v),
               ),
 
               const Divider(height: 22),
 
               const Align(
                 alignment: Alignment.centerLeft,
-                child: Text('有效期間（選填）', style: TextStyle(fontWeight: FontWeight.w900)),
+                child: Text(
+                  '有效期間（選填）',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -758,21 +850,25 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
                   OutlinedButton.icon(
                     onPressed: _saving ? null : _pickStartDate,
                     icon: const Icon(Icons.date_range_outlined),
-                    label: Text(_startAt == null ? '設定開始日' : '開始：${_fmt(_startAt)}'),
+                    label: Text(
+                      _startAt == null ? '設定開始日' : '開始：${_fmt(_startAt)}',
+                    ),
                   ),
                   OutlinedButton.icon(
                     onPressed: _saving ? null : _pickEndDate,
                     icon: const Icon(Icons.event_outlined),
-                    label: Text(_endAt == null ? '設定結束日' : '結束：${_fmt(_endAt)}'),
+                    label: Text(
+                      _endAt == null ? '設定結束日' : '結束：${_fmt(_endAt)}',
+                    ),
                   ),
                   if (_startAt != null || _endAt != null)
                     TextButton(
                       onPressed: _saving
                           ? null
                           : () => setState(() {
-                                _startAt = null;
-                                _endAt = null;
-                              }),
+                              _startAt = null;
+                              _endAt = null;
+                            }),
                       child: const Text('清除日期'),
                     ),
                 ],
@@ -782,7 +878,10 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
 
               Row(
                 children: [
-                  const Text('圖片（可多張）', style: TextStyle(fontWeight: FontWeight.w900)),
+                  const Text(
+                    '圖片（可多張）',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
                   const Spacer(),
                   OutlinedButton.icon(
                     onPressed: _saving ? null : _uploadImage,
@@ -830,7 +929,11 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               padding: const EdgeInsets.all(4),
-                              child: const Icon(Icons.close, size: 16, color: Colors.white),
+                              child: const Icon(
+                                Icons.close,
+                                size: 16,
+                                color: Colors.white,
+                              ),
                             ),
                           ),
                         ),
@@ -851,9 +954,18 @@ class _FloatingAdEditSheetState extends State<_FloatingAdEditSheet> {
                 const SizedBox(height: 12),
                 Row(
                   children: const [
-                    SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                    SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
                     SizedBox(width: 10),
-                    Expanded(child: Text('處理中...', style: TextStyle(fontWeight: FontWeight.w800))),
+                    Expanded(
+                      child: Text(
+                        '處理中...',
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ),
                   ],
                 ),
               ],

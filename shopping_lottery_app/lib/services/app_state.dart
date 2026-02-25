@@ -1,230 +1,297 @@
 // lib/services/app_state.dart
-import 'package:flutter/material.dart';
-import '../models/product.dart';
-import '../models/order.dart';
-import '../models/cart_item.dart';
-import 'notification_service.dart';
+//
+// ✅ AppState（正式版｜完整版｜可直接編譯）
+// ----------------------------------------------------
+// 修正：所有 directives（import/export/part）都必須在任何宣告（class/var/function）之前
+// ----------------------------------------------------
+// 功能：
+// - 監聽登入狀態（FirebaseAuth.userChanges）
+// - 讀取 users/{uid} 使用者文件（role、points、displayName 等）
+// - adminMode（可用於前後台切換、AdminGate）
+// - SharedPreferences：記住 adminMode、localeCode
+//
+// 需要套件：firebase_auth, cloud_firestore, shared_preferences, flutter foundation
+// ----------------------------------------------------
 
-/// 全域應用狀態管理（購物車、訂單、積分、收藏）
-///
-/// 管理購物流程：
-/// - 商品加入購物車
-/// - 收藏 / 取消收藏
-/// - 結帳產生訂單
-/// - 積分累積
-/// - 發送通知
-class AppState extends ChangeNotifier {
-  /// 商品清單（可選：從伺服器或 FirestoreMockService 取得）
-  List<Product> products = [];
+import 'dart:async';
 
-  /// 購物車內容
-  List<CartItem> cart = [];
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-  /// 訂單紀錄
-  List<Order> orders = [];
+/// users collection
+const String kUsersCollection = 'users';
 
-  /// 收藏清單
-  List<Product> favorites = [];
+/// 使用者文件常用欄位（你後台/資料若不同可在此統一調整）
+class UserFields {
+  static const String uid = 'uid';
+  static const String email = 'email';
+  static const String displayName = 'displayName';
+  static const String photoUrl = 'photoUrl';
 
-  /// 使用者積分
-  int points = 0;
+  static const String role = 'role'; // user / admin / super_admin / vendor ...
+  static const String points = 'points';
 
-  /// 加入購物車
-  void addToCart(Product p, {int qty = 1}) {
-    final exist = cart.where((c) => c.product.id == p.id).toList();
-    if (exist.isNotEmpty) {
-      exist.first.qty += qty;
-    } else {
-      cart.add(CartItem(product: p, qty: qty));
-    }
-    notifyListeners();
-  }
-
-  /// 從購物車移除商品
-  void removeFromCart(String productId) {
-    cart.removeWhere((c) => c.product.id == productId);
-    notifyListeners();
-  }
-
-  /// 清空購物車
-  void clearCart() {
-    cart.clear();
-    notifyListeners();
-  }
-
-  /// 收藏 / 取消收藏
-  void toggleFavorite(Product p) {
-    final exist = favorites.any((f) => f.id == p.id);
-    if (exist) {
-      favorites.removeWhere((f) => f.id == p.id);
-    } else {
-      favorites.add(p);
-    }
-    notifyListeners();
-  }
-
-  /// 是否為收藏商品
-  bool isFavorite(String id) => favorites.any((f) => f.id == id);
-
-  /// 模擬結帳流程
-  /// - 建立訂單
-  /// - 清空購物車
-  /// - 加積分
-  /// - 發送通知
-  void checkout(NotificationService ns) {
-    if (cart.isEmpty) return;
-
-    final total = cart.fold<int>(
-      0,
-      (sum, e) => sum + e.product.price * e.qty,
-    );
-
-    final order = Order.generate(cart);
-    orders.add(order);
-    addPoints(total ~/ 100); // 每消費 100 元給 1 積分
-
-    ns.addNotification(
-      type: '訂單',
-      title: '付款完成',
-      message: '訂單 ${order.id} 已完成付款，共 ${total} 元。',
-    );
-
-    clearCart();
-  }
-
-  /// 積分：增加
-  void addPoints(int p) {
-    points += p;
-    notifyListeners();
-  }
-
-  /// 積分：消耗
-  void spendPoints(int p) {
-    points = (points - p).clamp(0, 999999);
-    notifyListeners();
-  }
-
-  /// 訂單數量
-  int get orderCount => orders.length;
-
-  /// 購物車內總數量
-  int get cartCount => cart.fold<int>(0, (sum, e) => sum + e.qty);
-
-  /// 購物車總金額
-  int get cartTotal => cart.fold<int>(0, (sum, e) => sum + e.product.price * e.qty);
+  static const String createdAt = 'createdAt';
+  static const String updatedAt = 'updatedAt';
 }
-// lib/services/app_state.dart
-import 'package:flutter/material.dart';
-import '../models/product.dart';
-import '../models/order.dart';
-import '../models/cart_item.dart';
-import 'notification_service.dart';
 
-/// 全域應用狀態管理（購物車、訂單、積分、收藏）
-///
-/// 管理購物流程：
-/// - 商品加入購物車
-/// - 收藏 / 取消收藏
-/// - 結帳產生訂單
-/// - 積分累積
-/// - 發送通知
+/// SharedPreferences keys
+class AppPrefsKeys {
+  static const String adminMode = 'adminModeEnabled';
+  static const String localeCode = 'localeCode';
+}
+
+@immutable
+class AppUserProfile {
+  final String uid;
+  final String? email;
+  final String displayName;
+  final String? photoUrl;
+  final String role;
+  final int points;
+
+  final Map<String, dynamic> raw;
+
+  const AppUserProfile({
+    required this.uid,
+    required this.email,
+    required this.displayName,
+    required this.photoUrl,
+    required this.role,
+    required this.points,
+    required this.raw,
+  });
+
+  static int _toInt(dynamic v) {
+    if (v == null) return 0;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? 0;
+    return 0;
+  }
+
+  factory AppUserProfile.fromDoc(String uid, Map<String, dynamic> data) {
+    return AppUserProfile(
+      uid: uid,
+      email: data[UserFields.email]?.toString(),
+      displayName: (data[UserFields.displayName] ?? 'Osmile 會員').toString(),
+      photoUrl: data[UserFields.photoUrl]?.toString(),
+      role: (data[UserFields.role] ?? 'user').toString(),
+      points: _toInt(data[UserFields.points]),
+      raw: Map<String, dynamic>.from(data),
+    );
+  }
+}
+
 class AppState extends ChangeNotifier {
-  /// 商品清單（可選：從伺服器或 FirestoreMockService 取得）
-  List<Product> products = [];
+  AppState({FirebaseAuth? auth, FirebaseFirestore? firestore})
+    : _auth = auth ?? FirebaseAuth.instance,
+      _db = firestore ?? FirebaseFirestore.instance;
 
-  /// 購物車內容
-  List<CartItem> cart = [];
+  final FirebaseAuth _auth;
+  final FirebaseFirestore _db;
 
-  /// 訂單紀錄
-  List<Order> orders = [];
+  SharedPreferences? _prefs;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
 
-  /// 收藏清單
-  List<Product> favorites = [];
+  bool _bootstrapped = false;
+  bool _loading = false;
+  String? _error;
 
-  /// 使用者積分
-  int points = 0;
+  User? _firebaseUser;
+  AppUserProfile? _profile;
 
-  /// 加入購物車
-  void addToCart(Product p, {int qty = 1}) {
-    final exist = cart.where((c) => c.product.id == p.id).toList();
-    if (exist.isNotEmpty) {
-      exist.first.qty += qty;
-    } else {
-      cart.add(CartItem(product: p, qty: qty));
+  bool _adminModeEnabled = false;
+  String? _localeCode;
+
+  // ---------------- Getters ----------------
+
+  bool get bootstrapped => _bootstrapped;
+  bool get loading => _loading;
+  String? get error => _error;
+
+  User? get firebaseUser => _firebaseUser;
+  AppUserProfile? get profile => _profile;
+
+  String? get uid => _firebaseUser?.uid;
+  bool get isLoggedIn => _firebaseUser != null;
+
+  bool get adminModeEnabled => _adminModeEnabled;
+  String? get localeCode => _localeCode;
+
+  String get role => _profile?.role ?? 'user';
+  bool get isAdmin => role == 'admin' || role == 'super_admin';
+  bool get isSuperAdmin => role == 'super_admin';
+  int get points => _profile?.points ?? 0;
+
+  // ---------------- Bootstrap ----------------
+
+  /// ✅ 建議在 main() Provider 建立後呼叫一次：
+  /// context.read<AppState>().bootstrap();
+  Future<void> bootstrap() async {
+    if (_bootstrapped) return;
+
+    _setLoading(true);
+    _error = null;
+
+    try {
+      _prefs = await SharedPreferences.getInstance();
+      _adminModeEnabled = _prefs?.getBool(AppPrefsKeys.adminMode) ?? false;
+      _localeCode = _prefs?.getString(AppPrefsKeys.localeCode);
+
+      // 先抓目前 user（避免等第一個 stream event）
+      _firebaseUser = _auth.currentUser;
+
+      // 監聽登入狀態變化
+      _authSub?.cancel();
+      _authSub = _auth.userChanges().listen((u) {
+        _firebaseUser = u;
+        _error = null;
+
+        // 登出：清掉 profile 並取消 profile 監聽
+        if (u == null) {
+          _profile = null;
+          _cancelProfileSub();
+          notifyListeners();
+          return;
+        }
+
+        // 登入：確保 user doc 存在並開始監聽 profile
+        _ensureUserDoc(u).then((_) {
+          _startProfileListener(u.uid);
+        });
+        notifyListeners();
+      });
+
+      // 若一開始就已登入，直接監聽 profile
+      if (_firebaseUser != null) {
+        await _ensureUserDoc(_firebaseUser!);
+        _startProfileListener(_firebaseUser!.uid);
+      }
+
+      _bootstrapped = true;
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _setLoading(false);
     }
-    notifyListeners();
   }
 
-  /// 從購物車移除商品
-  void removeFromCart(String productId) {
-    cart.removeWhere((c) => c.product.id == productId);
-    notifyListeners();
-  }
+  // ---------------- Public Actions ----------------
 
-  /// 清空購物車
-  void clearCart() {
-    cart.clear();
-    notifyListeners();
-  }
-
-  /// 收藏 / 取消收藏
-  void toggleFavorite(Product p) {
-    final exist = favorites.any((f) => f.id == p.id);
-    if (exist) {
-      favorites.removeWhere((f) => f.id == p.id);
-    } else {
-      favorites.add(p);
+  Future<void> signOut() async {
+    try {
+      await _auth.signOut();
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
     }
+  }
+
+  /// ✅ 開關 adminMode（你可用來切換顯示後台入口）
+  Future<void> setAdminModeEnabled(bool enabled) async {
+    _adminModeEnabled = enabled;
+    notifyListeners();
+    try {
+      await _prefs?.setBool(AppPrefsKeys.adminMode, enabled);
+    } catch (_) {}
+  }
+
+  /// ✅ 設定語系（如果你有 i18n）
+  Future<void> setLocaleCode(String? code) async {
+    _localeCode = code;
+    notifyListeners();
+    try {
+      if (code == null || code.trim().isEmpty) {
+        await _prefs?.remove(AppPrefsKeys.localeCode);
+      } else {
+        await _prefs?.setString(AppPrefsKeys.localeCode, code.trim());
+      }
+    } catch (_) {}
+  }
+
+  /// ✅ 強制重新拉一次 profile（不靠 stream）
+  Future<void> refreshProfileOnce() async {
+    final u = _firebaseUser;
+    if (u == null) return;
+
+    _setLoading(true);
+    _error = null;
+
+    try {
+      final snap = await _db.collection(kUsersCollection).doc(u.uid).get();
+      final data = snap.data();
+      if (data != null) {
+        _profile = AppUserProfile.fromDoc(u.uid, data);
+      }
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _setLoading(false);
+    }
+  }
+
+  // ---------------- Internals ----------------
+
+  void _setLoading(bool v) {
+    _loading = v;
     notifyListeners();
   }
 
-  /// 是否為收藏商品
-  bool isFavorite(String id) => favorites.any((f) => f.id == id);
+  Future<void> _ensureUserDoc(User u) async {
+    final ref = _db.collection(kUsersCollection).doc(u.uid);
+    final snap = await ref.get();
+    if (snap.exists) return;
 
-  /// 模擬結帳流程
-  /// - 建立訂單
-  /// - 清空購物車
-  /// - 加積分
-  /// - 發送通知
-  void checkout(NotificationService ns) {
-    if (cart.isEmpty) return;
-
-    final total = cart.fold<int>(
-      0,
-      (sum, e) => sum + e.product.price * e.qty,
-    );
-
-    final order = Order.generate(cart);
-    orders.add(order);
-    addPoints(total ~/ 100); // 每消費 100 元給 1 積分
-
-    ns.addNotification(
-      type: '訂單',
-      title: '付款完成',
-      message: '訂單 ${order.id} 已完成付款，共 ${total} 元。',
-    );
-
-    clearCart();
+    final now = FieldValue.serverTimestamp();
+    await ref.set({
+      UserFields.uid: u.uid,
+      UserFields.email: u.email,
+      UserFields.displayName: u.displayName ?? 'Osmile 會員',
+      UserFields.photoUrl: u.photoURL,
+      UserFields.role: 'user',
+      UserFields.points: 0,
+      UserFields.createdAt: now,
+      UserFields.updatedAt: now,
+    }, SetOptions(merge: true));
   }
 
-  /// 積分：增加
-  void addPoints(int p) {
-    points += p;
-    notifyListeners();
+  void _startProfileListener(String uid) {
+    _cancelProfileSub();
+    _profileSub = _db
+        .collection(kUsersCollection)
+        .doc(uid)
+        .snapshots()
+        .listen(
+          (snap) {
+            final data = snap.data();
+            if (data == null) {
+              _profile = null;
+            } else {
+              _profile = AppUserProfile.fromDoc(uid, data);
+            }
+            _error = null;
+            notifyListeners();
+          },
+          onError: (e) {
+            _error = e.toString();
+            notifyListeners();
+          },
+        );
   }
 
-  /// 積分：消耗
-  void spendPoints(int p) {
-    points = (points - p).clamp(0, 999999);
-    notifyListeners();
+  void _cancelProfileSub() {
+    _profileSub?.cancel();
+    _profileSub = null;
   }
 
-  /// 訂單數量
-  int get orderCount => orders.length;
-
-  /// 購物車內總數量
-  int get cartCount => cart.fold<int>(0, (sum, e) => sum + e.qty);
-
-  /// 購物車總金額
-  int get cartTotal => cart.fold<int>(0, (sum, e) => sum + e.product.price * e.qty);
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    _cancelProfileSub();
+    super.dispose();
+  }
 }

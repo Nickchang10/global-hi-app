@@ -2,6 +2,10 @@
 //
 // ✅ AnnouncementReadStats（公告閱讀統計｜最終完整版｜可編譯｜Web/Chrome OK）
 // ------------------------------------------------------------
+// ✅ 修正 deprecated：surfaceVariant → surfaceContainerHighest
+// ✅ 修正 deprecated：withOpacity(...) → withValues(alpha: ...)
+// ------------------------------------------------------------
+//
 // 需求功能：
 // - 統計：總人數（users）、已讀（announcements/{id}/reads）、未讀、閱讀率
 // - UI：ProgressBar + Summary + 可選角色分布（admin/vendor/buyer...）
@@ -43,8 +47,9 @@ class AnnouncementReadStats extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    final usersStream =
-        FirebaseFirestore.instance.collection(usersCollection).snapshots();
+    final usersStream = FirebaseFirestore.instance
+        .collection(usersCollection)
+        .snapshots();
 
     final readsStream = FirebaseFirestore.instance
         .collection(announcementsCollection)
@@ -67,10 +72,7 @@ class AnnouncementReadStats extends StatelessWidget {
 
         final totalUsers = usersSnap.data!.size;
         if (totalUsers <= 0) {
-          return _EmptyCard(
-            title: '公告閱讀統計',
-            message: '目前 users 集合為空，無法計算閱讀率。',
-          );
+          return _EmptyCard(title: '公告閱讀統計', message: '目前 users 集合為空，無法計算閱讀率。');
         }
 
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -120,8 +122,10 @@ class AnnouncementReadStats extends StatelessWidget {
                   children: [
                     const Text(
                       '公告閱讀統計',
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                      ),
                     ),
                     const SizedBox(height: 12),
 
@@ -131,7 +135,9 @@ class AnnouncementReadStats extends StatelessWidget {
                       child: LinearProgressIndicator(
                         value: rate.clamp(0.0, 1.0),
                         minHeight: 10,
-                        backgroundColor: cs.surfaceVariant.withOpacity(0.45),
+                        backgroundColor: cs.surfaceContainerHighest.withValues(
+                          alpha: 0.45,
+                        ),
                         color: cs.primary,
                       ),
                     ),
@@ -199,7 +205,8 @@ class AnnouncementReadStats extends StatelessWidget {
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: const TextStyle(
-                                          fontWeight: FontWeight.w800),
+                                        fontWeight: FontWeight.w800,
+                                      ),
                                     ),
                                   ),
                                   const SizedBox(width: 10),
@@ -209,8 +216,9 @@ class AnnouncementReadStats extends StatelessWidget {
                                       child: LinearProgressIndicator(
                                         value: p.clamp(0.0, 1.0),
                                         minHeight: 8,
-                                        backgroundColor: cs.surfaceVariant
-                                            .withOpacity(0.45),
+                                        backgroundColor: cs
+                                            .surfaceContainerHighest
+                                            .withValues(alpha: 0.45),
                                         color: cs.secondary,
                                       ),
                                     ),
@@ -254,8 +262,8 @@ class AnnouncementReadStats extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withOpacity(0.25)),
-        color: color.withOpacity(0.08),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+        color: color.withValues(alpha: 0.08),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -263,16 +271,19 @@ class AnnouncementReadStats extends StatelessWidget {
           Container(
             width: 10,
             height: 10,
-            decoration:
-                BoxDecoration(color: color, shape: BoxShape.circle),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(label,
-                  style: const TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w800)),
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
               const SizedBox(height: 4),
               Text(
                 value,
@@ -314,10 +325,7 @@ class _LoadingCard extends StatelessWidget {
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: Text(
-                label,
-                style: TextStyle(color: cs.onSurfaceVariant),
-              ),
+              child: Text(label, style: TextStyle(color: cs.onSurfaceVariant)),
             ),
           ],
         ),
@@ -330,10 +338,7 @@ class _ErrorCard extends StatelessWidget {
   final String title;
   final String message;
 
-  const _ErrorCard({
-    required this.title,
-    required this.message,
-  });
+  const _ErrorCard({required this.title, required this.message});
 
   @override
   Widget build(BuildContext context) {
@@ -342,18 +347,17 @@ class _ErrorCard extends StatelessWidget {
       elevation: 0,
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title,
-              style: TextStyle(
-                fontWeight: FontWeight.w900,
-                color: cs.error,
-              )),
-          const SizedBox(height: 8),
-          Text(
-            message,
-            style: TextStyle(color: cs.onSurfaceVariant),
-          ),
-        ]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: TextStyle(fontWeight: FontWeight.w900, color: cs.error),
+            ),
+            const SizedBox(height: 8),
+            Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
+          ],
+        ),
       ),
     );
   }
@@ -363,10 +367,7 @@ class _EmptyCard extends StatelessWidget {
   final String title;
   final String message;
 
-  const _EmptyCard({
-    required this.title,
-    required this.message,
-  });
+  const _EmptyCard({required this.title, required this.message});
 
   @override
   Widget build(BuildContext context) {
@@ -375,11 +376,14 @@ class _EmptyCard extends StatelessWidget {
       elevation: 0,
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-          const SizedBox(height: 8),
-          Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
-        ]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+            const SizedBox(height: 8),
+            Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
+          ],
+        ),
       ),
     );
   }

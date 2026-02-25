@@ -1,9 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../services/auth/auth_service.dart';
 
-/// 🔑 忘記密碼頁（模擬版）
-///
-/// 功能：
-/// ✅ 輸入 Email 模擬發送重設連結
 class ForgotPasswordPage extends StatefulWidget {
   const ForgotPasswordPage({super.key});
 
@@ -12,80 +9,67 @@ class ForgotPasswordPage extends StatefulWidget {
 }
 
 class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
-  final _emailCtrl = TextEditingController();
-  final _formKey = GlobalKey<FormState>();
-  bool _sent = false;
+  final _email = TextEditingController();
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    setState(() => _loading = true);
+    final messenger = ScaffoldMessenger.of(context);
+
+    try {
+      await AuthService.instance.sendPasswordReset(_email.text);
+      if (!mounted) return;
+      messenger.showSnackBar(const SnackBar(content: Text('已寄出重設密碼信件（請檢查信箱）')));
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text(AuthService.formatAuthError(e))),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("忘記密碼"),
-        backgroundColor: Colors.blueAccent,
-        foregroundColor: Colors.white,
-      ),
-      backgroundColor: const Color(0xFFF7F9FB),
+      appBar: AppBar(title: const Text('重設密碼')),
       body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: !_sent ? _buildForm(context) : _buildSuccessMessage(),
-      ),
-    );
-  }
-
-  Widget _buildForm(BuildContext context) {
-    return Form(
-      key: _formKey,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.lock_reset, size: 80, color: Colors.blueAccent),
-          const SizedBox(height: 16),
-          const Text(
-            "請輸入註冊 Email，我們會寄送重設密碼連結給你。",
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 20),
-          TextFormField(
-            controller: _emailCtrl,
-            decoration: const InputDecoration(
-              labelText: "Email",
-              prefixIcon: Icon(Icons.email),
-              border: OutlineInputBorder(),
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: _email,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                labelText: 'Email',
+                prefixIcon: Icon(Icons.mail_outline),
+              ),
             ),
-            validator: (v) =>
-                (v != null && v.contains("@")) ? null : "請輸入有效 Email",
-          ),
-          const SizedBox(height: 24),
-          ElevatedButton(
-            onPressed: () {
-              if (!(_formKey.currentState?.validate() ?? false)) return;
-              setState(() => _sent = true);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blueAccent,
-              foregroundColor: Colors.white,
-              minimumSize: const Size(double.infinity, 50),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton(
+                onPressed: _loading ? null : _send,
+                child: _loading
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('寄出重設密碼信'),
+              ),
             ),
-            child: const Text("寄送重設連結"),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSuccessMessage() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: const [
-          Icon(Icons.check_circle, color: Colors.green, size: 80),
-          SizedBox(height: 20),
-          Text(
-            "✅ 重設連結已寄出\n請到信箱查看郵件！",
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 18),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

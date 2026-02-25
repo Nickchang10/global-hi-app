@@ -1,230 +1,621 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../services/firestore_mock_service.dart';
-import '../services/notification_service.dart';
+// lib/pages/points_mission_page.dart
+//
+// ✅ PointsMissionPage（點數任務中心｜最終完整版｜已修正 lint）
+// ------------------------------------------------------------
+// ✅ 修正重點：
+// - ✅ curly_braces_in_flow_control_structures：所有 if 單行語句一律加上 { }
+// - ✅ 不依賴 FirestoreMockService
+// - ✅ FirebaseAuth + Firestore：
+//   - 任務：points_missions
+//   - 使用者任務完成紀錄：users/{uid}/points_mission_logs/{missionId}
+//   - 點數：users/{uid}.points
+//
+// 建議資料結構：
+// points_missions/{mid}:
+//   - title: String
+//   - desc: String
+//   - points: num
+//   - isActive: bool
+//   - sort: num
+//   - cooldownHours: num (optional, default 24)  // 每幾小時可再做一次
+//   - updatedAt, createdAt
+//
+// users/{uid}:
+//   - points: num
+//
+// users/{uid}/points_mission_logs/{mid}:
+//   - missionId: String
+//   - title: String
+//   - points: num
+//   - status: "completed"
+//   - completedAt: Timestamp
+// ------------------------------------------------------------
 
-/// 🎯 積分任務中心（完整可用）
-///
-/// 功能：
-/// - 每日簽到獎勵
-/// - 分享 App 任務
-/// - 抽獎任務
-/// - 自動發送積分通知
-/// - 顯示當前積分與任務完成狀態
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
 class PointsMissionPage extends StatefulWidget {
   const PointsMissionPage({super.key});
+
+  static const routeName = '/points_missions';
 
   @override
   State<PointsMissionPage> createState() => _PointsMissionPageState();
 }
 
 class _PointsMissionPageState extends State<PointsMissionPage> {
-  bool signedInToday = false;
-  bool sharedApp = false;
-  bool didLottery = false;
+  final _auth = FirebaseAuth.instance;
+  final _fs = FirebaseFirestore.instance;
 
-  @override
-  Widget build(BuildContext context) {
-    final store = context.watch<FirestoreMockService>();
-    final notifier = NotificationService.instance;
+  bool _busy = false;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("🎯 積分任務中心"),
-        backgroundColor: Colors.blueAccent,
-        foregroundColor: Colors.white,
+  User? get _user => _auth.currentUser;
+
+  String _s(dynamic v, [String fallback = '']) => (v ?? fallback).toString();
+
+  num _asNum(dynamic v, {num fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is num) return v;
+    if (v is String) return num.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  DocumentReference<Map<String, dynamic>> _userRef(String uid) =>
+      _fs.collection('users').doc(uid);
+
+  CollectionReference<Map<String, dynamic>> _missionsRef() =>
+      _fs.collection('points_missions');
+
+  DocumentReference<Map<String, dynamic>> _logRef(String uid, String mid) => _fs
+      .collection('users')
+      .doc(uid)
+      .collection('points_mission_logs')
+      .doc(mid);
+
+  void _goLogin() {
+    Navigator.of(context, rootNavigator: true).pushNamed('/login');
+  }
+
+  Future<void> _seedDemoMissions() async {
+    if (_busy) {
+      return;
+    }
+    setState(() => _busy = true);
+
+    try {
+      final batch = _fs.batch();
+
+      final demo = <Map<String, dynamic>>[
+        {
+          'id': 'm1',
+          'title': '每日登入',
+          'desc': '每天打開 App 一次即可獲得點數（示範）。',
+          'points': 10,
+          'isActive': true,
+          'sort': 10,
+          'cooldownHours': 24,
+        },
+        {
+          'id': 'm2',
+          'title': '完成一筆下單',
+          'desc': '完成付款並建立訂單即可獲得點數（示範）。',
+          'points': 50,
+          'isActive': true,
+          'sort': 20,
+          'cooldownHours': 24,
+        },
+        {
+          'id': 'm3',
+          'title': '分享商品',
+          'desc': '分享任一商品到社群即可獲得點數（示範）。',
+          'points': 15,
+          'isActive': true,
+          'sort': 30,
+          'cooldownHours': 6,
+        },
+        {
+          'id': 'm4',
+          'title': '填寫個人資料',
+          'desc': '補齊姓名/電話等資料即可獲得點數（示範）。',
+          'points': 30,
+          'isActive': true,
+          'sort': 40,
+          'cooldownHours': 999999, // 幾乎只能做一次
+        },
+      ];
+
+      for (final m in demo) {
+        final id = _s(m['id']);
+        batch.set(_missionsRef().doc(id), {
+          ...m,
+          'updatedAt': FieldValue.serverTimestamp(),
+          'createdAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+
+      await batch.commit();
+
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('✅ 已建立示範任務：${demo.length} 筆')));
+      setState(() {});
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 建立示範任務失敗：$e')));
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  Future<void> _completeMission({
+    required String uid,
+    required String mid,
+    required Map<String, dynamic> mission,
+  }) async {
+    if (_busy) {
+      return;
+    }
+
+    final title = _s(mission['title'], '任務');
+    final points = _asNum(mission['points'], fallback: 0);
+    final isActive = (mission['isActive'] ?? true) == true;
+    final cooldownHours = _asNum(
+      mission['cooldownHours'],
+      fallback: 24,
+    ).toInt();
+
+    if (!isActive) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('此任務目前未開放')));
+      return;
+    }
+    if (points <= 0) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('任務點數設定不正確（points <= 0）')));
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('完成任務'),
+        content: Text('是否完成「$title」並領取 $points 點？'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: "重置任務",
-            onPressed: () {
-              setState(() {
-                signedInToday = false;
-                sharedApp = false;
-                didLottery = false;
-              });
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("✅ 今日任務已重置")),
-              );
-            },
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
           ),
-        ],
-      ),
-      backgroundColor: const Color(0xFFF7F9FB),
-      body: Column(
-        children: [
-          // 積分狀態列
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Colors.blueAccent, Colors.lightBlueAccent],
-              ),
-            ),
-            child: Column(
-              children: [
-                Text(
-                  "💎 目前積分：${store.userPoints}",
-                  style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  "完成任務可獲得更多積分！",
-                  style: TextStyle(color: Colors.white70),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(12),
-              children: [
-                _buildMissionCard(
-                  icon: Icons.calendar_today,
-                  title: "每日簽到",
-                  desc: "簽到即可獲得 20 積分。",
-                  done: signedInToday,
-                  onPressed: () {
-                    if (signedInToday) return;
-                    store.addPoints(20);
-                    notifier.addNotification(
-                      title: "📅 每日簽到成功",
-                      message: "您獲得了 20 積分！",
-                      type: "mission",
-                      icon: Icons.check_circle,
-                    );
-                    setState(() => signedInToday = true);
-                  },
-                ),
-                _buildMissionCard(
-                  icon: Icons.share,
-                  title: "分享 Osmile App",
-                  desc: "邀請朋友一起使用即可獲得 50 積分。",
-                  done: sharedApp,
-                  onPressed: () {
-                    if (sharedApp) return;
-                    store.addPoints(50);
-                    notifier.addNotification(
-                      title: "🤝 分享成功",
-                      message: "感謝您的分享！獲得 50 積分！",
-                      type: "mission",
-                      icon: Icons.share,
-                    );
-                    setState(() => sharedApp = true);
-                  },
-                ),
-                _buildMissionCard(
-                  icon: Icons.casino,
-                  title: "完成一次抽獎",
-                  desc: "體驗抽獎活動可獲得 30 積分。",
-                  done: didLottery,
-                  onPressed: () {
-                    if (didLottery) return;
-                    store.addPoints(30);
-                    notifier.addNotification(
-                      title: "🎰 抽獎任務完成",
-                      message: "恭喜！獲得 30 積分！",
-                      type: "mission",
-                      icon: Icons.casino,
-                    );
-                    setState(() => didLottery = true);
-                  },
-                ),
-                const SizedBox(height: 16),
-                Card(
-                  margin: const EdgeInsets.symmetric(vertical: 10),
-                  color: Colors.lightBlue.shade50,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      children: [
-                        const Text(
-                          "🔥 額外任務：連續簽到 7 天可再得 200 積分！",
-                          style: TextStyle(
-                            color: Colors.blueAccent,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        ElevatedButton.icon(
-                          onPressed: () {
-                            store.addPoints(200);
-                            notifier.addNotification(
-                              title: "🏅 連續簽到達成",
-                              message: "恭喜您！額外獲得 200 積分！",
-                              type: "mission",
-                              icon: Icons.emoji_events,
-                            );
-                          },
-                          icon: const Icon(Icons.emoji_events),
-                          label: const Text("領取獎勵"),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.orangeAccent,
-                            foregroundColor: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('領取'),
           ),
         ],
       ),
     );
+
+    if (ok != true) {
+      return;
+    }
+
+    setState(() => _busy = true);
+
+    try {
+      final userDoc = _userRef(uid);
+      final logDoc = _logRef(uid, mid);
+
+      await _fs.runTransaction((tx) async {
+        final userSnap = await tx.get(userDoc);
+        final logSnap = await tx.get(logDoc);
+
+        // 冷卻判斷：已完成且未過 cooldownHours -> 不可再領
+        final now = DateTime.now();
+
+        if (logSnap.exists) {
+          final data = logSnap.data() ?? <String, dynamic>{};
+          final ts = data['completedAt'];
+          DateTime? last;
+          if (ts is Timestamp) {
+            last = ts.toDate();
+          }
+          if (last != null && cooldownHours > 0 && cooldownHours < 999999) {
+            final next = last.add(Duration(hours: cooldownHours));
+            if (now.isBefore(next)) {
+              throw Exception('冷卻中，下一次可領取：${next.toLocal()}');
+            }
+          }
+          if (cooldownHours >= 999999 && last != null) {
+            throw Exception('此任務只能完成一次');
+          }
+        }
+
+        final currentPoints = _asNum(userSnap.data()?['points'], fallback: 0);
+
+        tx.set(userDoc, {
+          'points': currentPoints + points,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        tx.set(logDoc, {
+          'missionId': mid,
+          'title': title,
+          'points': points,
+          'status': 'completed',
+          'completedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      });
+
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('✅ 已領取 $points 點：$title')));
+      setState(() {});
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 領取失敗：$e')));
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
   }
 
-  /// 🧩 任務卡片組件
-  Widget _buildMissionCard({
-    required IconData icon,
-    required String title,
-    required String desc,
-    required bool done,
-    required VoidCallback onPressed,
-  }) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 3,
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: done ? Colors.grey : Colors.blueAccent,
-          child: Icon(icon, color: Colors.white),
-        ),
-        title: Text(
-          title,
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: done ? Colors.grey : Colors.black87,
+  @override
+  Widget build(BuildContext context) {
+    final u = _user;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('點數任務中心'),
+        actions: [
+          IconButton(
+            tooltip: '建立示範任務',
+            onPressed: _busy ? null : _seedDemoMissions,
+            icon: const Icon(Icons.auto_awesome),
+          ),
+          IconButton(
+            tooltip: '重新整理',
+            onPressed: _busy ? null : () => setState(() {}),
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: u == null ? _needLogin() : _content(u.uid),
+    );
+  }
+
+  Widget _needLogin() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lock_outline, size: 56, color: Colors.grey),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '請先登入才能查看點數任務',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton(onPressed: _goLogin, child: const Text('前往登入')),
+                ],
+              ),
+            ),
           ),
         ),
-        subtitle: Text(
-          done ? "任務已完成 🎉" : desc,
-          style: TextStyle(
-            color: done ? Colors.grey : Colors.black54,
-            fontSize: 13,
-          ),
-        ),
-        trailing: done
-            ? const Icon(Icons.check_circle, color: Colors.grey)
-            : ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+      ),
+    );
+  }
+
+  Widget _content(String uid) {
+    final userStream = _userRef(uid).snapshots();
+
+    Query<Map<String, dynamic>> q = _missionsRef();
+    q = q.where('isActive', isEqualTo: true).orderBy('sort');
+
+    final missionsStream = q.snapshots();
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: userStream,
+      builder: (context, uSnap) {
+        if (uSnap.hasError) {
+          return _errorBox('讀取使用者點數失敗：${uSnap.error}');
+        }
+        if (!uSnap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final userData = uSnap.data!.data() ?? <String, dynamic>{};
+        final points = _asNum(userData['points'], fallback: 0);
+
+        return Column(
+          children: [
+            _top(points: points),
+            const Divider(height: 1),
+            Expanded(
+              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: missionsStream,
+                builder: (context, mSnap) {
+                  if (mSnap.hasError) {
+                    return _errorBox('讀取任務失敗：${mSnap.error}');
+                  }
+                  if (!mSnap.hasData) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  final docs = mSnap.data!.docs;
+                  if (docs.isEmpty) {
+                    return ListView(
+                      padding: const EdgeInsets.all(16),
+                      children: [_empty('目前沒有任務（可按右上角建立示範任務）')],
+                    );
+                  }
+
+                  return ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: docs.length,
+                    itemBuilder: (context, i) {
+                      final doc = docs[i];
+                      final m = doc.data();
+                      final mid = doc.id;
+
+                      final title = _s(m['title'], '任務');
+                      final desc = _s(m['desc'], '');
+                      final p = _asNum(m['points'], fallback: 0).toInt();
+                      final cooldown = _asNum(
+                        m['cooldownHours'],
+                        fallback: 24,
+                      ).toInt();
+
+                      return Card(
+                        elevation: 1,
+                        margin: const EdgeInsets.only(bottom: 12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: 46,
+                                height: 46,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primaryContainer,
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: const Icon(Icons.task_alt),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      title,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      desc.isEmpty ? '—' : desc,
+                                      style: const TextStyle(
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: [
+                                        _chip('獎勵', '$p 點'),
+                                        _chip(
+                                          '冷卻',
+                                          cooldown >= 999999
+                                              ? '一次性'
+                                              : '${cooldown}h',
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 10),
+                                    StreamBuilder<
+                                      DocumentSnapshot<Map<String, dynamic>>
+                                    >(
+                                      stream: _logRef(uid, mid).snapshots(),
+                                      builder: (context, lSnap) {
+                                        final log = lSnap.data?.data();
+                                        final status = _s(log?['status'], '');
+                                        final completedAt = log?['completedAt'];
+
+                                        DateTime? last;
+                                        if (completedAt is Timestamp) {
+                                          last = completedAt.toDate();
+                                        }
+
+                                        final now = DateTime.now();
+                                        bool cooling = false;
+                                        String? coolingText;
+
+                                        if (last != null) {
+                                          if (cooldown >= 999999) {
+                                            cooling = true;
+                                            coolingText = '已完成（一次性）';
+                                          } else {
+                                            final next = last.add(
+                                              Duration(hours: cooldown),
+                                            );
+                                            if (now.isBefore(next)) {
+                                              cooling = true;
+                                              coolingText =
+                                                  '冷卻中（下次：${next.toLocal()}）';
+                                            }
+                                          }
+                                        }
+
+                                        final canClaim = !_busy && !cooling;
+
+                                        return Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                cooling
+                                                    ? (coolingText ?? '冷卻中')
+                                                    : (status == 'completed'
+                                                          ? '可再次領取'
+                                                          : '尚未完成'),
+                                                style: TextStyle(
+                                                  color: cooling
+                                                      ? Colors.orange
+                                                      : Colors.blueGrey,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                            FilledButton(
+                                              onPressed: canClaim
+                                                  ? () => _completeMission(
+                                                      uid: uid,
+                                                      mid: mid,
+                                                      mission: m,
+                                                    )
+                                                  : null,
+                                              child: Text(
+                                                cooling ? '冷卻中' : '領取',
+                                              ),
+                                            ),
+                                          ],
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _top({required num points}) {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Card(
+        elevation: 0,
+        color: Colors.grey.shade100,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              const Icon(Icons.stars_outlined, color: Colors.amber),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '目前點數：$points',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
                   ),
                 ),
-                onPressed: onPressed,
-                child: const Text("領取"),
               ),
+              if (_busy) ...[
+                const SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _chip(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: Colors.black12),
+      ),
+      child: Text('$k：$v', style: const TextStyle(fontSize: 12)),
+    );
+  }
+
+  Widget _empty(String text) {
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const Icon(Icons.info_outline, color: Colors.grey),
+            const SizedBox(width: 10),
+            Expanded(child: Text(text)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _errorBox(String text) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 680),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.red),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(text)),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

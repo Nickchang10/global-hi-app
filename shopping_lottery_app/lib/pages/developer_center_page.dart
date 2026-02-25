@@ -1,352 +1,498 @@
-// lib/pages/developer_center_page.dart
-
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter/services.dart';
 
-import 'package:osmile_shopping_app/pages/home_page.dart';
-import 'package:osmile_shopping_app/pages/notification_debug_page.dart';
-import 'package:osmile_shopping_app/pages/order_debug_page.dart';
-import 'package:osmile_shopping_app/pages/lottery_debug_page.dart';
-
-import 'package:osmile_shopping_app/services/firestore_mock_service.dart';
-import 'package:osmile_shopping_app/services/cart_service.dart';
-import 'package:osmile_shopping_app/services/order_service.dart';
-import 'package:osmile_shopping_app/services/notification_service.dart';
-
-/// 🧩 Osmile 開發測試中心（Developer Playground）
-///
-/// 功能：
-/// ✅ 通知測試工具
-/// ✅ 訂單模擬流程
-/// ✅ 抽獎模擬中獎/失敗
-/// ✅ 一鍵模擬整個購物 → 結帳 → 發通知 → 積分入帳
-/// ✅ 頁面頂端顯示目前積分 + 未讀通知數
-class DeveloperCenterPage extends StatelessWidget {
+/// ✅ DeveloperCenterPage（開發者中心｜完整版｜移除 FirestoreMockService.userPoints）
+/// ------------------------------------------------------------
+/// 修正：把不合法的 Icons.locks.privacy_tip_outlined 改為 Icons.privacy_tip_outlined
+/// ------------------------------------------------------------
+class DeveloperCenterPage extends StatefulWidget {
   const DeveloperCenterPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final firestore = context.watch<FirestoreMockService>();
-    final notify = context.watch<NotificationService>();
-    final cart = CartService.instance;
-    final order = OrderService.instance;
+  State<DeveloperCenterPage> createState() => _DeveloperCenterPageState();
+}
 
-    final int points = firestore.userPoints;
-    final int unreadCount =
-        notify.notifications.where((n) => n["unread"] == true).length;
+class _DeveloperCenterPageState extends State<DeveloperCenterPage> {
+  final _auth = FirebaseAuth.instance;
+  final _fs = FirebaseFirestore.instance;
+
+  bool _busy = false;
+
+  User? get _user => _auth.currentUser;
+
+  DocumentReference<Map<String, dynamic>> _userRef(String uid) =>
+      _fs.collection('users').doc(uid);
+
+  num _asNum(dynamic v, {num fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is num) return v;
+    if (v is String) return num.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = _user;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("🧩 開發測試中心"),
-        backgroundColor: Colors.blueAccent,
-        foregroundColor: Colors.white,
+        title: const Text('Developer Center'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.home),
-            tooltip: "回首頁",
-            onPressed: () => Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const HomePage()),
-            ),
+            tooltip: '重新整理',
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh),
           ),
         ],
       ),
-      backgroundColor: const Color(0xFFF6F7FB),
-      body: ListView(
+      body: user == null ? _needLogin(context) : _content(user),
+    );
+  }
+
+  Widget _needLogin(BuildContext context) {
+    return Center(
+      child: Padding(
         padding: const EdgeInsets.all(16),
-        children: [
-          // 🧮 頂端狀態摘要：目前積分 + 未讀通知
-          _buildStatusSummary(points, unreadCount),
-          const SizedBox(height: 16),
-
-          // 標題 Header
-          _buildHeader(),
-          const SizedBox(height: 16),
-
-          // 🔔 通知測試工具
-          _buildToolCard(
-            context,
-            icon: Icons.notifications_active,
-            color: Colors.blueAccent,
-            title: "🔔 通知測試工具",
-            desc: "測試活動 / 訂單 / 積分 / 收藏 / 系統類通知",
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const NotificationDebugPage()),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // ✅ 修正：合法 IconData 常量
+                  const Icon(
+                    Icons.privacy_tip_outlined,
+                    size: 56,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '請先登入才能使用開發者中心',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: () => Navigator.of(
+                      context,
+                      rootNavigator: true,
+                    ).pushNamed('/login'),
+                    child: const Text('前往登入'),
+                  ),
+                ],
+              ),
             ),
           ),
-
-          // 📦 訂單模擬流程
-          _buildToolCard(
-            context,
-            icon: Icons.receipt_long,
-            color: Colors.green,
-            title: "📦 訂單模擬流程",
-            desc: "建立假訂單、手動更新狀態並觸發通知",
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const OrderDebugPage()),
-            ),
-          ),
-
-          // 🎰 抽獎模擬工具
-          _buildToolCard(
-            context,
-            icon: Icons.casino,
-            color: Colors.purple,
-            title: "🎰 抽獎模擬工具",
-            desc: "模擬中獎與失敗通知，測試紅點與中獎邏輯",
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const LotteryDebugPage()),
-            ),
-          ),
-
-          // 🛒 一鍵模擬整個購物流程
-          _buildToolCard(
-            context,
-            icon: Icons.shopping_cart_checkout,
-            color: Colors.orange,
-            title: "🛒 模擬購物流程",
-            desc: "自動加入商品 → 結帳 → 建立訂單 → 發通知 → 積分 +30",
-            onTap: () {
-              final firestoreInstance = FirestoreMockService.instance;
-              final notifyInstance = NotificationService.instance;
-
-              // 取得商品
-              final sampleProduct = firestoreInstance.products.isNotEmpty
-                  ? firestoreInstance.products.first
-                  : null;
-
-              if (sampleProduct == null) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text("⚠️ 沒有商品資料可供測試，請檢查 FirestoreMockService")));
-                return;
-              }
-
-              // 加入購物車
-              cart.clear();
-              cart.add(sampleProduct);
-
-              // 建立假訂單
-              final newOrder = order.createMockOrder();
-
-              // 加 30 積分
-              firestoreInstance.addPoints(30);
-
-              // 通知使用者
-              notifyInstance.addNotification(
-                title: "🛍️ 模擬購物完成",
-                message: "已自動建立訂單 #${newOrder["id"]}，並獲得 30 積分！",
-                type: "order",
-              );
-
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(
-                    "✅ 模擬購物完成：訂單 ${newOrder["id"]} 已建立，積分 +30，通知已送出"),
-                duration: const Duration(seconds: 3),
-              ));
-            },
-          ),
-
-          const SizedBox(height: 30),
-          Center(
-            child: Text(
-              "👨‍💻 此開發中心提供各模擬功能，\n"
-              "動作將同步至通知中心與紅點顯示。",
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.grey, fontSize: 12),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  /// 🔢 頂端狀態摘要：顯示目前積分 + 未讀通知數
-  Widget _buildStatusSummary(int points, int unreadCount) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
+  Widget _content(User user) {
+    final uid = user.uid;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _sectionTitle('帳號資訊'),
+        const SizedBox(height: 8),
+        _accountCard(user),
+
+        const SizedBox(height: 16),
+        _sectionTitle('積分（Firestore users/{uid}.points）'),
+        const SizedBox(height: 8),
+        _pointsCard(uid),
+
+        const SizedBox(height: 16),
+        _sectionTitle('開發者工具'),
+        const SizedBox(height: 8),
+        _toolsCard(uid),
+
+        const SizedBox(height: 16),
+        _sectionTitle('快捷導航（若你的路由存在）'),
+        const SizedBox(height: 8),
+        _navCard(),
+      ],
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Text(
+      text,
+      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+    );
+  }
+
+  Widget _accountCard(User user) {
+    final uid = user.uid;
+    final email = user.email ?? '';
+    final name = user.displayName ?? '';
+
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            _kv('UID', uid, copy: true),
+            const SizedBox(height: 6),
+            _kv('Email', email.isEmpty ? '(無)' : email, copy: email.isNotEmpty),
+            const SizedBox(height: 6),
+            _kv('Display Name', name.isEmpty ? '(無)' : name),
+          ],
+        ),
       ),
-      child: Row(
-        children: [
-          // 積分區塊
-          Expanded(
-            child: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.orange[50],
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: const Icon(Icons.star, color: Colors.orange, size: 22),
-                ),
-                const SizedBox(width: 10),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      "目前積分",
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.black54,
-                          fontWeight: FontWeight.w500),
-                    ),
-                    Text(
-                      "$points 分",
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-              ],
+    );
+  }
+
+  Widget _pointsCard(String uid) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _userRef(uid).snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) return _errorCard('讀取 points 失敗：${snap.error}');
+        if (!snap.hasData) {
+          return const Card(
+            elevation: 1,
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(child: CircularProgressIndicator()),
             ),
-          ),
+          );
+        }
 
-          Container(
-            width: 1,
-            height: 32,
-            color: Colors.grey[300],
-          ),
-          const SizedBox(width: 12),
+        final data = snap.data!.data() ?? const <String, dynamic>{};
+        final points = _asNum(data['points'], fallback: 0);
 
-          // 未讀通知區塊
-          Expanded(
+        return Card(
+          elevation: 1,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
             child: Row(
               children: [
-                Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.blue[50],
-                        borderRadius: BorderRadius.circular(999),
+                const CircleAvatar(child: Icon(Icons.stars_outlined)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '目前積分',
+                        style: TextStyle(fontWeight: FontWeight.w900),
                       ),
-                      child: const Icon(Icons.notifications_active,
-                          color: Colors.blueAccent, size: 22),
-                    ),
-                    if (unreadCount > 0)
-                      Positioned(
-                        right: -2,
-                        top: -2,
-                        child: CircleAvatar(
-                          radius: 8,
-                          backgroundColor: Colors.red,
-                          child: Text(
-                            unreadCount > 9 ? "9+" : "$unreadCount",
-                            style: const TextStyle(
-                                fontSize: 9,
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold),
-                          ),
+                      const SizedBox(height: 4),
+                      Text(
+                        points.toString(),
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
                         ),
                       ),
-                  ],
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 10),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      "未讀通知",
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.black54,
-                          fontWeight: FontWeight.w500),
-                    ),
-                    Text(
-                      unreadCount == 0 ? "目前無未讀" : "$unreadCount 則未讀",
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: unreadCount == 0
-                            ? Colors.green
-                            : Colors.redAccent,
-                      ),
-                    ),
-                  ],
+                FilledButton.tonal(
+                  onPressed: _busy ? null : () => _incrementPoints(uid, 10),
+                  child: const Text('+10'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  onPressed: _busy ? null : () => _incrementPoints(uid, 100),
+                  child: const Text('+100'),
                 ),
               ],
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  /// 頁面標題 Header
-  Widget _buildHeader() {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF42A5F5), Color(0xFF1976D2)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.blue.withOpacity(0.2),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(20),
-      child: Row(
-        children: const [
-          Icon(Icons.developer_mode, color: Colors.white, size: 42),
-          SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              "Osmile 開發測試中心\nDeveloper Playground",
-              style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  height: 1.4),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 共用工具卡片
-  Widget _buildToolCard(
-    BuildContext context, {
-    required IconData icon,
-    required Color color,
-    required String title,
-    required String desc,
-    required VoidCallback onTap,
-  }) {
+  Widget _toolsCard(String uid) {
     return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: color.withOpacity(0.15),
-          child: Icon(icon, color: color),
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton(
+                    onPressed: _busy ? null : () => _resetPoints(uid),
+                    child: _busy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('積分歸零'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _busy ? null : () => _ensureUserDoc(uid),
+                    child: const Text('補齊 users/{uid}'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _busy ? null : _createDemoCoupon,
+                    child: const Text('建立 Demo Coupon'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _busy ? null : _createDemoMission,
+                    child: const Text('建立 Demo Mission'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '以上工具會寫入 Firestore（若規則不允許會失敗）',
+              style: TextStyle(color: Colors.grey),
+            ),
+          ],
         ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(desc, style: const TextStyle(color: Colors.black54)),
-        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-        onTap: onTap,
       ),
     );
+  }
+
+  Widget _navCard() {
+    Widget btn(String label, String route, {Object? args}) {
+      return Expanded(
+        child: OutlinedButton(
+          onPressed: () {
+            try {
+              Navigator.of(context).pushNamed(route, arguments: args);
+            } catch (_) {
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text('路由不存在：$route')));
+            }
+          },
+          child: Text(label),
+        ),
+      );
+    }
+
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                btn('優惠券', '/coupons'),
+                const SizedBox(width: 10),
+                btn('每日任務', '/daily_mission'),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                btn('結帳', '/checkout'),
+                const SizedBox(width: 10),
+                btn('聊天室', '/chat'),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v, {bool copy = false}) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(k, style: const TextStyle(color: Colors.grey)),
+        ),
+        Flexible(
+          child: Text(
+            v,
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (copy) ...[
+          const SizedBox(width: 6),
+          IconButton(
+            tooltip: '複製',
+            icon: const Icon(Icons.copy, size: 18),
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: v));
+              if (!mounted) return;
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('已複製')));
+            },
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _errorCard(String text) {
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red),
+            const SizedBox(width: 10),
+            Expanded(child: Text(text)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _ensureUserDoc(String uid) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await _userRef(uid).set({
+        'points': FieldValue.increment(0),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('✅ 已補齊 users/{uid}')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _incrementPoints(String uid, num delta) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await _userRef(uid).set({
+        'points': FieldValue.increment(delta),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('✅ 已加點：+$delta')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 加點失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _resetPoints(String uid) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await _userRef(uid).set({
+        'points': 0,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('✅ 已歸零積分')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 歸零失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _createDemoCoupon() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+
+    try {
+      final now = DateTime.now();
+      final code = 'WELCOME${now.month}${now.day}${now.hour}${now.minute}';
+
+      await _fs.collection('coupons').add({
+        'code': code,
+        'title': '新手折扣',
+        'description': 'Demo coupon（開發者中心建立）',
+        'type': 'amount',
+        'value': 100,
+        'minSpend': 399,
+        'isActive': true,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('✅ 已建立 Demo Coupon：$code')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 建立 Coupon 失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _createDemoMission() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+
+    try {
+      await _fs.collection('daily_missions').add({
+        'title': '每日登入',
+        'description': '每天登入一次即可領取獎勵（Demo 任務）',
+        'points': 10,
+        'isActive': true,
+        'sort': 1,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('✅ 已建立 Demo Mission')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('❌ 建立 Mission 失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 }

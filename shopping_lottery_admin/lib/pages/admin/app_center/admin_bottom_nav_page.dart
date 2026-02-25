@@ -12,8 +12,10 @@ class AdminBottomNavPage extends StatefulWidget {
 class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
   /// ✅ 前台與後台「必須」用同一份 doc，才叫串接
   /// 建議固定：app_config/bottom_nav
-  final DocumentReference<Map<String, dynamic>> _docRef =
-      FirebaseFirestore.instance.collection('app_config').doc('bottom_nav');
+  final DocumentReference<Map<String, dynamic>> _docRef = FirebaseFirestore
+      .instance
+      .collection('app_config')
+      .doc('bottom_nav');
 
   @override
   void initState() {
@@ -74,7 +76,9 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
       final enabled = (data?['enabled'] as bool?) ?? true;
       final rawItems = data?['items'];
 
-      final itemsEmpty = !(rawItems is List) || rawItems.isEmpty;
+      // ✅ prefer_is_not_operator + unnecessary_cast 一次處理：
+      //    不用 (!(rawItems is List))，也不要 (rawItems as List)
+      final itemsEmpty = rawItems is! List || rawItems.isEmpty;
 
       // ✅ doc 不存在 OR items 空，都補預設（避免你現在畫面空白）
       if (!snap.exists || itemsEmpty) {
@@ -109,14 +113,11 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
     required List<_BottomNavItem> items,
   }) async {
     final sorted = [...items]..sort((a, b) => a.order.compareTo(b.order));
-    await _docRef.set(
-      {
-        'enabled': enabled,
-        'items': sorted.map((e) => e.toMap()).toList(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
-      SetOptions(merge: true),
-    );
+    await _docRef.set({
+      'enabled': enabled,
+      'items': sorted.map((e) => e.toMap()).toList(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<_BottomNavItem?> _showEditDialog(
@@ -188,7 +189,8 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
                       return;
                     }
 
-                    final id = initial?.id ??
+                    final id =
+                        initial?.id ??
                         'item_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
 
                     Navigator.of(ctx).pop(
@@ -239,11 +241,14 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
               TextButton.icon(
                 onPressed: () async {
                   // ✅ 一鍵套用預設 5 項，讓你立刻看到「串接」效果
-                  await _saveConfig(enabled: enabled, items: _defaultFiveItems());
+                  await _saveConfig(
+                    enabled: enabled,
+                    items: _defaultFiveItems(),
+                  );
                   if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('已套用預設 5 項')),
-                    );
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已套用預設 5 項')));
                   }
                 },
                 icon: const Icon(Icons.auto_fix_high),
@@ -255,10 +260,15 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
                   final created = await _showEditDialog(context);
                   if (created == null) return;
 
-                  final maxOrder = items.isEmpty ? -1 : items.map((e) => e.order).reduce(max);
+                  final maxOrder = items.isEmpty
+                      ? -1
+                      : items.map((e) => e.order).reduce(max);
                   final newItem = created.copyWith(order: maxOrder + 1);
 
-                  await _saveConfig(enabled: enabled, items: [...items, newItem]);
+                  await _saveConfig(
+                    enabled: enabled,
+                    items: [...items, newItem],
+                  );
                 },
                 icon: const Icon(Icons.add),
                 label: const Text('新增'),
@@ -277,27 +287,38 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
                     children: [
                       Card(
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
                           child: Column(
                             children: [
                               SwitchListTile(
                                 contentPadding: EdgeInsets.zero,
                                 value: enabled,
-                                onChanged: (v) => _saveConfig(enabled: v, items: items),
+                                onChanged: (v) =>
+                                    _saveConfig(enabled: v, items: items),
                                 title: const Text('啟用底部導覽'),
-                                subtitle: const Text('啟用時至少要有 2 個啟用項目，避免 BottomNavigationBar assert'),
+                                subtitle: const Text(
+                                  '啟用時至少要有 2 個啟用項目，避免 BottomNavigationBar assert',
+                                ),
                               ),
                               if (needMinTwo)
                                 const Padding(
                                   padding: EdgeInsets.only(top: 8),
                                   child: Row(
                                     children: [
-                                      Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                                      Icon(
+                                        Icons.warning_amber_rounded,
+                                        color: Colors.orange,
+                                      ),
                                       SizedBox(width: 8),
                                       Expanded(
                                         child: Text(
                                           '啟用底部導覽時，至少要有 2 個「啟用」項目。',
-                                          style: TextStyle(color: Colors.orange),
+                                          style: TextStyle(
+                                            color: Colors.orange,
+                                          ),
                                         ),
                                       ),
                                     ],
@@ -330,7 +351,10 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
                                     for (int i = 0; i < list.length; i++) {
                                       reOrdered.add(list[i].copyWith(order: i));
                                     }
-                                    await _saveConfig(enabled: enabled, items: reOrdered);
+                                    await _saveConfig(
+                                      enabled: enabled,
+                                      items: reOrdered,
+                                    );
                                   },
                                   itemBuilder: (context, index) {
                                     final item = items[index];
@@ -340,9 +364,18 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
                                         value: item.enabled,
                                         onChanged: (v) async {
                                           final list = items
-                                              .map((e) => e.id == item.id ? e.copyWith(enabled: v ?? false) : e)
+                                              .map(
+                                                (e) => e.id == item.id
+                                                    ? e.copyWith(
+                                                        enabled: v ?? false,
+                                                      )
+                                                    : e,
+                                              )
                                               .toList();
-                                          await _saveConfig(enabled: enabled, items: list);
+                                          await _saveConfig(
+                                            enabled: enabled,
+                                            items: list,
+                                          );
                                         },
                                       ),
                                       title: Row(
@@ -359,12 +392,25 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
                                           IconButton(
                                             tooltip: '編輯',
                                             onPressed: () async {
-                                              final edited = await _showEditDialog(context, initial: item);
+                                              final edited =
+                                                  await _showEditDialog(
+                                                    context,
+                                                    initial: item,
+                                                  );
                                               if (edited == null) return;
                                               final list = items
-                                                  .map((e) => e.id == item.id ? edited.copyWith(order: e.order) : e)
+                                                  .map(
+                                                    (e) => e.id == item.id
+                                                        ? edited.copyWith(
+                                                            order: e.order,
+                                                          )
+                                                        : e,
+                                                  )
                                                   .toList();
-                                              await _saveConfig(enabled: enabled, items: list);
+                                              await _saveConfig(
+                                                enabled: enabled,
+                                                items: list,
+                                              );
                                             },
                                             icon: const Icon(Icons.edit),
                                           ),
@@ -375,14 +421,24 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
                                                 context: context,
                                                 builder: (ctx) => AlertDialog(
                                                   title: const Text('刪除項目'),
-                                                  content: Text('確定要刪除「${item.label}」嗎？'),
+                                                  content: Text(
+                                                    '確定要刪除「${item.label}」嗎？',
+                                                  ),
                                                   actions: [
                                                     TextButton(
-                                                      onPressed: () => Navigator.pop(ctx, false),
+                                                      onPressed: () =>
+                                                          Navigator.pop(
+                                                            ctx,
+                                                            false,
+                                                          ),
                                                       child: const Text('取消'),
                                                     ),
                                                     ElevatedButton(
-                                                      onPressed: () => Navigator.pop(ctx, true),
+                                                      onPressed: () =>
+                                                          Navigator.pop(
+                                                            ctx,
+                                                            true,
+                                                          ),
                                                       child: const Text('刪除'),
                                                     ),
                                                   ],
@@ -390,15 +446,29 @@ class _AdminBottomNavPageState extends State<AdminBottomNavPage> {
                                               );
 
                                               if (ok != true) return;
-                                              final list = items.where((e) => e.id != item.id).toList();
+                                              final list = items
+                                                  .where((e) => e.id != item.id)
+                                                  .toList();
 
-                                              final reOrdered = <_BottomNavItem>[];
-                                              for (int i = 0; i < list.length; i++) {
-                                                reOrdered.add(list[i].copyWith(order: i));
+                                              final reOrdered =
+                                                  <_BottomNavItem>[];
+                                              for (
+                                                int i = 0;
+                                                i < list.length;
+                                                i++
+                                              ) {
+                                                reOrdered.add(
+                                                  list[i].copyWith(order: i),
+                                                );
                                               }
-                                              await _saveConfig(enabled: enabled, items: reOrdered);
+                                              await _saveConfig(
+                                                enabled: enabled,
+                                                items: reOrdered,
+                                              );
                                             },
-                                            icon: const Icon(Icons.delete_outline),
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                            ),
                                           ),
                                         ],
                                       ),
@@ -428,10 +498,7 @@ class _PreviewCard extends StatefulWidget {
   final bool enabled;
   final List<_BottomNavItem> items;
 
-  const _PreviewCard({
-    required this.enabled,
-    required this.items,
-  });
+  const _PreviewCard({required this.enabled, required this.items});
 
   @override
   State<_PreviewCard> createState() => _PreviewCardState();
@@ -457,7 +524,10 @@ class _PreviewCardState extends State<_PreviewCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('預覽', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const Text(
+                '預覽',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
               const SizedBox(height: 8),
               Text(reason, style: const TextStyle(color: Colors.orange)),
               const SizedBox(height: 12),
@@ -467,7 +537,9 @@ class _PreviewCardState extends State<_PreviewCard> {
                     border: Border.all(color: Colors.black12),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Center(child: Text('預覽暫停（避免 BottomNavigationBar assert）')),
+                  child: const Center(
+                    child: Text('預覽暫停（避免 BottomNavigationBar assert）'),
+                  ),
                 ),
               ),
             ],
@@ -479,7 +551,12 @@ class _PreviewCardState extends State<_PreviewCard> {
     if (_index >= enabledItems.length) _index = 0;
 
     final navItems = enabledItems
-        .map((e) => BottomNavigationBarItem(icon: Icon(_iconFromKey(e.iconKey)), label: e.label))
+        .map(
+          (e) => BottomNavigationBarItem(
+            icon: Icon(_iconFromKey(e.iconKey)),
+            label: e.label,
+          ),
+        )
         .toList();
 
     return Card(
@@ -488,7 +565,10 @@ class _PreviewCardState extends State<_PreviewCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('預覽', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const Text(
+              '預覽',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
             const SizedBox(height: 8),
             Expanded(
               child: Container(
@@ -544,20 +624,25 @@ class _IconPicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ✅ DropdownButtonFormField 的 value 已 deprecated → 改 initialValue
+    final initial = _keys.contains(value) ? value : 'home';
+
     return DropdownButtonFormField<String>(
-      value: _keys.contains(value) ? value : 'home',
+      initialValue: initial,
       decoration: const InputDecoration(labelText: 'Icon'),
       items: _keys
-          .map((k) => DropdownMenuItem(
-                value: k,
-                child: Row(
-                  children: [
-                    Icon(_iconFromKey(k)),
-                    const SizedBox(width: 8),
-                    Text(k),
-                  ],
-                ),
-              ))
+          .map(
+            (k) => DropdownMenuItem(
+              value: k,
+              child: Row(
+                children: [
+                  Icon(_iconFromKey(k)),
+                  const SizedBox(width: 8),
+                  Text(k),
+                ],
+              ),
+            ),
+          )
           .toList(),
       onChanged: (v) {
         if (v != null) onChanged(v);
@@ -602,13 +687,13 @@ class _BottomNavItem {
   }
 
   Map<String, dynamic> toMap() => {
-        'id': id,
-        'label': label,
-        'route': route,
-        'iconKey': iconKey,
-        'enabled': enabled,
-        'order': order,
-      };
+    'id': id,
+    'label': label,
+    'route': route,
+    'iconKey': iconKey,
+    'enabled': enabled,
+    'order': order,
+  };
 
   static _BottomNavItem fromMap(Map<String, dynamic> m) {
     return _BottomNavItem(

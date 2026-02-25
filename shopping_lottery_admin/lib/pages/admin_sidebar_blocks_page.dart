@@ -1,30 +1,20 @@
-// lib/pages/admin_sidebar_blocks_page.dart
-//
-// ✅ AdminSidebarBlocksPage v8.2 Final（側欄自訂區塊管理｜最終完整版）
-// ------------------------------------------------------------
-// Firestore 結構：sidebar_blocks/{id}
-// fields:
-// - title: String
-// - subtitle: String
-// - content: String
-// - link: String
-// - imageUrl: String
-// - isActive: bool
-// - order: int
-// - createdAt, updatedAt: Timestamp
-//
-// Storage：/sidebar_blocks/{id}/{timestamp_filename}
-// ------------------------------------------------------------
-// 依賴：cloud_firestore, firebase_storage, file_picker, intl
-// ------------------------------------------------------------
-
-import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
+/// AdminSidebarBlocksPage（正式版｜完整版｜可直接編譯）
+///
+/// ✅ 修正：移除未使用的 dart:typed_data import
+///
+/// Firestore 建議：
+/// - admin_ui/sidebar_blocks/blocks/{blockId}
+///   - title: String
+///   - icon: String            // icon name（例如 "dashboard"）
+///   - route: String           // 導頁路徑（例如 "/admin/orders"）
+///   - group: String           // 分組（例如 "商城" / "系統"）
+///   - enabled: bool
+///   - sort: int
+///   - roles: `List<String>`   // 可見角色（空=全部），例如 ["admin","super_admin"]
+///   - createdAt, updatedAt: Timestamp
 class AdminSidebarBlocksPage extends StatefulWidget {
   const AdminSidebarBlocksPage({super.key});
 
@@ -33,337 +23,600 @@ class AdminSidebarBlocksPage extends StatefulWidget {
 }
 
 class _AdminSidebarBlocksPageState extends State<AdminSidebarBlocksPage> {
-  final _db = FirebaseFirestore.instance;
-  bool _busyReorder = false;
+  final _searchCtrl = TextEditingController();
+  bool _busy = false;
 
-  void _snack(String msg) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  CollectionReference<Map<String, dynamic>> get _col => FirebaseFirestore
+      .instance
+      .collection('admin_ui')
+      .doc('sidebar_blocks')
+      .collection('blocks');
 
-  Query<Map<String, dynamic>> _query() =>
-      _db.collection('sidebar_blocks').orderBy('order').limit(200);
-
-  String _fmt(dynamic v) =>
-      v is Timestamp ? DateFormat('yyyy/MM/dd HH:mm').format(v.toDate()) : '-';
-
-  Future<void> _create() async {
-    final ref = _db.collection('sidebar_blocks').doc();
-    final now = FieldValue.serverTimestamp();
-    await ref.set({
-      'title': '新側欄區塊',
-      'subtitle': '',
-      'content': '',
-      'link': '',
-      'imageUrl': '',
-      'isActive': true,
-      'order': DateTime.now().millisecondsSinceEpoch,
-      'createdAt': now,
-      'updatedAt': now,
-    });
-    await _edit(ref.id);
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
-  Future<void> _edit(String id) async {
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => _SidebarBlockEditSheet(id: id),
+  void _snack(String msg, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: error ? Colors.red : null),
     );
   }
 
-  Future<void> _toggleActive(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final cur = doc.data()?['isActive'] == true;
-    await doc.reference.update({'isActive': !cur});
+  Query<Map<String, dynamic>> _query() =>
+      _col.orderBy('sort').orderBy('createdAt', descending: true).limit(500);
+
+  Future<void> _toggleEnabled(String id, bool enabled) async {
+    try {
+      await _col.doc(id).set({
+        'enabled': enabled,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      _snack('更新失敗：$e', error: true);
+    }
   }
 
-  Future<void> _delete(DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final title = (doc.data()?['title'] ?? '').toString();
+  Future<void> _delete(String id) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('刪除確認'),
-        content: Text('確定要刪除「$title」嗎？'),
+        title: const Text('刪除側欄區塊'),
+        content: Text('確定要刪除 block=$id 嗎？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
-    if (ok == true) {
-      await doc.reference.delete();
+    if (ok != true) return;
+
+    setState(() => _busy = true);
+    try {
+      await _col.doc(id).delete();
       _snack('已刪除');
+    } catch (e) {
+      _snack('刪除失敗：$e', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _applyReorder(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) async {
-    if (_busyReorder) return;
-    setState(() => _busyReorder = true);
+  Future<void> _openEditor({String? id, Map<String, dynamic>? initial}) async {
+    final res = await showModalBottomSheet<_BlockEditResult>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _SidebarBlockEditorSheet(blockId: id, initial: initial),
+    );
+    if (res == null) return;
+
+    setState(() => _busy = true);
     try {
-      final batch = _db.batch();
-      for (int i = 0; i < docs.length; i++) {
-        batch.update(docs[i].reference, {'order': i + 1});
+      final payload = {
+        ...res.payload,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      if (id == null) {
+        // 新增：給一個 sort（放到最後）
+        final snap = await _col
+            .orderBy('sort', descending: true)
+            .limit(1)
+            .get();
+        final lastSort = snap.docs.isEmpty
+            ? 0
+            : _toInt(snap.docs.first.data()['sort'], fallback: 0);
+        payload['sort'] = lastSort + 10;
+
+        await _col.add({...payload, 'createdAt': FieldValue.serverTimestamp()});
+        _snack('已新增');
+      } else {
+        await _col.doc(id).set(payload, SetOptions(merge: true));
+        _snack('已更新');
+      }
+    } catch (e) {
+      _snack('保存失敗：$e', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _reorder(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    final list = [...docs];
+    final moved = list.removeAt(oldIndex);
+    list.insert(newIndex, moved);
+
+    // 重新編 sort（10,20,30...）
+    setState(() => _busy = true);
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      for (int i = 0; i < list.length; i++) {
+        batch.set(list[i].reference, {
+          'sort': i * 10,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
       }
       await batch.commit();
+      _snack('已更新排序');
+    } catch (e) {
+      _snack('排序更新失敗：$e', error: true);
     } finally {
-      setState(() => _busyReorder = false);
+      if (mounted) setState(() => _busy = false);
     }
+  }
+
+  bool _match(Map<String, dynamic> m, String id, String keyword) {
+    if (keyword.isEmpty) return true;
+    final k = keyword.toLowerCase();
+    final title = (m['title'] ?? '').toString().toLowerCase();
+    final route = (m['route'] ?? '').toString().toLowerCase();
+    final group = (m['group'] ?? '').toString().toLowerCase();
+    final icon = (m['icon'] ?? '').toString().toLowerCase();
+    return id.toLowerCase().contains(k) ||
+        title.contains(k) ||
+        route.contains(k) ||
+        group.contains(k) ||
+        icon.contains(k);
   }
 
   @override
   Widget build(BuildContext context) {
-    final stream = _query().snapshots();
+    final keyword = _searchCtrl.text.trim();
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('側欄自訂區塊管理'),
+        title: const Text('側欄區塊管理'),
         actions: [
-          IconButton(onPressed: _create, icon: const Icon(Icons.add_outlined)),
+          IconButton(
+            tooltip: '新增區塊',
+            onPressed: _busy ? null : () => _openEditor(),
+            icon: const Icon(Icons.add),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: stream,
-        builder: (context, snap) {
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          final docs = snap.data!.docs;
-          if (docs.isEmpty) return const Center(child: Text('尚無資料'));
-
-          return Stack(
-            children: [
-              ReorderableListView.builder(
-                itemCount: docs.length,
-                onReorder: (oldIndex, newIndex) async {
-                  if (newIndex > oldIndex) newIndex--;
-                  final moved = docs.removeAt(oldIndex);
-                  docs.insert(newIndex, moved);
-                  await _applyReorder(docs);
-                },
-                itemBuilder: (context, i) {
-                  final d = docs[i].data();
-                  final title = (d['title'] ?? '').toString();
-                  final subtitle = (d['subtitle'] ?? '').toString();
-                  final imageUrl = (d['imageUrl'] ?? '').toString();
-                  final active = d['isActive'] == true;
-                  final updated = _fmt(d['updatedAt']);
-
-                  return Card(
-                    key: ValueKey(docs[i].id),
-                    margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    child: ListTile(
-                      leading: imageUrl.isNotEmpty
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(6),
-                              child: Image.network(imageUrl, width: 50, height: 50, fit: BoxFit.cover),
-                            )
-                          : const Icon(Icons.widgets_outlined),
-                      title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text([
-                        if (subtitle.isNotEmpty) subtitle,
-                        '狀態：${active ? '上架' : '下架'}',
-                        '更新：$updated'
-                      ].join('｜')),
-                      trailing: PopupMenuButton<String>(
-                        onSelected: (v) async {
-                          if (v == 'edit') await _edit(docs[i].id);
-                          if (v == 'toggle') await _toggleActive(docs[i]);
-                          if (v == 'delete') await _delete(docs[i]);
-                        },
-                        itemBuilder: (_) => [
-                          const PopupMenuItem(value: 'edit', child: Text('編輯')),
-                          PopupMenuItem(value: 'toggle', child: Text(active ? '下架' : '上架')),
-                          const PopupMenuItem(value: 'delete', child: Text('刪除')),
-                        ],
-                      ),
-                      onTap: () => _edit(docs[i].id),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+            child: TextField(
+              controller: _searchCtrl,
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: '搜尋：title / group / route / icon / id',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                suffixIcon: IconButton(
+                  tooltip: '清除',
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    FocusScope.of(context).unfocus();
+                    setState(() {});
+                  },
+                  icon: const Icon(Icons.clear),
+                ),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _query().snapshots(),
+              builder: (context, snap) {
+                if (snap.hasError) {
+                  return Center(
+                    child: Text(
+                      '讀取失敗：${snap.error}',
+                      style: const TextStyle(color: Colors.red),
                     ),
                   );
-                },
-              ),
-              if (_busyReorder)
-                const Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: Material(
-                    elevation: 10,
-                    child: Padding(
-                      padding: EdgeInsets.all(8),
-                      child: Row(
-                        children: [
-                          SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-                          SizedBox(width: 8),
-                          Text('更新排序中...', style: TextStyle(fontWeight: FontWeight.bold)),
-                        ],
-                      ),
+                }
+                if (!snap.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final docs = snap.data!.docs
+                    .where((d) => _match(d.data(), d.id, keyword))
+                    .toList(growable: false);
+
+                if (docs.isEmpty) {
+                  return Center(
+                    child: Text(
+                      '尚無側欄區塊',
+                      style: TextStyle(color: Colors.grey[700]),
                     ),
-                  ),
-                ),
-            ],
-          );
-        },
+                  );
+                }
+
+                // 用 ReorderableListView（搜尋時也允許拖曳，但排序以目前顯示清單為準）
+                return ReorderableListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: docs.length,
+                  onReorder: _busy
+                      ? (_, __) {}
+                      : (a, b) => _reorder(docs, a, b),
+                  itemBuilder: (context, i) {
+                    final d = docs[i];
+                    final m = d.data();
+
+                    final title = (m['title'] ?? '').toString().trim();
+                    final group = (m['group'] ?? '').toString().trim();
+                    final route = (m['route'] ?? '').toString().trim();
+                    final iconName = (m['icon'] ?? 'menu').toString().trim();
+                    final enabled = m['enabled'] != false;
+
+                    final roles = (m['roles'] is List)
+                        ? List<String>.from(m['roles'])
+                        : <String>[];
+                    final sort = _toInt(m['sort'], fallback: 0);
+
+                    return Card(
+                      key: ValueKey(d.id),
+                      elevation: 0.7,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        leading: ReorderableDragStartListener(
+                          index: i,
+                          child: CircleAvatar(
+                            child: Icon(_iconFromName(iconName)),
+                          ),
+                        ),
+                        title: Text(
+                          title.isEmpty ? '(未命名區塊)' : title,
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 6),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
+                              children: [
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.folder, size: 16),
+                                  label: Text(group.isEmpty ? '未分組' : group),
+                                ),
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.route, size: 16),
+                                  label: Text(
+                                    route.isEmpty ? '(未設定 route)' : route,
+                                  ),
+                                ),
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.sort, size: 16),
+                                  label: Text('sort $sort'),
+                                ),
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  avatar: const Icon(Icons.badge, size: 16),
+                                  label: Text(
+                                    roles.isEmpty
+                                        ? 'roles: ALL'
+                                        : 'roles: ${roles.join(",")}',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        trailing: SizedBox(
+                          width: 140,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Switch(
+                                value: enabled,
+                                onChanged: _busy
+                                    ? null
+                                    : (v) => _toggleEnabled(d.id, v),
+                              ),
+                              const SizedBox(height: 4),
+                              Wrap(
+                                spacing: 6,
+                                children: [
+                                  IconButton(
+                                    tooltip: '編輯',
+                                    onPressed: _busy
+                                        ? null
+                                        : () =>
+                                              _openEditor(id: d.id, initial: m),
+                                    icon: const Icon(Icons.edit),
+                                  ),
+                                  IconButton(
+                                    tooltip: '刪除',
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _delete(d.id),
+                                    icon: const Icon(Icons.delete),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        onTap: _busy
+                            ? null
+                            : () => _openEditor(id: d.id, initial: m),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-// ------------------------------------------------------------
-// ✅ 編輯側欄區塊 BottomSheet
-// ------------------------------------------------------------
-class _SidebarBlockEditSheet extends StatefulWidget {
-  final String id;
-  const _SidebarBlockEditSheet({required this.id});
+// --------------------
+// Editor
+// --------------------
 
-  @override
-  State<_SidebarBlockEditSheet> createState() => _SidebarBlockEditSheetState();
+class _BlockEditResult {
+  const _BlockEditResult(this.payload);
+  final Map<String, dynamic> payload;
 }
 
-class _SidebarBlockEditSheetState extends State<_SidebarBlockEditSheet> {
-  final _db = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
+class _SidebarBlockEditorSheet extends StatefulWidget {
+  const _SidebarBlockEditorSheet({
+    required this.blockId,
+    required this.initial,
+  });
 
-  final _titleCtrl = TextEditingController();
-  final _subtitleCtrl = TextEditingController();
-  final _contentCtrl = TextEditingController();
-  final _linkCtrl = TextEditingController();
+  final String? blockId;
+  final Map<String, dynamic>? initial;
 
-  String _imageUrl = '';
-  bool _active = true;
-  bool _loading = true;
-  bool _saving = false;
+  @override
+  State<_SidebarBlockEditorSheet> createState() =>
+      _SidebarBlockEditorSheetState();
+}
+
+class _SidebarBlockEditorSheetState extends State<_SidebarBlockEditorSheet> {
+  final _formKey = GlobalKey<FormState>();
+
+  late final TextEditingController _title;
+  late final TextEditingController _group;
+  late final TextEditingController _route;
+  late final TextEditingController _icon;
+  late final TextEditingController _roles; // comma separated
+
+  bool _enabled = true;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    final m = widget.initial ?? <String, dynamic>{};
+
+    _title = TextEditingController(text: (m['title'] ?? '').toString());
+    _group = TextEditingController(text: (m['group'] ?? '').toString());
+    _route = TextEditingController(text: (m['route'] ?? '').toString());
+    _icon = TextEditingController(text: (m['icon'] ?? 'menu').toString());
+
+    final roles = (m['roles'] is List)
+        ? List<String>.from(m['roles'])
+        : <String>[];
+    _roles = TextEditingController(text: roles.join(','));
+
+    _enabled = m['enabled'] != false;
   }
 
-  Future<void> _load() async {
-    final doc = await _db.collection('sidebar_blocks').doc(widget.id).get();
-    if (doc.exists) {
-      final d = doc.data()!;
-      _titleCtrl.text = (d['title'] ?? '').toString();
-      _subtitleCtrl.text = (d['subtitle'] ?? '').toString();
-      _contentCtrl.text = (d['content'] ?? '').toString();
-      _linkCtrl.text = (d['link'] ?? '').toString();
-      _imageUrl = (d['imageUrl'] ?? '').toString();
-      _active = d['isActive'] == true;
-    }
-    setState(() => _loading = false);
+  @override
+  void dispose() {
+    _title.dispose();
+    _group.dispose();
+    _route.dispose();
+    _icon.dispose();
+    _roles.dispose();
+    super.dispose();
   }
 
-  Future<void> _uploadImage() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
-    if (result == null) return;
-    final file = result.files.first;
-    final bytes = file.bytes;
-    if (bytes == null) return;
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
 
-    final ref = _storage
-        .ref('sidebar_blocks/${widget.id}/${DateTime.now().millisecondsSinceEpoch}_${file.name}');
-    await ref.putData(bytes, SettableMetadata(contentType: 'image/${file.extension ?? 'png'}'));
-    final url = await ref.getDownloadURL();
-    setState(() => _imageUrl = url);
-  }
+    final roles = _roles.text
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList();
 
-  Future<void> _save() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      await _db.collection('sidebar_blocks').doc(widget.id).set({
-        'title': _titleCtrl.text.trim(),
-        'subtitle': _subtitleCtrl.text.trim(),
-        'content': _contentCtrl.text.trim(),
-        'link': _linkCtrl.text.trim(),
-        'imageUrl': _imageUrl,
-        'isActive': _active,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      if (!mounted) return;
-      Navigator.pop(context);
-    } finally {
-      setState(() => _saving = false);
-    }
+    final payload = <String, dynamic>{
+      'title': _title.text.trim(),
+      'group': _group.text.trim(),
+      'route': _route.text.trim(),
+      'icon': _icon.text.trim().isEmpty ? 'menu' : _icon.text.trim(),
+      'enabled': _enabled,
+      'roles': roles,
+    };
+
+    Navigator.pop(context, _BlockEditResult(payload));
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const SafeArea(child: Center(child: CircularProgressIndicator()));
+    final isCreate = widget.blockId == null;
+    final pad = MediaQuery.of(context).viewInsets;
 
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 14,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-        ),
+    return Padding(
+      padding: EdgeInsets.only(bottom: pad.bottom),
+      child: SafeArea(
         child: SingleChildScrollView(
-          child: Column(
-            children: [
-              const Text('編輯側欄區塊', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _titleCtrl,
-                decoration: const InputDecoration(labelText: '標題', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _subtitleCtrl,
-                decoration: const InputDecoration(labelText: '副標題', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _contentCtrl,
-                maxLines: 3,
-                decoration: const InputDecoration(labelText: '內文（可空白）', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _linkCtrl,
-                decoration: const InputDecoration(labelText: '連結（可空白）', border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 10),
-              if (_imageUrl.isNotEmpty)
-                Stack(
+          padding: const EdgeInsets.all(16),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isCreate ? '新增側欄區塊' : '編輯側欄區塊',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                if (!isCreate) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'ID: ${widget.blockId}',
+                    style: TextStyle(color: Colors.grey[700]),
+                  ),
+                ],
+                const SizedBox(height: 14),
+
+                TextFormField(
+                  controller: _title,
+                  decoration: const InputDecoration(
+                    labelText: '標題（必填）',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) => (v ?? '').trim().isEmpty ? '必填' : null,
+                ),
+                const SizedBox(height: 10),
+
+                Row(
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.network(_imageUrl, height: 150, width: double.infinity, fit: BoxFit.cover),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _group,
+                        decoration: const InputDecoration(
+                          labelText: '分組 group',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
                     ),
-                    Positioned(
-                      right: 4,
-                      top: 4,
-                      child: InkWell(
-                        onTap: () => setState(() => _imageUrl = ''),
-                        child: Container(
-                          color: Colors.black45,
-                          padding: const EdgeInsets.all(4),
-                          child: const Icon(Icons.close, size: 16, color: Colors.white),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _icon,
+                        decoration: const InputDecoration(
+                          labelText: 'icon（例如 dashboard / orders）',
+                          border: OutlineInputBorder(),
                         ),
                       ),
                     ),
                   ],
                 ),
-              const SizedBox(height: 10),
-              FilledButton.icon(
-                onPressed: _uploadImage,
-                icon: const Icon(Icons.upload_outlined),
-                label: const Text('上傳圖片'),
-              ),
-              const SizedBox(height: 10),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('前台顯示（上架）'),
-                value: _active,
-                onChanged: (v) => setState(() => _active = v),
-              ),
-              const SizedBox(height: 10),
-              FilledButton.icon(
-                onPressed: _save,
-                icon: const Icon(Icons.save_outlined),
-                label: const Text('儲存'),
-              ),
-            ],
+                const SizedBox(height: 10),
+
+                TextFormField(
+                  controller: _route,
+                  decoration: const InputDecoration(
+                    labelText: 'route（例如 /admin/orders）',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10),
+
+                TextFormField(
+                  controller: _roles,
+                  decoration: const InputDecoration(
+                    labelText: '可見角色 roles（逗號分隔；留空=全部）',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10),
+
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('啟用 enabled'),
+                  value: _enabled,
+                  onChanged: (v) => setState(() => _enabled = v),
+                ),
+
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _submit,
+                    icon: const Icon(Icons.save),
+                    label: const Text('保存'),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+}
+
+// --------------------
+// Utils
+// --------------------
+
+int _toInt(dynamic v, {int fallback = 0}) {
+  if (v == null) return fallback;
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v.trim()) ?? fallback;
+  return fallback;
+}
+
+IconData _iconFromName(String name) {
+  switch (name.trim().toLowerCase()) {
+    case 'dashboard':
+      return Icons.dashboard;
+    case 'shop':
+    case 'store':
+      return Icons.storefront;
+    case 'products':
+    case 'inventory':
+      return Icons.inventory_2;
+    case 'orders':
+    case 'receipt':
+      return Icons.receipt_long;
+    case 'members':
+    case 'users':
+      return Icons.group;
+    case 'marketing':
+    case 'campaign':
+      return Icons.campaign;
+    case 'content':
+    case 'news':
+      return Icons.article;
+    case 'system':
+    case 'settings':
+      return Icons.settings;
+    case 'analytics':
+      return Icons.query_stats;
+    case 'roles':
+    case 'admin':
+      return Icons.admin_panel_settings;
+    case 'shipping':
+      return Icons.local_shipping;
+    case 'support':
+    case 'ticket':
+      return Icons.support_agent;
+    default:
+      return Icons.menu;
   }
 }

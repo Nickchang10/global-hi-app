@@ -1,16 +1,26 @@
-// lib/pages/product_list_page.dart
-import 'dart:async';
-import 'dart:math';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import '../services/wishlist_service.dart';
-import '../services/firestore_mock_service.dart';
-import 'product_detail_page.dart';
 
-// ======================================================
-// ✅ ProductListPage（商品清單頁 - 收藏連動版）
-// - 使用 WishlistService 控制收藏狀態
-// - 與 ShopPage、FavoritesPage 同步資料
-// ======================================================
+/// ✅ ProductListPage（商品列表｜修改後完整版）
+/// ------------------------------------------------------------
+/// ✅ 修正重點：
+/// - 移除 FirestoreMockService.products 依賴（解掉 undefined_getter）
+/// - 改用 Firestore：products + categories（可選）
+///
+/// 建議 products/{pid} 欄位：
+///   - name / title: String
+///   - price: num
+///   - imageUrl: String (optional)
+///   - categoryId: String (optional)
+///   - isActive: bool (optional, default true)
+///   - stock: num (optional)
+///   - sort: num (optional)
+///   - createdAt: Timestamp (optional)
+///
+/// 建議 categories/{cid} 欄位：
+///   - name: String
+///   - sort: num (optional)
+/// ------------------------------------------------------------
 class ProductListPage extends StatefulWidget {
   const ProductListPage({super.key});
 
@@ -19,326 +29,458 @@ class ProductListPage extends StatefulWidget {
 }
 
 class _ProductListPageState extends State<ProductListPage> {
-  static const Color _bg = Color(0xFFF7F8FA);
-  static const Color _brand = Colors.orangeAccent;
-  static const Color _primary = Colors.blueAccent;
+  final _fs = FirebaseFirestore.instance;
 
-  final WishlistService _wishlist = WishlistService.instance;
-
-  bool _loading = true;
-  List<Map<String, dynamic>> _products = [];
-  Set<String> _favorites = {};
-  Timer? _reloadTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadAll();
-  }
-
-  Future<void> _loadAll() async {
-    setState(() => _loading = true);
-    await _loadWishlist();
-    await _loadProducts();
-    setState(() => _loading = false);
-  }
-
-  Future<void> _loadWishlist() async {
-    final ids = await _wishlist.getWishlistIds();
-    if (mounted) setState(() => _favorites = ids.toSet());
-  }
-
-  Future<void> _loadProducts() async {
-    await Future.delayed(const Duration(milliseconds: 250));
-    final svc = FirestoreMockService.instance;
-    List<Map<String, dynamic>> list = [];
-
-    try {
-      final data = svc.products;
-      if (data is List) {
-        list = data.map((e) {
-          if (e is Map) return Map<String, dynamic>.from(e);
-          return <String, dynamic>{};
-        }).toList();
-      }
-    } catch (_) {}
-
-    if (list.isEmpty) {
-      list = [
-        _demo('Osmile S5 健康錶', 3990,
-            'https://images.unsplash.com/photo-1523275335684-37898b6baf30'),
-        _demo('Osmile 兒童守護錶', 2990,
-            'https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f'),
-        _demo('Osmile 充電底座', 490,
-            'https://images.unsplash.com/photo-1517336714731-489689fd1ca8'),
-        _demo('Osmile Sport Plus', 5990,
-            'https://images.unsplash.com/photo-1503342217505-b0a15ec3261c'),
-      ];
-    }
-
-    if (!mounted) return;
-    setState(() => _products = list);
-  }
-
-  Map<String, dynamic> _demo(String name, int price, String image) {
-    return {
-      'id': name.hashCode.toString(),
-      'name': name,
-      'price': price,
-      'image': image,
-      'rating': 4.6,
-      'sold': 80 + Random().nextInt(420),
-    };
-  }
-
-  Future<void> _toggleFavorite(Map<String, dynamic> p) async {
-    final id = p["id"].toString();
-    final isFav = _favorites.contains(id);
-
-    if (isFav) {
-      await _wishlist.removeFromWishlist(id);
-      setState(() => _favorites.remove(id));
-      _showSnack('已取消收藏：${p["name"]}');
-    } else {
-      await _wishlist.addToWishlist(p);
-      setState(() => _favorites.add(id));
-      _showSnack('已加入收藏：${p["name"]}');
-    }
-  }
-
-  void _showSnack(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 1)),
-    );
-  }
+  final _search = TextEditingController();
+  String _categoryId = 'all';
+  bool _onlyActive = true;
 
   @override
   void dispose() {
-    _reloadTimer?.cancel();
+    _search.dispose();
     super.dispose();
   }
 
-  // ======================================================
-  // UI 主體
-  // ======================================================
+  String _s(dynamic v, [String fallback = '']) => (v ?? fallback).toString();
+
+  num _asNum(dynamic v, {num fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is num) return v;
+    if (v is String) return num.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  // 主查詢：優先用 sort 排序；若你的 products 沒 sort 欄位會 runtime 報錯，會自動 fallback
+  Query<Map<String, dynamic>> _productsQueryPrimary() {
+    Query<Map<String, dynamic>> q = _fs.collection('products');
+
+    if (_onlyActive) {
+      // 若你沒有 isActive 欄位，建議補上；或把這段註解掉
+      q = q.where('isActive', isEqualTo: true);
+    }
+
+    if (_categoryId != 'all') {
+      q = q.where('categoryId', isEqualTo: _categoryId);
+    }
+
+    q = q.orderBy('sort', descending: false);
+    q = q.limit(300);
+    return q;
+  }
+
+  Query<Map<String, dynamic>> _productsQueryFallback() {
+    Query<Map<String, dynamic>> q = _fs.collection('products');
+
+    if (_onlyActive) {
+      q = q.where('isActive', isEqualTo: true);
+    }
+
+    if (_categoryId != 'all') {
+      q = q.where('categoryId', isEqualTo: _categoryId);
+    }
+
+    // fallback：用 docId 排序（避免 sort/createdAt 欄位不存在造成爆炸）
+    q = q.orderBy(FieldPath.documentId, descending: true);
+    q = q.limit(300);
+    return q;
+  }
+
+  // categories：可不存在，不影響主功能
+  Query<Map<String, dynamic>> _categoriesQuery() {
+    Query<Map<String, dynamic>> q = _fs.collection('categories');
+    q = q.orderBy('sort', descending: false);
+    q = q.limit(200);
+    return q;
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _applySearch(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final keyword = _search.text.trim().toLowerCase();
+    if (keyword.isEmpty) return docs;
+
+    return docs.where((doc) {
+      final d = doc.data();
+      final name = _s(d['name'], _s(d['title'], '')).toLowerCase();
+      final desc = _s(d['description'], '').toLowerCase();
+      final sku = _s(d['sku'], '').toLowerCase();
+      final id = doc.id.toLowerCase();
+      return name.contains(keyword) ||
+          desc.contains(keyword) ||
+          sku.contains(keyword) ||
+          id.contains(keyword);
+    }).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _bg,
       appBar: AppBar(
-        title: const Text('商品列表', style: TextStyle(fontWeight: FontWeight.w900)),
-        backgroundColor: Colors.white,
-        centerTitle: true,
-        elevation: 0.4,
+        title: const Text('商品列表'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_rounded),
             tooltip: '重新整理',
-            onPressed: _loadAll,
+            onPressed: () => setState(() {}),
+            icon: const Icon(Icons.refresh),
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _loadAll,
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : _products.isEmpty
-                ? _buildEmpty()
-                : GridView.builder(
-                    padding: const EdgeInsets.all(14),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 12,
-                      mainAxisSpacing: 12,
-                      childAspectRatio: 0.78,
-                    ),
-                    itemCount: _products.length,
-                    itemBuilder: (_, i) {
-                      final p = _products[i];
-                      final id = p["id"].toString();
-                      final isFav = _favorites.contains(id);
-                      return _ProductCard(
-                        product: p,
-                        isFavorite: isFav,
-                        onTap: () async {
-                          await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => ProductDetailPage(product: p),
-                            ),
-                          );
-                          _loadWishlist();
-                        },
-                        onFavoriteToggle: () => _toggleFavorite(p),
-                      );
-                    },
-                  ),
-      ),
-    );
-  }
-
-  Widget _buildEmpty() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      body: Column(
         children: [
-          Icon(Icons.inventory_2_outlined,
-              color: Colors.grey.shade400, size: 64),
-          const SizedBox(height: 10),
-          const Text('目前沒有商品',
-              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+          _topBar(),
+          const Divider(height: 1),
+          Expanded(child: _productStream()),
         ],
       ),
     );
   }
-}
 
-// ======================================================
-// 商品卡片（支援收藏）
-// ======================================================
-class _ProductCard extends StatefulWidget {
-  final Map<String, dynamic> product;
-  final bool isFavorite;
-  final VoidCallback onTap;
-  final VoidCallback onFavoriteToggle;
-
-  const _ProductCard({
-    required this.product,
-    required this.isFavorite,
-    required this.onTap,
-    required this.onFavoriteToggle,
-  });
-
-  @override
-  State<_ProductCard> createState() => _ProductCardState();
-}
-
-class _ProductCardState extends State<_ProductCard>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _anim;
-
-  @override
-  void initState() {
-    super.initState();
-    _anim = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 150),
-      lowerBound: 0.9,
-      upperBound: 1.1,
+  Widget _topBar() {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _search,
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    hintText: '搜尋商品（名稱 / SKU / 描述 / ID）',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
+              const SizedBox(width: 10),
+              FilterChip(
+                label: const Text('只看上架'),
+                selected: _onlyActive,
+                onSelected: (v) => setState(() => _onlyActive = v),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Text('分類：', style: TextStyle(color: Colors.grey)),
+              const SizedBox(width: 8),
+              Expanded(child: _categoryDropdown()),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
-  @override
-  void dispose() {
-    _anim.dispose();
-    super.dispose();
+  Widget _categoryDropdown() {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _categoriesQuery().snapshots(),
+      builder: (context, snap) {
+        // categories 可不存在：錯誤就只顯示「全部」
+        final items = <DropdownMenuItem<String>>[
+          const DropdownMenuItem(value: 'all', child: Text('全部')),
+        ];
+
+        if (snap.hasData) {
+          for (final doc in snap.data!.docs) {
+            final name = _s(doc.data()['name'], doc.id);
+            items.add(DropdownMenuItem(value: doc.id, child: Text(name)));
+          }
+        }
+
+        // 若目前選到一個不存在的分類，回到 all 避免 Dropdown 崩
+        final values = items.map((e) => e.value).toSet();
+        final value = values.contains(_categoryId) ? _categoryId : 'all';
+        if (value != _categoryId) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) setState(() => _categoryId = 'all');
+          });
+        }
+
+        return DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            value: value,
+            isExpanded: true,
+            items: items,
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() => _categoryId = v);
+            },
+          ),
+        );
+      },
+    );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final p = widget.product;
-    final name = (p["name"] ?? "商品").toString();
-    final price = (p["price"] ?? 0).toString();
-    final image = (p["image"] ?? "").toString();
-    final rating = (p["rating"] ?? 4.6).toString();
+  Widget _productStream() {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _productsQueryPrimary().snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          // ✅ fallback：sort 欄位不存在 / 索引問題
+          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: _productsQueryFallback().snapshots(),
+            builder: (context, snap2) {
+              if (snap2.hasError) {
+                return _errorBox(
+                  '讀取商品失敗：\n'
+                  'Primary：${snap.error}\n'
+                  'Fallback：${snap2.error}\n\n'
+                  '建議：products 補上 sort 欄位或調整 query。',
+                );
+              }
+              if (!snap2.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              return _renderList(snap2.data!.docs, note: '（已改用 docId 排序）');
+            },
+          );
+        }
 
-    return InkWell(
-      onTap: widget.onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Ink(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 6,
-              offset: const Offset(0, 3),
-            )
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Stack(
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        return _renderList(snap.data!.docs);
+      },
+    );
+  }
+
+  Widget _renderList(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
+    String note = '',
+  }) {
+    final filtered = _applySearch(docs);
+
+    if (filtered.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (note.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(note, style: const TextStyle(color: Colors.grey)),
+            ),
+          _empty('目前沒有符合條件的商品'),
+        ],
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: filtered.length + (note.isNotEmpty ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (note.isNotEmpty && index == 0) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(note, style: const TextStyle(color: Colors.grey)),
+          );
+        }
+
+        final i = note.isNotEmpty ? index - 1 : index;
+        final doc = filtered[i];
+        final d = doc.data();
+
+        final name = _s(d['name'], _s(d['title'], '未命名商品'));
+        final price = _asNum(d['price'], fallback: 0);
+        final stock = _asNum(d['stock'], fallback: -1); // -1 表示未設定
+        final imageUrl = _s(d['imageUrl'], '');
+        final isActive = (d['isActive'] ?? true) == true;
+
+        return Card(
+          elevation: 1,
+          margin: const EdgeInsets.only(bottom: 10),
+          child: ListTile(
+            leading: _thumb(imageUrl, name),
+            title: Text(
+              name,
+              style: const TextStyle(fontWeight: FontWeight.w900),
+            ),
+            subtitle: Text(
+              [
+                '價格：$price',
+                if (stock >= 0) '庫存：$stock',
+                'ID：${doc.id}',
+              ].join('  •  '),
+            ),
+            trailing: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                AspectRatio(
-                  aspectRatio: 1.2,
-                  child: ClipRRect(
-                    borderRadius:
-                        const BorderRadius.vertical(top: Radius.circular(12)),
-                    child: Image.network(
-                      image.isEmpty
-                          ? "https://picsum.photos/seed/$name/800/800"
-                          : image,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                        color: Colors.grey.shade200,
-                        child: const Icon(Icons.broken_image_outlined,
-                            color: Colors.grey, size: 40),
-                      ),
-                    ),
+                Text(
+                  isActive ? '上架' : '下架',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: isActive ? Colors.green : Colors.red,
                   ),
                 ),
-                Positioned(
-                  top: 8,
-                  right: 8,
-                  child: ScaleTransition(
-                    scale: Tween(begin: 1.0, end: 1.2).animate(_anim),
-                    child: IconButton(
-                      onPressed: () {
-                        _anim.forward(from: 0.9).then((_) => _anim.reverse());
-                        widget.onFavoriteToggle();
-                      },
-                      icon: Icon(
-                        widget.isFavorite
-                            ? Icons.favorite_rounded
-                            : Icons.favorite_border_rounded,
-                        color: widget.isFavorite
-                            ? Colors.redAccent
-                            : Colors.white,
-                      ),
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black26,
-                        padding: const EdgeInsets.all(6),
+                const SizedBox(height: 4),
+                const Icon(Icons.chevron_right),
+              ],
+            ),
+            onTap: () => _openDetail(doc),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _thumb(String url, String name) {
+    if (url.isEmpty) {
+      return CircleAvatar(
+        backgroundColor: Colors.grey.shade200,
+        child: Text(name.isNotEmpty ? name.substring(0, 1) : '?'),
+      );
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Image.network(
+        url,
+        width: 48,
+        height: 48,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => CircleAvatar(
+          backgroundColor: Colors.grey.shade200,
+          child: Text(name.isNotEmpty ? name.substring(0, 1) : '?'),
+        ),
+      ),
+    );
+  }
+
+  void _openDetail(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final d = doc.data();
+    final name = _s(d['name'], _s(d['title'], '商品'));
+    final price = _asNum(d['price'], fallback: 0);
+    final desc = _s(d['description'], '');
+    final imageUrl = _s(d['imageUrl'], '');
+    final isActive = (d['isActive'] ?? true) == true;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 14,
+            bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+                if (imageUrl.isNotEmpty)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.network(
+                      imageUrl,
+                      height: 180,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                    ),
+                  ),
+                if (imageUrl.isNotEmpty) const SizedBox(height: 12),
+                _detailRow('ID', doc.id),
+                _detailRow('價格', '$price'),
+                _detailRow('狀態', isActive ? '上架' : '下架'),
+                if (desc.trim().isNotEmpty) _detailRow('描述', desc),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('關閉'),
                   ),
                 ),
               ],
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
-              child: Text(
-                name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Text(
-                "NT\$$price",
-                style: const TextStyle(
-                    fontWeight: FontWeight.w900,
-                    color: Colors.orangeAccent,
-                    fontSize: 14),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 2, 8, 4),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _detailRow(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(k, style: const TextStyle(color: Colors.grey)),
+          ),
+          Expanded(
+            child: Text(v, style: const TextStyle(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _empty(String text) {
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.info_outline, color: Colors.grey),
+            const SizedBox(width: 10),
+            Expanded(child: Text(text)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _errorBox(String text) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.star_rounded,
-                      color: Colors.orangeAccent, size: 14),
-                  const SizedBox(width: 3),
-                  Text(rating, style: const TextStyle(fontSize: 12)),
+                  const Icon(Icons.error_outline, color: Colors.red),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(text)),
                 ],
               ),
             ),
-          ],
+          ),
         ),
       ),
     );

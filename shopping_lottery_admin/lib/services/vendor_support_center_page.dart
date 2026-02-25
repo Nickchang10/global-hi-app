@@ -9,12 +9,12 @@
 //
 // Firestore 結構建議：support_articles/{id}
 //   - title: String
-//   - category: String            // e.g. 帳號問題/出貨教學/保固維修
-//   - content: String             // 純文字/Markdown/HTML（此頁以純文字顯示，不做 HTML render，避免套件依賴）
-//   - fileUrl: String             // 附件URL（PDF/表單/教學連結）
-//   - tags: List<String>          // e.g. ['登入','出貨']
-//   - isActive: bool              // 預設 true
-//   - sort: num (選用)            // 用於排序（越小越前）
+//   - category: String
+//   - content: String
+//   - fileUrl: String
+//   - tags: List<String>
+//   - isActive: bool
+//   - sort: num (選用)
 //   - updatedAt: Timestamp
 //   - createdAt: Timestamp
 //
@@ -24,9 +24,9 @@
 //
 // 依賴：cloud_firestore, flutter/material, flutter/services
 //
-// 注意：
-// - 若你要「開啟連結」到瀏覽器，需要 url_launcher 套件。此頁為保持可編譯不加外部依賴，改採「複製連結」。
-//   你若已安裝 url_launcher，可在 _openUrl() 內改成 launchUrl。
+// ✅ 已修正：
+// - DropdownButtonFormField.value deprecated → initialValue（並加 ValueKey 讓變更可重建）
+// - withOpacity deprecated → withValues(alpha: ...)
 
 import 'dart:convert';
 
@@ -49,7 +49,8 @@ class VendorSupportCenterPage extends StatefulWidget {
   final String title;
 
   @override
-  State<VendorSupportCenterPage> createState() => _VendorSupportCenterPageState();
+  State<VendorSupportCenterPage> createState() =>
+      _VendorSupportCenterPageState();
 }
 
 class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
@@ -64,7 +65,8 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
   bool _busy = false;
   String _busyLabel = '';
 
-  CollectionReference<Map<String, dynamic>> get _col => _db.collection(widget.collection);
+  CollectionReference<Map<String, dynamic>> get _col =>
+      _db.collection(widget.collection);
 
   @override
   void dispose() {
@@ -91,7 +93,9 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
   Future<void> _copy(String text, {String done = '已複製'}) async {
@@ -152,9 +156,7 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
       q = q.where('isActive', isEqualTo: true);
     }
 
-    // 若有 sort 欄位可用 sort 排序，沒有也不會壞（Firestore 會要求欄位存在才可 orderBy）
-    // 為避免缺欄位導致 runtime error，這裡不強制 sort orderBy。
-    // 改用 updatedAt desc 做通用排序。
+    // 通用排序：updatedAt desc
     q = q.orderBy('updatedAt', descending: true).limit(widget.maxItems);
 
     return q.snapshots();
@@ -163,12 +165,17 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
   // -------------------------
   // Detail dialog
   // -------------------------
-  Future<void> _openDetail({required String id, required Map<String, dynamic> data}) async {
+  Future<void> _openDetail({
+    required String id,
+    required Map<String, dynamic> data,
+  }) async {
     final title = _s(data['title']).isEmpty ? '（無標題）' : _s(data['title']);
     final category = _s(data['category']);
     final content = _s(data['content']);
     final fileUrl = _s(data['fileUrl']);
-    final tags = (data['tags'] is List) ? (data['tags'] as List).map((e) => e.toString()).toList() : <String>[];
+    final tags = (data['tags'] is List)
+        ? (data['tags'] as List).map((e) => e.toString()).toList()
+        : <String>[];
 
     final updatedAt = _toDate(data['updatedAt']);
     final createdAt = _toDate(data['createdAt']);
@@ -188,7 +195,13 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                 Row(
                   children: [
                     Expanded(
-                      child: Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 18,
+                        ),
+                      ),
                     ),
                     IconButton(
                       tooltip: '複製文章ID',
@@ -202,7 +215,11 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    if (category.isNotEmpty) _Pill(label: category, color: Theme.of(context).colorScheme.primary),
+                    if (category.isNotEmpty)
+                      _Pill(
+                        label: category,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
                     if (tags.isNotEmpty)
                       ...tags.take(8).map((t) => _MiniTag(label: t)),
                   ],
@@ -210,10 +227,19 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                 const SizedBox(height: 10),
                 Text(
                   '更新：${_fmt(updatedAt)}    建立：${_fmt(createdAt)}',
-                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
                 ),
                 const Divider(height: 22),
-                Text('內容', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: FontWeight.w900)),
+                Text(
+                  '內容',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
                 const SizedBox(height: 8),
                 _Box(text: content.isEmpty ? '（無內容）' : content),
                 const SizedBox(height: 12),
@@ -221,7 +247,9 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: fileUrl.isEmpty ? null : () => _copy(fileUrl, done: '已複製附件連結'),
+                        onPressed: fileUrl.isEmpty
+                            ? null
+                            : () => _copy(fileUrl, done: '已複製附件連結'),
                         icon: const Icon(Icons.link),
                         label: Text(fileUrl.isEmpty ? '無附件' : '複製附件連結'),
                       ),
@@ -229,7 +257,8 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: () => _copy(jsonEncode(data), done: '已複製文章 JSON'),
+                        onPressed: () =>
+                            _copy(jsonEncode(data), done: '已複製文章 JSON'),
                         icon: const Icon(Icons.code),
                         label: const Text('複製 JSON'),
                       ),
@@ -275,7 +304,9 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
 
       for (final r in rows) {
         final d = r.data;
-        final tags = (d['tags'] is List) ? (d['tags'] as List).map((e) => e.toString()).join('|') : '';
+        final tags = (d['tags'] is List)
+            ? (d['tags'] as List).map((e) => e.toString()).join('|')
+            : '';
 
         final line = <String>[
           r.id,
@@ -307,17 +338,26 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title, style: const TextStyle(fontWeight: FontWeight.w900)),
+        title: Text(
+          widget.title,
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
       ),
       body: Stack(
         children: [
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: _stream(),
             builder: (context, snap) {
-              if (snap.hasError) return Center(child: Text('讀取失敗：${snap.error}'));
-              if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+              if (snap.hasError) {
+                return Center(child: Text('讀取失敗：${snap.error}'));
+              }
+              if (!snap.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
 
-              final allRows = snap.data!.docs.map((d) => _ArticleRow(id: d.id, data: d.data())).toList();
+              final allRows = snap.data!.docs
+                  .map((d) => _ArticleRow(id: d.id, data: d.data()))
+                  .toList();
               final rows = allRows.where(_matchLocal).toList();
 
               // categories
@@ -328,8 +368,12 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
               }
               final categoryList = categories.toList()..sort();
 
+              // ✅ 不在 build 內直接改 state：用 selectedId 局部變數
               final ids = rows.map((e) => e.id).toSet();
-              if (_selectedId != null && !ids.contains(_selectedId)) _selectedId = null;
+              final selectedId =
+                  (_selectedId != null && ids.contains(_selectedId))
+                  ? _selectedId
+                  : null;
 
               return Column(
                 children: [
@@ -345,7 +389,9 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                       setState(() => _q = '');
                     },
                     onCategoryChanged: (v) => setState(() => _category = v),
-                    onExport: (_busy || rows.isEmpty) ? null : () => _exportCsv(rows),
+                    onExport: (_busy || rows.isEmpty)
+                        ? null
+                        : () => _exportCsv(rows),
                   ),
                   const Divider(height: 1),
                   Expanded(
@@ -360,19 +406,27 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                             final r = rows[i];
                             final d = r.data;
 
-                            final title = _s(d['title']).isEmpty ? '（無標題）' : _s(d['title']);
+                            final title = _s(d['title']).isEmpty
+                                ? '（無標題）'
+                                : _s(d['title']);
                             final category = _s(d['category']);
                             final content = _s(d['content']);
                             final fileUrl = _s(d['fileUrl']);
                             final updatedAt = _toDate(d['updatedAt']);
 
                             final tags = (d['tags'] is List)
-                                ? (d['tags'] as List).map((e) => e.toString()).toList()
+                                ? (d['tags'] as List)
+                                      .map((e) => e.toString())
+                                      .toList()
                                 : <String>[];
 
                             return ListTile(
-                              selected: r.id == _selectedId,
-                              leading: Icon(fileUrl.isEmpty ? Icons.article_outlined : Icons.description_outlined),
+                              selected: r.id == selectedId,
+                              leading: Icon(
+                                fileUrl.isEmpty
+                                    ? Icons.article_outlined
+                                    : Icons.description_outlined,
+                              ),
                               title: Row(
                                 children: [
                                   Expanded(
@@ -380,12 +434,19 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                                       title,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontWeight: FontWeight.w900),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                      ),
                                     ),
                                   ),
                                   const SizedBox(width: 8),
                                   if (category.isNotEmpty)
-                                    _Pill(label: category, color: Theme.of(context).colorScheme.primary),
+                                    _Pill(
+                                      label: category,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.primary,
+                                    ),
                                 ],
                               ),
                               subtitle: Padding(
@@ -397,19 +458,32 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                                       Wrap(
                                         spacing: 8,
                                         runSpacing: 8,
-                                        children: tags.take(6).map((t) => _MiniTag(label: t)).toList(),
+                                        children: tags
+                                            .take(6)
+                                            .map((t) => _MiniTag(label: t))
+                                            .toList(),
                                       ),
-                                    if (tags.isNotEmpty) const SizedBox(height: 6),
+                                    if (tags.isNotEmpty)
+                                      const SizedBox(height: 6),
                                     Text(
                                       content.isEmpty ? '（無內容）' : content,
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                      ),
                                     ),
                                     const SizedBox(height: 6),
                                     Text(
                                       '更新：${_fmt(updatedAt)}',
-                                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                        fontSize: 12,
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -429,15 +503,30 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                                       await _copy(url, done: '已複製附件連結');
                                     }
                                   } else if (v == 'copy_json') {
-                                    await _copy(jsonEncode(d), done: '已複製文章 JSON');
+                                    await _copy(
+                                      jsonEncode(d),
+                                      done: '已複製文章 JSON',
+                                    );
                                   }
                                 },
                                 itemBuilder: (_) => const [
-                                  PopupMenuItem(value: 'open', child: Text('開啟詳情')),
+                                  PopupMenuItem(
+                                    value: 'open',
+                                    child: Text('開啟詳情'),
+                                  ),
                                   PopupMenuDivider(),
-                                  PopupMenuItem(value: 'copy_id', child: Text('複製文章ID')),
-                                  PopupMenuItem(value: 'copy_link', child: Text('複製附件連結')),
-                                  PopupMenuItem(value: 'copy_json', child: Text('複製 JSON')),
+                                  PopupMenuItem(
+                                    value: 'copy_id',
+                                    child: Text('複製文章ID'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'copy_link',
+                                    child: Text('複製附件連結'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'copy_json',
+                                    child: Text('複製 JSON'),
+                                  ),
                                 ],
                               ),
                               onTap: () async {
@@ -452,9 +541,9 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
 
                         if (!wide) return list;
 
-                        final selected = _selectedId == null
+                        final selected = selectedId == null
                             ? null
-                            : rows.where((e) => e.id == _selectedId).cast<_ArticleRow?>().firstOrNull;
+                            : rows.where((e) => e.id == selectedId).firstOrNull;
 
                         return Row(
                           children: [
@@ -466,7 +555,11 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                                   ? Center(
                                       child: Text(
                                         '請選擇一篇文章',
-                                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                                        style: TextStyle(
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.onSurfaceVariant,
+                                        ),
                                       ),
                                     )
                                   : _DetailSide(
@@ -474,17 +567,26 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
                                       data: selected.data,
                                       fmt: _fmt,
                                       toDate: _toDate,
-                                      onOpen: () => _openDetail(id: selected.id, data: selected.data),
-                                      onCopyId: () => _copy(selected.id, done: '已複製文章ID'),
+                                      onOpen: () => _openDetail(
+                                        id: selected.id,
+                                        data: selected.data,
+                                      ),
+                                      onCopyId: () =>
+                                          _copy(selected.id, done: '已複製文章ID'),
                                       onCopyLink: () {
-                                        final url = _s(selected.data['fileUrl']);
+                                        final url = _s(
+                                          selected.data['fileUrl'],
+                                        );
                                         if (url.isEmpty) {
                                           _snack('此文章沒有附件連結');
                                           return Future.value();
                                         }
                                         return _copy(url, done: '已複製附件連結');
                                       },
-                                      onCopyJson: () => _copy(jsonEncode(selected.data), done: '已複製文章 JSON'),
+                                      onCopyJson: () => _copy(
+                                        jsonEncode(selected.data),
+                                        done: '已複製文章 JSON',
+                                      ),
                                     ),
                             ),
                           ],
@@ -501,7 +603,9 @@ class _VendorSupportCenterPageState extends State<VendorSupportCenterPage> {
               left: 0,
               right: 0,
               bottom: 0,
-              child: _BusyBar(label: _busyLabel.isEmpty ? '處理中...' : _busyLabel),
+              child: _BusyBar(
+                label: _busyLabel.isEmpty ? '處理中...' : _busyLabel,
+              ),
             ),
         ],
       ),
@@ -574,8 +678,11 @@ class _Filters extends StatelessWidget {
       onChanged: onQueryChanged,
     );
 
+    // ✅ Flutter 3.33+：value deprecated → initialValue
+    // ✅ 加 key: ValueKey(category) 讓 category 更新時可重建、UI 立即同步
     final dd = DropdownButtonFormField<String?>(
-      value: category,
+      key: ValueKey<String?>(category),
+      initialValue: category,
       isExpanded: true,
       decoration: const InputDecoration(
         isDense: true,
@@ -682,7 +789,9 @@ class _DetailSide extends StatelessWidget {
     final category = _s(data['category']);
     final fileUrl = _s(data['fileUrl']);
     final content = _s(data['content']);
-    final tags = (data['tags'] is List) ? (data['tags'] as List).map((e) => e.toString()).toList() : <String>[];
+    final tags = (data['tags'] is List)
+        ? (data['tags'] as List).map((e) => e.toString()).toList()
+        : <String>[];
 
     final updatedAt = toDate(data['updatedAt']);
     final active = _isTrue(data['isActive']);
@@ -692,15 +801,20 @@ class _DetailSide extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+          ),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              if (category.isNotEmpty) _Pill(label: category, color: cs.primary),
+              if (category.isNotEmpty)
+                _Pill(label: category, color: cs.primary),
               _MiniTag(label: active ? '啟用' : '停用'),
-              if (tags.isNotEmpty) ...tags.take(10).map((t) => _MiniTag(label: t)),
+              if (tags.isNotEmpty)
+                ...tags.take(10).map((t) => _MiniTag(label: t)),
             ],
           ),
           const SizedBox(height: 10),
@@ -708,9 +822,19 @@ class _DetailSide extends StatelessWidget {
           const SizedBox(height: 6),
           _InfoRow(label: 'updatedAt', value: fmt(updatedAt)),
           const SizedBox(height: 6),
-          _InfoRow(label: 'fileUrl', value: fileUrl.isEmpty ? '-' : fileUrl, onCopy: fileUrl.isEmpty ? null : onCopyLink),
+          _InfoRow(
+            label: 'fileUrl',
+            value: fileUrl.isEmpty ? '-' : fileUrl,
+            onCopy: fileUrl.isEmpty ? null : onCopyLink,
+          ),
           const Divider(height: 22),
-          Text('內容', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w900)),
+          Text(
+            '內容',
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
           const SizedBox(height: 8),
           Expanded(child: _Box(text: content.isEmpty ? '（無內容）' : content)),
           const SizedBox(height: 12),
@@ -752,11 +876,18 @@ class _Pill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withOpacity(0.25)),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
       ),
-      child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w900, fontSize: 12)),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w900,
+          fontSize: 12,
+        ),
+      ),
     );
   }
 }
@@ -771,11 +902,18 @@ class _MiniTag extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.22),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.22),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: cs.outline.withOpacity(0.12)),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.12)),
       ),
-      child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800, fontSize: 12)),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: cs.onSurfaceVariant,
+          fontWeight: FontWeight.w800,
+          fontSize: 12,
+        ),
+      ),
     );
   }
 }
@@ -793,8 +931,19 @@ class _InfoRow extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(width: 92, child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12))),
-        Expanded(child: Text(value.isEmpty ? '-' : value, style: const TextStyle(fontWeight: FontWeight.w800))),
+        SizedBox(
+          width: 92,
+          child: Text(
+            label,
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value.isEmpty ? '-' : value,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
         if (onCopy != null)
           IconButton(
             tooltip: '複製',
@@ -817,9 +966,9 @@ class _Box extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.25),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.25),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: cs.outline.withOpacity(0.18)),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.18)),
       ),
       child: SingleChildScrollView(child: Text(text)),
     );
@@ -840,9 +989,21 @@ class _BusyBar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         child: Row(
           children: [
-            const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
             const SizedBox(width: 10),
-            Expanded(child: Text(label, style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800))),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
           ],
         ),
       ),

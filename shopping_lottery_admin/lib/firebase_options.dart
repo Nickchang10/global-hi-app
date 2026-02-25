@@ -1,10 +1,15 @@
 // lib/firebase_options.dart
-import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
+import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 
+/// ⚠️ 佔位版：先讓專案能編譯/跑起來
+/// 請把下面的 apiKey / appId / messagingSenderId / projectId…
+/// 換成你 Firebase Console 的真實設定，或重新跑 flutterfire configure 產生正式檔案。
 class DefaultFirebaseOptions {
   static FirebaseOptions get currentPlatform {
     if (kIsWeb) return web;
+
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
         return android;
@@ -17,26 +22,22 @@ class DefaultFirebaseOptions {
       case TargetPlatform.linux:
         return linux;
       default:
-        throw UnsupportedError('DefaultFirebaseOptions are not supported for this platform.');
+        return android;
     }
   }
 
-  // -----------------------
-  // WEB（✅ 已填入真實值）
-  // -----------------------
   static const FirebaseOptions web = FirebaseOptions(
     apiKey: 'AIzaSyAtipjUHy_aInMD_WNY0JL_RsMfv88fTQY',
-    authDomain: 'global-hi-app.firebaseapp.com',
-    projectId: 'global-hi-app',
-    storageBucket: 'global-hi-app.firebasestorage.app',
+    appId: '1:569654002656:web:60089c954fc5721913a185',
     messagingSenderId: '569654002656',
-    appId: '1:569654002656:web:93160142b0980e8313a185',
-    measurementId: 'G-RQ6YSSYKFB',
+    projectId: 'global-hi-app',
+    authDomain: 'global-hi-app.firebaseapp.com',
+    storageBucket: 'global-hi-app.firebasestorage.app',
+    measurementId: 'G-BB1BHZHEJ6',
   );
 
-  // -----------------------
-  // ANDROID
-  // -----------------------
+  // ✅ 下面全部請換成真實值（先填佔位也能編譯，但 Firebase 可能無法連線）
+
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyBbQVFqXoXlsxZ0H55NHVfYT9gYbTAxRS0',
     appId: '1:569654002656:android:3616f4261c8e527513a185',
@@ -45,40 +46,40 @@ class DefaultFirebaseOptions {
     storageBucket: 'global-hi-app.firebasestorage.app',
   );
 
-  // -----------------------
-  // iOS / macOS / Windows / Linux（如需才替換）
-  // -----------------------
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'REPLACE_IOS_API_KEY',
-    appId: 'REPLACE_IOS_APP_ID',
-    messagingSenderId: 'REPLACE_IOS_SENDER_ID',
+    apiKey: 'AIzaSyBdUk1d6i1XPKxQHB2ak0BviIUmejLZC2Y',
+    appId: '1:569654002656:ios:c2875faaabb849a313a185',
+    messagingSenderId: '569654002656',
     projectId: 'global-hi-app',
     storageBucket: 'global-hi-app.firebasestorage.app',
-    iosClientId: 'REPLACE_IOS_CLIENT_ID',
-    iosBundleId: 'REPLACE_IOS_BUNDLE_ID',
+    iosClientId: '569654002656-a43cdjeit5ch9parl4c4hil4hbk875vd.apps.googleusercontent.com',
+    iosBundleId: 'com.example.shoppingLotteryAdmin',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
-    apiKey: 'REPLACE_MACOS_API_KEY',
-    appId: 'REPLACE_MACOS_APP_ID',
-    messagingSenderId: 'REPLACE_MACOS_SENDER_ID',
+    apiKey: 'AIzaSyBdUk1d6i1XPKxQHB2ak0BviIUmejLZC2Y',
+    appId: '1:569654002656:ios:c2875faaabb849a313a185',
+    messagingSenderId: '569654002656',
     projectId: 'global-hi-app',
     storageBucket: 'global-hi-app.firebasestorage.app',
+    iosClientId: '569654002656-a43cdjeit5ch9parl4c4hil4hbk875vd.apps.googleusercontent.com',
+    iosBundleId: 'com.example.shoppingLotteryAdmin',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
-    apiKey: 'REPLACE_WINDOWS_API_KEY',
-    appId: 'REPLACE_WINDOWS_APP_ID',
-    messagingSenderId: 'REPLACE_WINDOWS_SENDER_ID',
+    apiKey: 'AIzaSyAtipjUHy_aInMD_WNY0JL_RsMfv88fTQY',
+    appId: '1:569654002656:web:60089c954fc5721913a185',
+    messagingSenderId: '569654002656',
     projectId: 'global-hi-app',
+    authDomain: 'global-hi-app.firebaseapp.com',
     storageBucket: 'global-hi-app.firebasestorage.app',
+    measurementId: 'G-BB1BHZHEJ6',
   );
 
   static const FirebaseOptions linux = FirebaseOptions(
-    apiKey: 'REPLACE_LINUX_API_KEY',
-    appId: 'REPLACE_LINUX_APP_ID',
-    messagingSenderId: 'REPLACE_LINUX_SENDER_ID',
-    projectId: 'global-hi-app',
-    storageBucket: 'global-hi-app.firebasestorage.app',
+    apiKey: 'REPLACE_ME',
+    appId: 'REPLACE_ME',
+    messagingSenderId: 'REPLACE_ME',
+    projectId: 'REPLACE_ME',
   );
 }

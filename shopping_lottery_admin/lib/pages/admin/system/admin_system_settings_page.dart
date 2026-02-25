@@ -1,24 +1,18 @@
 // lib/pages/admin/system/admin_system_settings_page.dart
 //
-// ✅ AdminSystemSettingsPage（最終完整版｜可直接使用｜可編譯）
+// ✅ AdminSystemSettingsPage（系統設定｜可編譯完整版｜已修正 lint）
 // ------------------------------------------------------------
-// Firestore: app_config/{id}  (建議用 app_config/global)
-// ------------------------------------------------------------
-// 支援：
-// - 文字/數字/布林開關/JSON(Map/List) 設定
-// - merge 儲存（不覆蓋未顯示欄位）
-// - 顯示 updatedAt
+// - Firestore 路徑：app_config/system_settings（可自行改）
+// - 讀取/編輯/儲存設定（merge）
+// - 常用開關：maintenanceMode / enableCoupons / enableCampaigns / enableSOS...
+// - 常用欄位：supportEmail / supportPhone / maintenanceMessage...
+// - 提供「原始 JSON 檢視」與「整包 JSON 編輯」
 //
-// 建議 app_config/global 欄位（可依你需求增減）：
-// {
-//   appName: "Osmile",
-//   maintenance: { enabled: false, message: "系統維護中" },
-//   featureFlags: { coupons: true, lottery: true, vendors: true },
-//   checkout: { minOrderAmount: 0, freeShippingThreshold: 999 },
-//   support: { lineId: "@osmile", phone: "02-xxxxxxx" },
-//   updatedAt: Timestamp,
-// }
+// ✅ 已修正：
+// - deprecated_member_use：withOpacity → withValues(alpha: ...)
+// - use_build_context_synchronously：async gap 後使用 context → 先取 messenger 再用
 //
+// 依賴：cloud_firestore
 // ------------------------------------------------------------
 
 import 'dart:convert';
@@ -30,455 +24,524 @@ class AdminSystemSettingsPage extends StatefulWidget {
   const AdminSystemSettingsPage({super.key});
 
   @override
-  State<AdminSystemSettingsPage> createState() => _AdminSystemSettingsPageState();
+  State<AdminSystemSettingsPage> createState() =>
+      _AdminSystemSettingsPageState();
 }
 
 class _AdminSystemSettingsPageState extends State<AdminSystemSettingsPage> {
   final _db = FirebaseFirestore.instance;
 
-  /// 你可以改成 global / prod / staging 等
-  final String _docId = 'global';
+  // ✅ 你可以改成你專案實際的設定路徑
+  static const String _collection = 'app_config';
+  static const String _docId = 'system_settings';
 
-  /// 基本欄位 controllers
-  final _appNameCtl = TextEditingController();
-  final _supportLineCtl = TextEditingController();
-  final _supportPhoneCtl = TextEditingController();
-
-  /// 數字欄位 controllers
-  final _minOrderCtl = TextEditingController();
-  final _freeShipCtl = TextEditingController();
-
-  /// 布林開關
-  bool _maintenanceEnabled = false;
-  bool _flagCoupons = true;
-  bool _flagLottery = true;
-  bool _flagVendors = true;
-
-  /// 進階 JSON editor（允許你存任何 Map/List 設定）
-  final _jsonCtl = TextEditingController();
-  bool _jsonValid = true;
-
-  DateTime? _updatedAt;
   bool _loading = true;
-  bool _saving = false;
+  String? _error;
 
-  DocumentReference<Map<String, dynamic>> get _ref =>
-      _db.collection('app_config').doc(_docId);
+  Map<String, dynamic> _data = <String, dynamic>{};
+  String? _saveResult;
+
+  // UI controllers
+  final _supportEmailCtrl = TextEditingController();
+  final _supportPhoneCtrl = TextEditingController();
+  final _maintenanceMsgCtrl = TextEditingController();
+  final _defaultShippingFeeCtrl = TextEditingController();
+  final _taxRateCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _load();
-    _jsonCtl.addListener(_validateJson);
   }
 
   @override
   void dispose() {
-    _appNameCtl.dispose();
-    _supportLineCtl.dispose();
-    _supportPhoneCtl.dispose();
-    _minOrderCtl.dispose();
-    _freeShipCtl.dispose();
-    _jsonCtl.removeListener(_validateJson);
-    _jsonCtl.dispose();
+    _supportEmailCtrl.dispose();
+    _supportPhoneCtrl.dispose();
+    _maintenanceMsgCtrl.dispose();
+    _defaultShippingFeeCtrl.dispose();
+    _taxRateCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  DocumentReference<Map<String, dynamic>> get _ref =>
+      _db.collection(_collection).doc(_docId);
 
-    try {
-      final snap = await _ref.get();
-      final data = snap.data() ?? {};
-
-      // 安全取值
-      _appNameCtl.text = (data['appName'] ?? 'Osmile').toString();
-
-      final maintenance = _asMap(data['maintenance']);
-      _maintenanceEnabled = maintenance['enabled'] == true;
-
-      final featureFlags = _asMap(data['featureFlags']);
-      _flagCoupons = featureFlags['coupons'] != false;
-      _flagLottery = featureFlags['lottery'] != false;
-      _flagVendors = featureFlags['vendors'] != false;
-
-      final checkout = _asMap(data['checkout']);
-      _minOrderCtl.text = _numToText(checkout['minOrderAmount'], fallback: '0');
-      _freeShipCtl.text = _numToText(checkout['freeShippingThreshold'], fallback: '0');
-
-      final support = _asMap(data['support']);
-      _supportLineCtl.text = (support['lineId'] ?? '').toString();
-      _supportPhoneCtl.text = (support['phone'] ?? '').toString();
-
-      _updatedAt = _toDateTime(data['updatedAt']);
-
-      // JSON editor：存放「你想額外保留的設定」
-      // 這裡預設把整份 doc（去掉 updatedAt）丟進 editor，讓你可完整掌控
-      final clone = Map<String, dynamic>.from(data);
-      clone.remove('updatedAt');
-
-      _jsonCtl.text = const JsonEncoder.withIndent('  ').convert(clone);
-      _jsonValid = true;
-    } catch (e) {
-      _toast('載入失敗：$e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
+  // -----------------------------
+  // helpers
+  // -----------------------------
+  bool _b(dynamic v, {bool fallback = false}) {
+    if (v is bool) return v;
+    if (v is num) return v != 0;
+    final s = (v ?? '').toString().toLowerCase().trim();
+    if (s == 'true' || s == '1' || s == 'yes') return true;
+    if (s == 'false' || s == '0' || s == 'no') return false;
+    return fallback;
   }
 
-  void _validateJson() {
-    final t = _jsonCtl.text.trim();
-    if (t.isEmpty) {
-      if (_jsonValid != true) setState(() => _jsonValid = true);
-      return;
-    }
+  num _n(dynamic v, {num fallback = 0}) {
+    if (v is num) return v;
+    return num.tryParse((v ?? '').toString()) ?? fallback;
+  }
+
+  String _s(dynamic v) => (v ?? '').toString();
+
+  void _bindControllersFromData() {
+    _supportEmailCtrl.text = _s(_data['supportEmail']);
+    _supportPhoneCtrl.text = _s(_data['supportPhone']);
+    _maintenanceMsgCtrl.text = _s(_data['maintenanceMessage']);
+    _defaultShippingFeeCtrl.text = _n(_data['defaultShippingFee']).toString();
+    _taxRateCtrl.text = _n(_data['taxRate']).toString();
+  }
+
+  Map<String, dynamic> _buildDefault() {
+    return <String, dynamic>{
+      'maintenanceMode': false,
+      'maintenanceMessage': '系統維護中，請稍後再試。',
+      'enableCoupons': true,
+      'enableCampaigns': true,
+      'enableSOS': true,
+      'enableVendorPortal': true,
+      'supportEmail': '',
+      'supportPhone': '',
+      'defaultShippingFee': 0,
+      'taxRate': 0,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+  }
+
+  // -----------------------------
+  // load / save
+  // -----------------------------
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+      _saveResult = null;
+    });
+
     try {
-      final obj = jsonDecode(t);
-      final ok = (obj is Map) || (obj is List);
-      if (_jsonValid != ok) setState(() => _jsonValid = ok);
-    } catch (_) {
-      if (_jsonValid != false) setState(() => _jsonValid = false);
+      final doc = await _ref.get();
+      if (!doc.exists) {
+        // 若不存在就先建立一份預設
+        final defaults = _buildDefault();
+        await _ref.set(defaults, SetOptions(merge: true));
+        _data = Map<String, dynamic>.from(defaults);
+      } else {
+        _data = Map<String, dynamic>.from(doc.data() ?? <String, dynamic>{});
+      }
+
+      _bindControllersFromData();
+
+      if (!mounted) return;
+      setState(() => _loading = false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = e.toString();
+      });
     }
   }
 
   Future<void> _save() async {
-    if (_saving) return;
-
-    // 1) JSON 必須合法
-    if (!_jsonValid) {
-      _toast('JSON 格式不正確，請修正後再儲存');
-      return;
-    }
-
-    // 2) 數字欄位安全解析
-    final minOrder = _tryParseNum(_minOrderCtl.text, fallback: 0);
-    final freeShip = _tryParseNum(_freeShipCtl.text, fallback: 0);
-
-    // 3) JSON 內容解析（若空則使用空 map）
-    Map<String, dynamic> jsonMap = {};
-    final rawJson = _jsonCtl.text.trim();
-    if (rawJson.isNotEmpty) {
-      final decoded = jsonDecode(rawJson);
-      if (decoded is Map) {
-        jsonMap = decoded.map((k, v) => MapEntry(k.toString(), v));
-      } else {
-        // 若你想允許 List 當根節點，可自行改存到某個欄位
-        _toast('JSON 根節點請使用 Object（{...}）以便儲存到 Firestore');
-        return;
-      }
-    }
-
-    // 4) 用 UI 欄位覆蓋 JSON 中對應 key（確保 UI 為主）
-    jsonMap['appName'] = _appNameCtl.text.trim().isEmpty ? 'Osmile' : _appNameCtl.text.trim();
-
-    jsonMap['maintenance'] = {
-      ..._asMap(jsonMap['maintenance']),
-      'enabled': _maintenanceEnabled,
-      // message 讓你在 JSON editor 裡自行維護（不強迫 UI）
-    };
-
-    jsonMap['featureFlags'] = {
-      ..._asMap(jsonMap['featureFlags']),
-      'coupons': _flagCoupons,
-      'lottery': _flagLottery,
-      'vendors': _flagVendors,
-    };
-
-    jsonMap['checkout'] = {
-      ..._asMap(jsonMap['checkout']),
-      'minOrderAmount': minOrder,
-      'freeShippingThreshold': freeShip,
-    };
-
-    jsonMap['support'] = {
-      ..._asMap(jsonMap['support']),
-      'lineId': _supportLineCtl.text.trim(),
-      'phone': _supportPhoneCtl.text.trim(),
-    };
-
-    setState(() => _saving = true);
+    // ✅ 先取 messenger，避免 async gap 後再用 context
+    final messenger = ScaffoldMessenger.of(context);
 
     try {
-      await _ref.set(
-        {
-          ...jsonMap,
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-      _toast('已儲存設定');
-      await _load(); // 重新載入以更新 updatedAt
+      final patch = <String, dynamic>{
+        'maintenanceMode': _b(_data['maintenanceMode']),
+        'maintenanceMessage': _maintenanceMsgCtrl.text.trim(),
+        'enableCoupons': _b(_data['enableCoupons'], fallback: true),
+        'enableCampaigns': _b(_data['enableCampaigns'], fallback: true),
+        'enableSOS': _b(_data['enableSOS'], fallback: true),
+        'enableVendorPortal': _b(_data['enableVendorPortal'], fallback: true),
+        'supportEmail': _supportEmailCtrl.text.trim(),
+        'supportPhone': _supportPhoneCtrl.text.trim(),
+        'defaultShippingFee': _n(
+          _defaultShippingFeeCtrl.text.trim(),
+          fallback: 0,
+        ),
+        'taxRate': _n(_taxRateCtrl.text.trim(), fallback: 0),
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      await _ref.set(patch, SetOptions(merge: true));
+
+      if (!mounted) return;
+      setState(() {
+        _saveResult = '已儲存：${DateTime.now().toIso8601String()}';
+        _data = {..._data, ...patch}; // 本地同步
+      });
+
+      if (!mounted) return;
+      messenger.showSnackBar(const SnackBar(content: Text('系統設定已儲存')));
     } catch (e) {
-      _toast('儲存失敗：$e');
-    } finally {
-      if (mounted) setState(() => _saving = false);
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
     }
   }
 
+  // -----------------------------
+  // raw json edit
+  // -----------------------------
+  String _prettyJson(Map<String, dynamic> m) {
+    return const JsonEncoder.withIndent('  ').convert(m);
+  }
+
+  Future<void> _editRawJson() async {
+    // ✅ 先取 messenger，避免 async gap 後再用 context
+    final messenger = ScaffoldMessenger.of(context);
+
+    final ctrl = TextEditingController(text: _prettyJson(_data));
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text(
+          '編輯原始 JSON',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
+        content: SizedBox(
+          width: 720,
+          child: TextField(
+            controller: ctrl,
+            maxLines: 18,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              isDense: true,
+              hintText: '{ ... }',
+            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('套用'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      final parsed = json.decode(ctrl.text) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() => _data = Map<String, dynamic>.from(parsed));
+      _bindControllersFromData();
+      messenger.showSnackBar(const SnackBar(content: Text('已套用到本地（記得按儲存）')));
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('JSON 格式錯誤：$e')));
+    }
+  }
+
+  // -----------------------------
+  // UI
+  // -----------------------------
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    if (_error != null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text(
+            '系統設定',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+          actions: [
+            IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+          ],
+        ),
+        body: Center(child: Text('載入失敗：$_error')),
+      );
+    }
+
+    final maintenance = _b(_data['maintenanceMode']);
+    final enableCoupons = _b(_data['enableCoupons'], fallback: true);
+    final enableCampaigns = _b(_data['enableCampaigns'], fallback: true);
+    final enableSOS = _b(_data['enableSOS'], fallback: true);
+    final enableVendorPortal = _b(_data['enableVendorPortal'], fallback: true);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('系統設定（app_config）', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '系統設定',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
             tooltip: '重新載入',
+            onPressed: _load,
             icon: const Icon(Icons.refresh),
-            onPressed: _loading || _saving ? null : _load,
           ),
-          const SizedBox(width: 6),
+          IconButton(
+            tooltip: '編輯原始 JSON',
+            onPressed: _editRawJson,
+            icon: const Icon(Icons.code),
+          ),
           FilledButton.icon(
-            onPressed: _loading || _saving ? null : _save,
-            icon: _saving
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.save),
-            label: Text(_saving ? '儲存中' : '儲存'),
+            onPressed: _save,
+            icon: const Icon(Icons.save),
+            label: const Text('儲存'),
           ),
           const SizedBox(width: 10),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
-              children: [
-                _sectionCard(
-                  title: '基本資訊',
-                  child: Column(
-                    children: [
-                      TextField(
-                        controller: _appNameCtl,
-                        decoration: const InputDecoration(
-                          labelText: 'App 名稱（appName）',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _supportLineCtl,
-                              decoration: const InputDecoration(
-                                labelText: '客服 Line ID（support.lineId）',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: TextField(
-                              controller: _supportPhoneCtl,
-                              decoration: const InputDecoration(
-                                labelText: '客服電話（support.phone）',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (_saveResult != null)
+            Card(
+              elevation: 0,
+              // ✅ 修正：withOpacity deprecated → withValues(alpha: ...)
+              color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  _saveResult!,
+                  style: TextStyle(color: cs.onSurfaceVariant),
                 ),
-                const SizedBox(height: 12),
-
-                _sectionCard(
-                  title: '維護模式（maintenance）',
-                  child: SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('啟用維護模式', style: TextStyle(fontWeight: FontWeight.w800)),
-                    subtitle: const Text('maintenance.enabled = true 時，前台可顯示維護頁'),
-                    value: _maintenanceEnabled,
-                    onChanged: (v) => setState(() => _maintenanceEnabled = v),
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                _sectionCard(
-                  title: '功能開關（featureFlags）',
-                  child: Column(
-                    children: [
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('優惠券', style: TextStyle(fontWeight: FontWeight.w800)),
-                        value: _flagCoupons,
-                        onChanged: (v) => setState(() => _flagCoupons = v ?? false),
-                      ),
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('抽獎', style: TextStyle(fontWeight: FontWeight.w800)),
-                        value: _flagLottery,
-                        onChanged: (v) => setState(() => _flagLottery = v ?? false),
-                      ),
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('廠商功能', style: TextStyle(fontWeight: FontWeight.w800)),
-                        value: _flagVendors,
-                        onChanged: (v) => setState(() => _flagVendors = v ?? false),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                _sectionCard(
-                  title: '結帳規則（checkout）',
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _minOrderCtl,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: '最低下單金額（minOrderAmount）',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: _freeShipCtl,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: '免運門檻（freeShippingThreshold）',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                _sectionCard(
-                  title: '進階設定（JSON 編輯器）',
-                  subtitle: '此區塊會把整份 app_config/$ _docId（不含 updatedAt）以 JSON 顯示，可自由增減欄位。',
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        decoration: BoxDecoration(
-                          border: Border.all(color: _jsonValid ? Colors.grey.shade300 : cs.error),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: TextField(
-                          controller: _jsonCtl,
-                          maxLines: 16,
-                          decoration: const InputDecoration(
-                            contentPadding: EdgeInsets.all(12),
-                            border: InputBorder.none,
-                            hintText: '{\n  "featureFlags": {...}\n}',
-                          ),
-                          style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(
-                            _jsonValid ? Icons.check_circle : Icons.error_outline,
-                            color: _jsonValid ? Colors.green : cs.error,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            _jsonValid ? 'JSON 格式正確' : 'JSON 格式不正確（無法儲存）',
-                            style: TextStyle(
-                              color: _jsonValid ? Colors.green : cs.error,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const Spacer(),
-                          if (_updatedAt != null)
-                            Text(
-                              '更新：${_formatUpdatedAt(_updatedAt!)}',
-                              style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700),
-                            ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+              ),
             ),
-    );
-  }
+          const SizedBox(height: 12),
 
-  // ------------------------------------------------------------
-  // UI helpers
-  // ------------------------------------------------------------
+          // Feature Toggles
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '功能開關',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      '維護模式 maintenanceMode',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: const Text('開啟後可在前台顯示維護訊息／阻擋操作（由前台自行判斷）'),
+                    value: maintenance,
+                    onChanged: (v) =>
+                        setState(() => _data['maintenanceMode'] = v),
+                  ),
+                  if (maintenance) ...[
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _maintenanceMsgCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '維護訊息 maintenanceMessage',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      maxLines: 2,
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      '啟用優惠券 enableCoupons',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    value: enableCoupons,
+                    onChanged: (v) =>
+                        setState(() => _data['enableCoupons'] = v),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      '啟用活動/投放 enableCampaigns',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    value: enableCampaigns,
+                    onChanged: (v) =>
+                        setState(() => _data['enableCampaigns'] = v),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      '啟用 SOS enableSOS',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    value: enableSOS,
+                    onChanged: (v) => setState(() => _data['enableSOS'] = v),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      '啟用 Vendor 後台 enableVendorPortal',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    value: enableVendorPortal,
+                    onChanged: (v) =>
+                        setState(() => _data['enableVendorPortal'] = v),
+                  ),
+                ],
+              ),
+            ),
+          ),
 
-  Widget _sectionCard({required String title, String? subtitle, required Widget child}) {
-    return Card(
-      elevation: 0,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-            if (subtitle != null) ...[
-              const SizedBox(height: 6),
-              Text(subtitle, style: TextStyle(color: Colors.grey.shade700)),
-            ],
-            const SizedBox(height: 12),
-            child,
-          ],
-        ),
+          const SizedBox(height: 12),
+
+          // Support info
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '客服資訊',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _supportEmailCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'supportEmail',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _supportPhoneCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'supportPhone',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Pricing defaults
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '預設金流/費用',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _defaultShippingFeeCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'defaultShippingFee',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _taxRateCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'taxRate（例：0.05）',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Raw JSON preview
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '原始設定 JSON（檢視）',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      // ✅ 修正：withOpacity deprecated → withValues(alpha: ...)
+                      color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+                    ),
+                    child: Text(
+                      _prettyJson(_data),
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 10,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _editRawJson,
+                        icon: const Icon(Icons.edit),
+                        label: const Text('整包 JSON 編輯'),
+                      ),
+                      OutlinedButton.icon(
+                        // ✅ 修正：async gap 後不再用 ScaffoldMessenger.of(context)
+                        onPressed: () async {
+                          final messenger = ScaffoldMessenger.of(context);
+                          try {
+                            await _ref.set(_data, SetOptions(merge: true));
+                            if (!mounted) return;
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content: Text('已 merge 原始 JSON 到 Firestore'),
+                              ),
+                            );
+                          } catch (e) {
+                            if (!mounted) return;
+                            messenger.showSnackBar(
+                              SnackBar(content: Text('merge 失敗：$e')),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.cloud_upload_outlined),
+                        label: const Text('直接 merge 上傳'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 30),
+        ],
       ),
     );
   }
-
-  String _formatUpdatedAt(DateTime dt) {
-    // 你若要固定格式可改成 intl
-    return '${dt.year.toString().padLeft(4, '0')}/'
-        '${dt.month.toString().padLeft(2, '0')}/'
-        '${dt.day.toString().padLeft(2, '0')} '
-        '${dt.hour.toString().padLeft(2, '0')}:'
-        '${dt.minute.toString().padLeft(2, '0')}';
-  }
-
-  void _toast(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-}
-
-// ------------------------------------------------------------
-// Helpers（安全取值 / 型別轉換）
-// ------------------------------------------------------------
-
-Map<String, dynamic> _asMap(dynamic v) {
-  if (v is Map<String, dynamic>) return v;
-  if (v is Map) return v.map((k, val) => MapEntry(k.toString(), val));
-  return <String, dynamic>{};
-}
-
-DateTime? _toDateTime(dynamic v) {
-  if (v == null) return null;
-  if (v is DateTime) return v;
-  if (v is Timestamp) return v.toDate();
-  if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
-  return null;
-}
-
-String _numToText(dynamic v, {required String fallback}) {
-  if (v == null) return fallback;
-  if (v is num) return v.toString();
-  final s = v.toString().trim();
-  return s.isEmpty ? fallback : s;
-}
-
-num _tryParseNum(String s, {required num fallback}) {
-  final t = s.trim();
-  if (t.isEmpty) return fallback;
-  final n = num.tryParse(t);
-  return n ?? fallback;
 }

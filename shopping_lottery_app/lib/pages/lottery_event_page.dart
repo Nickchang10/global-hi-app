@@ -1,3 +1,9 @@
+// lib/pages/lottery_event_page.dart
+//
+// ✅ LotteryEventPage（最終完整版｜已修正 withOpacity -> withValues）
+// - 修正 lint: deprecated_member_use（withOpacity）
+// - 其餘邏輯不變：倒數、任務完成、報名、抽獎（Demo）
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/event_lottery_service.dart';
@@ -122,7 +128,7 @@ class _LotteryEventPageState extends State<LotteryEventPage> {
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text("確定"),
-          )
+          ),
         ],
       ),
     );
@@ -138,24 +144,19 @@ class _LotteryEventPageState extends State<LotteryEventPage> {
     final seconds = _timeLeft.inSeconds.remainder(60);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("🎉 限時活動抽獎"),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text("🎉 限時活動抽獎"), centerTitle: true),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             const SizedBox(height: 20),
+
             // 🕓 活動倒數
             if (isActive)
               Column(
                 children: [
-                  const Text(
-                    "距離活動結束還有",
-                    style: TextStyle(fontSize: 18),
-                  ),
+                  const Text("距離活動結束還有", style: TextStyle(fontSize: 18)),
                   const SizedBox(height: 6),
                   Text(
                     "$minutes 分 $seconds 秒",
@@ -171,10 +172,12 @@ class _LotteryEventPageState extends State<LotteryEventPage> {
               const Text("活動已結束", style: TextStyle(color: Colors.grey)),
 
             const SizedBox(height: 20),
+
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.orangeAccent.withOpacity(0.1),
+                // ✅ FIX: withOpacity -> withValues(alpha: ...)
+                color: Colors.orangeAccent.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: Colors.orangeAccent),
               ),
@@ -204,10 +207,13 @@ class _LotteryEventPageState extends State<LotteryEventPage> {
                 backgroundColor: isAllTasksDone
                     ? Colors.green
                     : Colors.grey.shade400,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 60, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 60,
+                  vertical: 14,
+                ),
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30)),
+                  borderRadius: BorderRadius.circular(30),
+                ),
               ),
               icon: const Icon(Icons.how_to_vote),
               label: const Text(
@@ -225,11 +231,13 @@ class _LotteryEventPageState extends State<LotteryEventPage> {
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
               ),
               const SizedBox(height: 10),
-              ..._event.participants.map((p) => ListTile(
-                    leading: const Icon(Icons.person),
-                    title: Text(p["name"]),
-                    subtitle: Text(p["time"].toString().substring(0, 19)),
-                  )),
+              ..._event.participants.map(
+                (p) => ListTile(
+                  leading: const Icon(Icons.person),
+                  title: Text(p["name"]),
+                  subtitle: Text(p["time"].toString().substring(0, 19)),
+                ),
+              ),
             ],
 
             const SizedBox(height: 40),
@@ -254,7 +262,11 @@ class _LotteryEventPageState extends State<LotteryEventPage> {
   // 🟠 任務按鈕元件
   // -----------------------------------------------------------------
   Widget _taskButton(
-      String text, bool done, VoidCallback onTap, IconData icon) {
+    String text,
+    bool done,
+    VoidCallback onTap,
+    IconData icon,
+  ) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: ElevatedButton.icon(
@@ -263,8 +275,9 @@ class _LotteryEventPageState extends State<LotteryEventPage> {
           backgroundColor: done ? Colors.green : Colors.blueAccent,
           foregroundColor: Colors.white,
           padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 14),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(30),
+          ),
         ),
         icon: Icon(icon),
         label: Text(

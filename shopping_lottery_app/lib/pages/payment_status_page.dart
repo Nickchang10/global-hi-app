@@ -1,349 +1,359 @@
 // lib/pages/payment_status_page.dart
-// =======================================================
-// ✅ PaymentStatusPage - 最終整合完整版（Osmile Shopping Flow）
-// -------------------------------------------------------
-// 功能：
-// - 與 OrderService 自動連動（更新狀態為 paid）
-// - 支援 LotteryService 自動發放回饋
-// - 通知中心自動推送付款結果
-// - Confetti 動畫與倒數跳轉抽獎頁
-// - 容錯處理：若部分服務不存在或方法缺失，不會掛掉
-// =======================================================
+//
+// ✅ PaymentStatusPage（正式版｜完整版｜可直接編譯）
+// ----------------------------------------------------
+// 修正：移除 LotterySpinResult 型別依賴（避免 Undefined class 'LotterySpinResult'）
+// 改用 dynamic 儲存抽獎結果，並用安全方式讀取 prize 資訊
+// ----------------------------------------------------
 
-import 'dart:async';
-import 'package:confetti/confetti.dart';
-import 'package:flutter/foundation.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
-import '../services/order_service.dart';
+import '../services/cloud_push_service.dart';
 import '../services/lottery_service.dart';
-import '../services/notification_service.dart';
-import 'home_page.dart';
-import 'lottery_page.dart';
 
 class PaymentStatusPage extends StatefulWidget {
-  final String orderId;
+  final String? orderId;
   final bool success;
-  final int countdownSeconds;
-  final double rewardAmount;
-  final String userId;
+  final num? amount;
+  final String currency;
 
   const PaymentStatusPage({
     super.key,
-    required this.orderId,
+    this.orderId,
     this.success = true,
-    this.countdownSeconds = 5,
-    this.rewardAmount = 500.0,
-    this.userId = 'demo_user',
+    this.amount,
+    this.currency = 'TWD',
   });
 
   @override
   State<PaymentStatusPage> createState() => _PaymentStatusPageState();
 }
 
-class _PaymentStatusPageState extends State<PaymentStatusPage>
-    with SingleTickerProviderStateMixin {
-  late bool _success;
-  bool _loading = true;
+class _PaymentStatusPageState extends State<PaymentStatusPage> {
+  bool _busy = false;
+  bool _initedArgs = false;
 
-  late int _countdown;
-  Timer? _timer;
+  String? _orderId;
+  bool _success = true;
+  num? _amount;
+  String _currency = 'TWD';
 
-  late final AnimationController _anim;
-  late final Animation<double> _scale;
-  late final ConfettiController _confetti;
+  // ✅ 不再用 LotterySpinResult（避免 undefined_class）
+  dynamic _lotteryResult;
 
   @override
   void initState() {
     super.initState();
-    _success = widget.success;
-    _countdown = widget.countdownSeconds;
-
-    _anim = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
-    _scale = Tween<double>(begin: 0.9, end: 1.0)
-        .animate(CurvedAnimation(parent: _anim, curve: Curves.easeOutBack));
-
-    _confetti = ConfettiController(duration: const Duration(seconds: 3));
-
-    _simulatePaymentResult();
+    // 付款狀態頁通常會在畫面出來後自動做後處理（通知 + 抽獎）
+    WidgetsBinding.instance.addPostFrameCallback((_) => _postProcessIfNeeded());
   }
 
   @override
-  void dispose() {
-    _timer?.cancel();
-    _anim.dispose();
-    _confetti.dispose();
-    super.dispose();
-  }
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initedArgs) return;
+    _initedArgs = true;
 
-  // =======================================================
-  // 模擬付款結果（實際串 API 可替換）
-  // =======================================================
-  Future<void> _simulatePaymentResult() async {
-    await Future.delayed(const Duration(seconds: 2));
-    if (!mounted) return;
-    setState(() => _loading = false);
+    // 先吃 widget 傳入
+    _orderId = widget.orderId;
+    _success = widget.success;
+    _amount = widget.amount;
+    _currency = widget.currency;
 
-    if (_success) {
-      await _handlePaymentSuccess();
-    } else {
-      await _handlePaymentFail();
+    // 若是 NamedRoute arguments 傳入，也支援 Map
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map) {
+      _orderId ??= args['orderId']?.toString();
+      if (args['success'] is bool) _success = args['success'] as bool;
+      if (args['amount'] is num) _amount = args['amount'] as num;
+      if (args['currency'] != null) _currency = args['currency'].toString();
     }
   }
 
-  // =======================================================
-  // 成功流程：更新訂單狀態、回饋、動畫、倒數
-  // =======================================================
-  Future<void> _handlePaymentSuccess() async {
-    HapticFeedback.lightImpact();
+  User? get _user => FirebaseAuth.instance.currentUser;
 
-    // ✅ 更新訂單狀態為 paid
-    try {
-      await OrderService.instance.markPaid(widget.orderId);
-    } catch (e) {
-      debugPrint('[PaymentStatusPage] markPaid() failed: $e');
-    }
+  Future<void> _postProcessIfNeeded() async {
+    if (!_success) return;
 
-    // ✅ 發放抽獎回饋
-    try {
-      await LotteryService.instance.rewardFromShop(
-        userId: widget.userId,
-        amount: widget.rewardAmount,
-      );
-    } catch (_) {}
+    final orderId = _orderId;
+    final user = _user;
+    if (orderId == null || orderId.isEmpty || user == null) return;
 
-    // ✅ 通知中心：付款成功
+    // 避免重複跑（例如 hot-reload / rebuild）
+    if (_lotteryResult != null || _busy) return;
+
+    setState(() => _busy = true);
     try {
-      NotificationService.instance.addNotification(
-        type: 'order',
+      // ✅ 1) 寫入訂單通知（通知中心）
+      await CloudPushService.instance.notifyOrder(
+        uid: user.uid,
+        orderId: orderId,
         title: '付款成功',
-        message: '訂單 ${widget.orderId} 已付款成功，您獲得一次抽獎機會！',
-        icon: Icons.verified_rounded,
+        body: '訂單 $orderId 已付款完成',
+        type: 'order',
+        extra: {
+          if (_amount != null) 'amount': _amount,
+          'currency': _currency,
+          'from': 'payment_status',
+        },
       );
-    } catch (_) {}
 
-    _anim.forward();
-    _confetti.play();
-    _startCountdownToLottery();
-  }
-
-  // =======================================================
-  // 失敗流程
-  // =======================================================
-  Future<void> _handlePaymentFail() async {
-    HapticFeedback.mediumImpact();
-    try {
-      NotificationService.instance.addNotification(
-        type: 'system',
-        title: '付款失敗',
-        message: '訂單 ${widget.orderId} 付款未成功，請重新嘗試。',
-        icon: Icons.error_outline,
+      // ✅ 2) 抽獎（同 orderId 防重複）
+      final r = await LotteryService.instance.spinForOrder(
+        orderId: orderId,
+        lotteryId: 'default',
+        meta: {
+          'from': 'payment_status_page',
+          if (_amount != null) 'amount': _amount,
+          'currency': _currency,
+        },
       );
-    } catch (_) {}
-  }
 
-  void _startCountdownToLottery() {
-    _timer?.cancel();
-    _countdown = widget.countdownSeconds;
-
-    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) return;
-      if (_countdown <= 1) {
-        t.cancel();
-        _goLottery(replace: true);
-      } else {
-        setState(() => _countdown--);
-      }
-    });
-  }
-
-  void _goLottery({bool replace = false}) {
-    _timer?.cancel();
-    final route = MaterialPageRoute(builder: (_) => const LotteryPage());
-    if (replace) {
-      Navigator.of(context).pushReplacement(route);
-    } else {
-      Navigator.of(context).push(route);
+      setState(() => _lotteryResult = r);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('後處理失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  void _goHome({bool replace = true}) {
-    _timer?.cancel();
-    final route = MaterialPageRoute(builder: (_) => const HomePage());
-    if (replace) {
-      Navigator.of(context).pushReplacement(route);
-    } else {
-      Navigator.of(context).push(route);
+  // -------------------------
+  // ✅ 安全取得 prize 資訊（不管 r 是 class 或 Map）
+  // -------------------------
+  Map<String, dynamic> _extractPrize(dynamic r) {
+    if (r == null) return const {};
+
+    // 1) 嘗試 class: r.prize.name / r.prize.type / r.prize.value
+    try {
+      final p = r.prize;
+      final name = (p.name ?? '獎品').toString();
+      final type = (p.type ?? 'none').toString();
+      final value = p.value ?? 0;
+      return {'name': name, 'type': type, 'value': value};
+    } catch (_) {}
+
+    // 2) Map 結構（常見：prizeName/prizeType/prizeValue）
+    if (r is Map) {
+      final name = (r['prizeName'] ?? r['name'] ?? '獎品').toString();
+      final type = (r['prizeType'] ?? r['type'] ?? 'none').toString();
+      final value = r['prizeValue'] ?? r['value'] ?? 0;
+      return {'name': name, 'type': type, 'value': value};
     }
+
+    return const {};
   }
 
-  void _retryPay() {
-    _timer?.cancel();
-    Navigator.pop(context);
-  }
-
-  // =======================================================
-  // UI
-  // =======================================================
   @override
   Widget build(BuildContext context) {
+    final u = _user;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F6F8),
-      appBar: AppBar(
-        title: const Text('付款結果', style: TextStyle(fontWeight: FontWeight.bold)),
-        centerTitle: true,
-        backgroundColor: Colors.white,
-        elevation: 0.5,
-        actions: [
-          if (kDebugMode)
-            IconButton(
-              tooltip: '切換成功/失敗（Debug）',
-              icon: const Icon(Icons.tune),
-              onPressed: () {
-                _timer?.cancel();
-                setState(() {
-                  _success = !_success;
-                  _loading = true;
-                });
-                _simulatePaymentResult();
-              },
-            ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          SafeArea(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 400),
-              child: _loading
-                  ? _buildLoading()
-                  : (_success ? _buildSuccess() : _buildFail()),
-            ),
-          ),
-          Align(
-            alignment: Alignment.topCenter,
-            child: ConfettiWidget(
-              confettiController: _confetti,
-              blastDirectionality: BlastDirectionality.explosive,
-              emissionFrequency: 0.05,
-              numberOfParticles: 18,
-              maxBlastForce: 20,
-              minBlastForce: 8,
-              colors: const [
-                Colors.orangeAccent,
-                Colors.blueAccent,
-                Colors.green,
-                Colors.purple,
-                Colors.yellow,
+      appBar: AppBar(title: Text(_success ? '付款成功' : '付款失敗')),
+      body: u == null
+          ? _needLogin(context)
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                _statusCard(),
+                const SizedBox(height: 12),
+                _lotteryCard(),
+                const SizedBox(height: 12),
+                _actions(),
+                if (_busy)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 12),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
               ],
             ),
-          ),
-        ],
-      ),
     );
   }
 
-  // =======================================================
-  // 子 UI 元件
-  // =======================================================
-  Widget _buildLoading() => const Center(
-        key: ValueKey('loading'),
+  Widget _needLogin(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(color: Colors.blueAccent),
-            SizedBox(height: 16),
-            Text('正在確認付款狀態…', style: TextStyle(fontWeight: FontWeight.w900)),
+            const Icon(Icons.lock_outline, size: 52, color: Colors.grey),
+            const SizedBox(height: 10),
+            const Text('請先登入', style: TextStyle(color: Colors.grey)),
+            const SizedBox(height: 12),
+            ElevatedButton(
+              onPressed: () => Navigator.of(
+                context,
+                rootNavigator: true,
+              ).pushNamed('/login'),
+              child: const Text('前往登入'),
+            ),
           ],
         ),
-      );
-
-  Widget _buildSuccess() {
-    return Center(
-      key: const ValueKey('success'),
-      child: ScaleTransition(
-        scale: _scale,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.check_circle, color: Colors.green, size: 90),
-              const SizedBox(height: 14),
-              const Text('付款成功', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
-              const SizedBox(height: 8),
-              Text(
-                '訂單 ${widget.orderId} 已完成付款。',
-                style: TextStyle(color: Colors.grey.shade700),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '$_countdown 秒後自動前往抽獎頁',
-                style: const TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: () => _goLottery(replace: true),
-                icon: const Icon(Icons.casino_outlined),
-                label: const Text('立即抽獎'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.orangeAccent,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextButton(
-                onPressed: () => _goHome(replace: true),
-                child: const Text('返回首頁'),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
 
-  Widget _buildFail() {
-    return Center(
-      key: const ValueKey('fail'),
+  Widget _statusCard() {
+    final orderId = _orderId;
+
+    return Card(
+      elevation: 0,
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+        child: Row(
           children: [
-            const Icon(Icons.error_outline, color: Colors.redAccent, size: 90),
-            const SizedBox(height: 14),
-            const Text('付款失敗', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
-            const SizedBox(height: 8),
-            Text(
-              '訂單 ${widget.orderId} 付款未成功，請重新嘗試。',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey.shade700),
+            Icon(
+              _success ? Icons.check_circle_outline : Icons.error_outline,
+              size: 44,
+              color: _success ? Colors.green : Colors.redAccent,
             ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _retryPay,
-              icon: const Icon(Icons.refresh),
-              label: const Text('重新付款'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blueAccent,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _success ? '付款已完成' : '付款未完成',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '訂單編號：${orderId ?? '—'}',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                  if (_amount != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      '金額：$_amount $_currency',
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                  ],
+                ],
               ),
-            ),
-            const SizedBox(height: 12),
-            TextButton(
-              onPressed: () => _goHome(replace: true),
-              child: const Text('返回首頁'),
             ),
           ],
         ),
       ),
     );
+  }
+
+  Widget _lotteryCard() {
+    if (!_success) {
+      return const Card(
+        elevation: 0,
+        child: Padding(padding: EdgeInsets.all(16), child: Text('付款失敗不進行抽獎。')),
+      );
+    }
+
+    if (_lotteryResult == null) {
+      return const Card(
+        elevation: 0,
+        child: Padding(padding: EdgeInsets.all(16), child: Text('正在準備抽獎結果...')),
+      );
+    }
+
+    final p = _extractPrize(_lotteryResult);
+    final name = (p['name'] ?? '獎品').toString();
+    final type = (p['type'] ?? 'none').toString();
+    final value = p['value'] ?? 0;
+
+    String subtitle;
+    switch (type) {
+      case 'points':
+        subtitle = '獲得 ${_asInt(value)} 點';
+        break;
+      case 'coupon':
+        subtitle = '已發放優惠券（$value）';
+        break;
+      case 'voucher':
+        subtitle = '已發放代金券（$value）';
+        break;
+      default:
+        subtitle = '再接再厲！';
+    }
+
+    return Card(
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            const Icon(Icons.card_giftcard_outlined, size: 44),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '抽獎結果',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    name,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(subtitle, style: const TextStyle(color: Colors.grey)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _actions() {
+    return Card(
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _busy ? null : () => Navigator.of(context).pop(true),
+              icon: const Icon(Icons.arrow_back),
+              label: const Text('返回'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () => Navigator.of(
+                      context,
+                    ).pushNamedAndRemoveUntil('/', (r) => false),
+              icon: const Icon(Icons.home_outlined),
+              label: const Text('回首頁'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _postProcessIfNeeded,
+              icon: const Icon(Icons.refresh),
+              label: const Text('重試抽獎'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  int _asInt(dynamic v, {int fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? fallback;
+    return fallback;
   }
 }

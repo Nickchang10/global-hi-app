@@ -1,75 +1,74 @@
 // lib/pages/notifications_page.dart
 //
-// ✅ NotificationsPage（最終完整版｜與 NotificationService v1.3.x / AdminGate 完整整合｜Web/Chrome OK｜窄螢幕不 overflow｜可編譯）
+// ✅ NotificationsPage（後台通用通知中心｜可編譯｜即時監聽｜已讀/未讀｜搜尋｜批次已讀/未讀｜匯出CSV(複製)｜Web+App）
 //
-// 功能：
-// - 讀取 Firestore：notifications/{uid}/items/{notificationId}
-// - 全部 / 未讀 切換
-// - 類型 type 篩選（all / system / order / order_update / order_status / order_shipping / general / announcement / lottery）
-// - 搜尋（title/body/orderId/extra）
-// - 點擊自動 markAsRead（僅限看自己的通知）
-// - 一鍵 markAllAsRead（僅限看自己的通知）
-// - Admin 可輸入 uid 觀看其他人的通知（read-only，禁用標已讀/全部已讀等寫入）
-// - AppBar 顯示「自己的」未讀數（streamUnreadCount）
+// Firestore 建議：notifications/{notificationId}
+//   - title: String
+//   - body: String
+//   - type: String            // order/product/system...
+//   - refId: String           // 例如 orderId / productId...
+//   - level: String           // info/warn/error
+//   - isRead: bool
+//   - createdAt: Timestamp
+//   - updatedAt: Timestamp
+//   - readAt: Timestamp (選用)
 //
-// 依賴：
-// - cloud_firestore（Timestamp）
-// - firebase_auth
-// - provider
-// - services/admin_gate.dart（RoleInfo / AdminGate）
-// - services/auth_service.dart
-// - services/notification_service.dart（AppNotification / NotificationService）
+// 注意：
+// - where(isRead)+orderBy(createdAt) 可能需要複合索引；若遇錯誤 console 會提供索引建立連結。
+// - 匯出CSV採「複製到剪貼簿」。
 
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-
-import '../services/admin_gate.dart';
-import '../services/auth_service.dart';
-import '../services/notification_service.dart';
+import 'package:flutter/services.dart';
 
 class NotificationsPage extends StatefulWidget {
-  const NotificationsPage({super.key});
+  const NotificationsPage({super.key, this.collection = 'notifications'});
+
+  final String collection;
+
+  static const String routeName = '/notifications';
 
   @override
   State<NotificationsPage> createState() => _NotificationsPageState();
 }
 
 class _NotificationsPageState extends State<NotificationsPage> {
-  // role cache
-  Future<RoleInfo>? _roleFuture;
-  String? _lastUid;
-
-  // view mode
-  bool _unreadOnly = false;
-  String _type = 'all';
-  String _q = '';
+  final _db = FirebaseFirestore.instance;
 
   final _searchCtrl = TextEditingController();
+  String _q = '';
 
-  // admin: view other uid
-  String? _viewUidOverride;
-  final _viewUidCtrl = TextEditingController();
+  bool? _isRead; // null=全部, true=已讀, false=未讀
+
+  bool _busy = false;
+  String _busyLabel = '';
+
+  final Set<String> _selectedIds = <String>{};
+
+  CollectionReference<Map<String, dynamic>> get _ncol =>
+      _db.collection(widget.collection);
+
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl.addListener(() {
+      if (!mounted) return;
+      setState(() {});
+    });
+  }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
-    _viewUidCtrl.dispose();
     super.dispose();
   }
 
-  // ----------------------------
-  // Helpers
-  // ----------------------------
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
-  }
-
+  // -------------------------
+  // Utils
+  // -------------------------
   String _s(dynamic v) => (v ?? '').toString().trim();
+  bool _isTrue(dynamic v) => v == true;
 
   DateTime? _toDate(dynamic v) {
     if (v is Timestamp) return v.toDate();
@@ -83,832 +82,817 @@ class _NotificationsPageState extends State<NotificationsPage> {
     return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
   }
 
-  String _typeLabel(String t) {
-    switch (t.toLowerCase()) {
-      case 'general':
-        return '一般';
-      case 'system':
-        return '系統';
-      case 'order':
-        return '訂單';
-      case 'order_update':
-        return '訂單更新';
-      case 'order_status':
-        return '狀態';
-      case 'order_shipping':
-        return '物流';
-      case 'announcement':
-        return '公告';
-      case 'lottery':
-        return '抽獎';
-      default:
-        return t.trim().isEmpty ? '未知' : t;
-    }
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
-  Color _typeColor(BuildContext context, String t) {
-    final cs = Theme.of(context).colorScheme;
-    switch (t.toLowerCase()) {
-      case 'announcement':
-        return cs.primary;
-      case 'order_shipping':
-        return Colors.blueGrey;
-      case 'order_status':
-        return Colors.orange;
-      case 'order_update':
-        return cs.secondary;
-      case 'order':
-        return Colors.teal;
-      case 'lottery':
-        return Colors.purple;
-      case 'general':
-        return cs.onSurfaceVariant;
-      case 'system':
-      default:
-        return cs.onSurfaceVariant;
-    }
+  Future<void> _copy(String text, {String done = '已複製'}) async {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: t));
+    if (!mounted) return;
+    _snack(done);
   }
 
-  String _orderIdFromExtra(Map<String, dynamic> extra) {
-    // 常見 key 容錯（避免資料源不一致）
-    final keys = <String>['orderId', 'orderID', 'order_id', 'orderNo', 'orderNO'];
-    for (final k in keys) {
-      final v = _s(extra[k]);
-      if (v.isNotEmpty) return v;
-    }
-    return '';
+  void _setBusy(bool v, {String label = ''}) {
+    if (!mounted) return;
+    setState(() {
+      _busy = v;
+      _busyLabel = label;
+    });
   }
 
-  bool _matchesFilter(AppNotification n) {
-    final type = (n.type).toString().trim().toLowerCase();
-    if (_type != 'all' && type != _type) return false;
+  // -------------------------
+  // Stream
+  // -------------------------
+  Stream<QuerySnapshot<Map<String, dynamic>>> _stream() {
+    Query<Map<String, dynamic>> q = _ncol
+        .orderBy('createdAt', descending: true)
+        .limit(800);
 
+    if (_isRead != null) {
+      q = _ncol
+          .where('isRead', isEqualTo: _isRead)
+          .orderBy('createdAt', descending: true)
+          .limit(800);
+    }
+
+    return q.snapshots();
+  }
+
+  bool _matchLocal(_NotiRow r) {
     final q = _q.trim().toLowerCase();
     if (q.isEmpty) return true;
 
-    final title = (n.title).toLowerCase();
-    final body = (n.body).toLowerCase();
-    final orderId = _orderIdFromExtra(n.extra).toLowerCase();
-    final extraStr = n.extra.toString().toLowerCase();
+    final d = r.data;
+    final id = r.id.toLowerCase();
+    final title = _s(d['title']).toLowerCase();
+    final body = _s(d['body']).toLowerCase();
+    final type = _s(d['type']).toLowerCase();
+    final refId = _s(d['refId']).toLowerCase();
+    final level = _s(d['level']).toLowerCase();
 
-    return title.contains(q) || body.contains(q) || orderId.contains(q) || extraStr.contains(q);
+    return id.contains(q) ||
+        title.contains(q) ||
+        body.contains(q) ||
+        type.contains(q) ||
+        refId.contains(q) ||
+        level.contains(q);
   }
 
-  Future<void> _markOneRead({
-    required NotificationService notifSvc,
-    required String selfUid,
-    required String notifId,
-    required bool canWrite,
-  }) async {
-    if (!canWrite) return;
-    if (selfUid.trim().isEmpty || notifId.trim().isEmpty) return;
-
+  // -------------------------
+  // Actions
+  // -------------------------
+  Future<void> _markRead(String id, bool read) async {
+    _setBusy(true, label: read ? '標記已讀...' : '標記未讀...');
     try {
-      await notifSvc.markAsRead(selfUid, notifId);
-    } catch (e) {
-      _snack('標記已讀失敗：$e');
-    }
-  }
-
-  Future<void> _markAllRead({
-    required NotificationService notifSvc,
-    required String selfUid,
-    required bool canWrite,
-  }) async {
-    if (!canWrite) return;
-    if (selfUid.trim().isEmpty) return;
-
-    try {
-      await notifSvc.markAllAsRead(selfUid);
-      _snack('已全部標記為已讀');
-    } catch (e) {
-      _snack('全部已讀失敗：$e');
-    }
-  }
-
-  Future<void> _openAdminViewUidDialog(String currentSelfUid) async {
-    _viewUidCtrl.text = _viewUidOverride ?? '';
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Admin：查看其他使用者通知'),
-        content: TextField(
-          controller: _viewUidCtrl,
-          decoration: InputDecoration(
-            labelText: '輸入 uid（留空=看自己）',
-            hintText: currentSelfUid,
-            border: const OutlineInputBorder(),
-            isDense: true,
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('套用')),
-        ],
-      ),
-    );
-
-    if (ok != true) return;
-
-    final v = _viewUidCtrl.text.trim();
-    setState(() {
-      _viewUidOverride = v.isEmpty ? null : v;
-    });
-  }
-
-  void _resetRole(AdminGate gate, User user) {
-    setState(() {
-      gate.clearCache();
-      _roleFuture = gate.ensureAndGetRole(user, forceRefresh: true);
-    });
-  }
-
-  Future<void> _tryNavigateByRoute(
-    BuildContext context,
-    String route,
-    Map<String, dynamic>? extra,
-  ) async {
-    if (route.trim().isEmpty) return;
-    try {
+      await _ncol.doc(id).set(<String, dynamic>{
+        'isRead': read,
+        if (read)
+          'readAt': FieldValue.serverTimestamp()
+        else
+          'readAt': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
       if (!mounted) return;
-      Navigator.pushNamed(context, route.trim(), arguments: extra);
-    } catch (_) {
-      _snack('此通知路由不存在：${route.trim()}');
+      _snack(read ? '已讀' : '未讀');
+    } catch (e) {
+      if (!mounted) return;
+      _snack('操作失敗：$e');
+    } finally {
+      _setBusy(false);
     }
   }
 
-  // ----------------------------
-  // UI
-  // ----------------------------
-  @override
-  Widget build(BuildContext context) {
-    final gate = context.read<AdminGate>();
-    final authSvc = context.read<AuthService>();
-    final notifSvc = context.read<NotificationService>();
+  Future<void> _batchMarkRead(List<_NotiRow> rows, bool read) async {
+    if (_selectedIds.isEmpty) {
+      _snack('請先勾選通知');
+      return;
+    }
+    final targets = rows.where((r) => _selectedIds.contains(r.id)).toList();
+    if (targets.isEmpty) {
+      _snack('選取清單為空');
+      return;
+    }
 
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, authSnap) {
-        final user = authSnap.data;
+    _setBusy(true, label: read ? '批次已讀...' : '批次未讀...');
+    try {
+      final batch = _db.batch();
+      for (final r in targets) {
+        batch.set(_ncol.doc(r.id), <String, dynamic>{
+          'isRead': read,
+          if (read)
+            'readAt': FieldValue.serverTimestamp()
+          else
+            'readAt': FieldValue.delete(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+      await batch.commit();
+      if (!mounted) return;
+      _snack('已批次${read ? '已讀' : '未讀'}（${targets.length}）');
+    } catch (e) {
+      if (!mounted) return;
+      _snack('批次失敗：$e');
+    } finally {
+      _setBusy(false);
+    }
+  }
 
-        if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        if (user == null) {
-          return const Scaffold(body: Center(child: Text('請先登入')));
-        }
+  Future<void> _exportCsv(List<_NotiRow> rows) async {
+    if (rows.isEmpty) return;
 
-        if (_roleFuture == null || _lastUid != user.uid) {
-          _lastUid = user.uid;
-          _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
-        }
+    final headers = <String>[
+      'notificationId',
+      'title',
+      'body',
+      'type',
+      'refId',
+      'level',
+      'isRead',
+      'createdAt',
+      'updatedAt',
+      'readAt',
+    ];
 
-        return FutureBuilder<RoleInfo>(
-          future: _roleFuture,
-          builder: (context, roleSnap) {
-            if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
-            }
+    final buffer = StringBuffer()..writeln(headers.join(','));
 
-            // 這裡除了 hasError，也要處理 RoleInfo.errorInfo 這種「資料層錯誤」型態
-            if (roleSnap.hasError) {
-              return _SimpleErrorPage(
-                title: '讀取角色失敗',
-                message: '${roleSnap.error}',
-                onRetry: () => _resetRole(gate, user),
-                onLogout: () async {
-                  gate.clearCache();
-                  await authSvc.signOut();
-                  if (!context.mounted) return;
-                  Navigator.pushReplacementNamed(context, '/login');
-                },
-              );
-            }
+    for (final r in rows) {
+      final d = r.data;
 
-            final RoleInfo? info = roleSnap.data;
-            if (info == null) {
-              return _SimpleErrorPage(
-                title: '讀取角色失敗',
-                message: 'RoleInfo 為空',
-                onRetry: () => _resetRole(gate, user),
-                onLogout: () async {
-                  gate.clearCache();
-                  await authSvc.signOut();
-                  if (!context.mounted) return;
-                  Navigator.pushReplacementNamed(context, '/login');
-                },
-              );
-            }
+      final line =
+          <String>[
+                r.id,
+                _s(d['title']),
+                _s(d['body']),
+                _s(d['type']),
+                _s(d['refId']),
+                _s(d['level']),
+                _isTrue(d['isRead']).toString(),
+                (_toDate(d['createdAt'])?.toIso8601String() ?? ''),
+                (_toDate(d['updatedAt'])?.toIso8601String() ?? ''),
+                (_toDate(d['readAt'])?.toIso8601String() ?? ''),
+              ]
+              .map(
+                (e) => e
+                    .replaceAll(',', '，')
+                    .replaceAll('\n', ' ')
+                    .replaceAll('\r', ' '),
+              )
+              .toList();
 
-            if (info.hasError) {
-              return _SimpleErrorPage(
-                title: '讀取角色失敗',
-                message: info.error ?? '未知錯誤',
-                onRetry: () => _resetRole(gate, user),
-                onLogout: () async {
-                  gate.clearCache();
-                  await authSvc.signOut();
-                  if (!context.mounted) return;
-                  Navigator.pushReplacementNamed(context, '/login');
-                },
-              );
-            }
+      buffer.writeln(line.join(','));
+    }
 
-            final role = _s(info.role).toLowerCase();
-            final isAdmin = role == 'admin';
+    await Clipboard.setData(ClipboardData(text: buffer.toString()));
+    if (!mounted) return;
+    _snack('已複製 CSV 到剪貼簿（可貼到 Excel）');
+  }
 
-            final selfUid = user.uid;
-            final targetUid = (isAdmin && (_viewUidOverride ?? '').trim().isNotEmpty)
-                ? _viewUidOverride!.trim()
-                : selfUid;
+  Future<void> _openDetail(_NotiRow row) async {
+    final d = row.data;
+    final title = _s(d['title']).isEmpty ? '（無標題）' : _s(d['title']);
+    final body = _s(d['body']);
+    final type = _s(d['type']);
+    final refId = _s(d['refId']);
+    final level = _s(d['level']);
+    final read = _isTrue(d['isRead']);
 
-            // 只有本人能寫入 isRead（Admin 看別人時禁止）
-            final canWriteRead = targetUid == selfUid;
-
-            return Scaffold(
-              appBar: AppBar(
-                title: Text(
-                  targetUid == selfUid ? '通知中心' : '通知中心（查看：$targetUid）',
-                  overflow: TextOverflow.ellipsis,
-                ),
-                centerTitle: true,
-                actions: [
-                  // 未讀數（顯示自己的）
-                  StreamBuilder<int>(
-                    stream: notifSvc.streamUnreadCount(selfUid),
-                    builder: (_, c) {
-                      final n = c.data ?? 0;
-                      if (n <= 0) return const SizedBox.shrink();
-                      return Center(
-                        child: Padding(
-                          padding: const EdgeInsets.only(right: 6),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.error.withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(
-                                color: Theme.of(context).colorScheme.error.withOpacity(0.35),
-                              ),
-                            ),
-                            child: Text(
-                              '未讀 $n',
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(color: Theme.of(context).colorScheme.error),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-
-                  IconButton(
-                    tooltip: '全部已讀（僅自己）',
-                    onPressed: canWriteRead
-                        ? () => _markAllRead(
-                              notifSvc: notifSvc,
-                              selfUid: selfUid,
-                              canWrite: true,
-                            )
-                        : null,
-                    icon: const Icon(Icons.done_all),
-                  ),
-
-                  if (isAdmin)
-                    IconButton(
-                      tooltip: 'Admin 查看其他 uid',
-                      onPressed: () => _openAdminViewUidDialog(selfUid),
-                      icon: const Icon(Icons.manage_search),
-                    ),
-
-                  IconButton(
-                    tooltip: '登出',
-                    icon: const Icon(Icons.logout),
-                    onPressed: () async {
-                      gate.clearCache();
-                      await authSvc.signOut();
-                      if (!context.mounted) return;
-                      Navigator.pushReplacementNamed(context, '/login');
-                    },
-                  ),
-                  const SizedBox(width: 6),
-                ],
-              ),
-              body: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
+    await showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.all(18),
+        child: SizedBox(
+          width: 680,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
                   children: [
-                    // Filters
-                    Card(
-                      elevation: 0,
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: LayoutBuilder(
-                          builder: (context, c) {
-                            final isNarrow = c.maxWidth < 520;
-
-                            final searchField = TextField(
-                              controller: _searchCtrl,
-                              decoration: InputDecoration(
-                                prefixIcon: const Icon(Icons.search),
-                                hintText: '搜尋（標題/內容/訂單ID/extra）',
-                                border: const OutlineInputBorder(),
-                                isDense: true,
-                                suffixIcon: _q.isEmpty
-                                    ? null
-                                    : IconButton(
-                                        tooltip: '清除',
-                                        icon: const Icon(Icons.clear),
-                                        onPressed: () {
-                                          _searchCtrl.clear();
-                                          setState(() => _q = '');
-                                        },
-                                      ),
-                              ),
-                              onChanged: (v) => setState(() => _q = v),
-                            );
-
-                            final typeDropdown = DropdownButtonFormField<String>(
-                              value: _type,
-                              isExpanded: true,
-                              decoration: const InputDecoration(
-                                labelText: '類型',
-                                border: OutlineInputBorder(),
-                                isDense: true,
-                              ),
-                              items: const [
-                                DropdownMenuItem(value: 'all', child: Text('全部')),
-                                DropdownMenuItem(value: 'system', child: Text('系統')),
-                                DropdownMenuItem(value: 'general', child: Text('一般')),
-                                DropdownMenuItem(value: 'order', child: Text('訂單')),
-                                DropdownMenuItem(value: 'order_update', child: Text('訂單更新')),
-                                DropdownMenuItem(value: 'order_status', child: Text('狀態')),
-                                DropdownMenuItem(value: 'order_shipping', child: Text('物流')),
-                                DropdownMenuItem(value: 'announcement', child: Text('公告')),
-                                DropdownMenuItem(value: 'lottery', child: Text('抽獎')),
-                              ],
-                              onChanged: (v) => setState(() => _type = v ?? 'all'),
-                            );
-
-                            final segment = SegmentedButton<bool>(
-                              segments: const [
-                                ButtonSegment(value: false, label: Text('全部')),
-                                ButtonSegment(value: true, label: Text('未讀')),
-                              ],
-                              selected: {_unreadOnly},
-                              onSelectionChanged: (s) => setState(() => _unreadOnly = s.first),
-                            );
-
-                            final hintText = Text(
-                              canWriteRead ? '目前：看自己的通知（可標已讀）' : '目前：Admin 查看他人（只讀，不能標已讀）',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                fontSize: 12,
-                              ),
-                            );
-
-                            return Column(
-                              children: [
-                                if (isNarrow) ...[
-                                  searchField,
-                                  const SizedBox(height: 10),
-                                  typeDropdown,
-                                ] else ...[
-                                  Row(
-                                    children: [
-                                      Expanded(child: searchField),
-                                      const SizedBox(width: 10),
-                                      SizedBox(width: 240, child: typeDropdown),
-                                    ],
-                                  ),
-                                ],
-                                const SizedBox(height: 10),
-                                if (isNarrow) ...[
-                                  SizedBox(width: double.infinity, child: segment),
-                                  const SizedBox(height: 8),
-                                  Align(alignment: Alignment.centerLeft, child: hintText),
-                                ] else ...[
-                                  Row(
-                                    children: [
-                                      Expanded(child: segment),
-                                      const SizedBox(width: 10),
-                                      Flexible(child: hintText),
-                                    ],
-                                  ),
-                                ],
-                              ],
-                            );
-                          },
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 12),
-
-                    // List (用 streamItems：避免 Map 缺 id 造成標已讀失效)
-                    Expanded(
-                      child: StreamBuilder<List<AppNotification>>(
-                        stream: notifSvc.streamItems(
-                          targetUid,
-                          onlyUnread: _unreadOnly,
-                          limit: 300,
-                        ),
-                        builder: (context, snap) {
-                          if (snap.hasError) {
-                            return Center(
-                              child: Text(
-                                '讀取通知失敗：${snap.error}',
-                                style: const TextStyle(color: Colors.red),
-                                textAlign: TextAlign.center,
-                              ),
-                            );
-                          }
-
-                          if (!snap.hasData) {
-                            return const Center(child: CircularProgressIndicator());
-                          }
-
-                          final raw = snap.data ?? const <AppNotification>[];
-                          final list = raw.where(_matchesFilter).toList();
-
-                          if (list.isEmpty) {
-                            return const Center(child: Text('目前沒有通知（或篩選後無結果）'));
-                          }
-
-                          return ListView.separated(
-                            itemCount: list.length,
-                            separatorBuilder: (_, __) => const Divider(height: 1),
-                            itemBuilder: (_, i) {
-                              final n = list[i];
-
-                              final id = _s(n.id);
-                              final title = _s(n.title);
-                              final body = _s(n.body);
-                              final type = _s(n.type).toLowerCase();
-                              final isRead = n.isRead;
-                              final route = _s(n.route);
-
-                              // service 內已轉 DateTime?，此處再保險兼容
-                              final createdAt = _toDate(n.createdAt) ?? n.createdAt;
-                              final updatedAt = _toDate(n.updatedAt) ?? n.updatedAt;
-
-                              final extra = n.extra;
-                              final orderId = _orderIdFromExtra(extra);
-
-                              final cs = Theme.of(context).colorScheme;
-                              final chipColor = _typeColor(context, type);
-
-                              return ListTile(
-                                onTap: () async {
-                                  if (!isRead && canWriteRead && id.isNotEmpty) {
-                                    await _markOneRead(
-                                      notifSvc: notifSvc,
-                                      selfUid: selfUid,
-                                      notifId: id,
-                                      canWrite: true,
-                                    );
-                                  }
-
-                                  if (!mounted) return;
-
-                                  await showModalBottomSheet(
-                                    context: context,
-                                    showDragHandle: true,
-                                    isScrollControlled: true,
-                                    builder: (_) => _NotificationDetailSheet(
-                                      title: title,
-                                      body: body,
-                                      typeLabel: _typeLabel(type),
-                                      chipColor: chipColor,
-                                      createdAt: createdAt,
-                                      updatedAt: updatedAt,
-                                      isRead: isRead,
-                                      orderId: orderId,
-                                      route: route,
-                                      extra: extra.isEmpty ? null : extra,
-                                      footerHint: canWriteRead
-                                          ? '點擊列表或按鈕會自動標記已讀'
-                                          : '目前為只讀檢視（Admin 查看他人）',
-                                      onGoRoute: (route.trim().isEmpty)
-                                          ? null
-                                          : () => _tryNavigateByRoute(context, route, extra),
-                                    ),
-                                  );
-                                },
-                                leading: Container(
-                                  width: 44,
-                                  height: 44,
-                                  decoration: BoxDecoration(
-                                    color: chipColor.withOpacity(0.12),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: chipColor.withOpacity(0.25)),
-                                  ),
-                                  child: Icon(
-                                    isRead ? Icons.notifications_none : Icons.notifications_active,
-                                    color: chipColor,
-                                  ),
-                                ),
-                                title: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        title.isEmpty ? '（無標題）' : title,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          fontWeight: isRead ? FontWeight.w600 : FontWeight.w900,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Flexible(
-                                      fit: FlexFit.loose,
-                                      child: ConstrainedBox(
-                                        constraints: const BoxConstraints(maxWidth: 110),
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                          decoration: BoxDecoration(
-                                            color: chipColor.withOpacity(0.12),
-                                            borderRadius: BorderRadius.circular(999),
-                                            border: Border.all(color: chipColor.withOpacity(0.25)),
-                                          ),
-                                          child: Text(
-                                            _typeLabel(type),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              color: chipColor,
-                                              fontWeight: FontWeight.w800,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                subtitle: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      body.isEmpty ? '（無內容）' : body,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Wrap(
-                                      spacing: 10,
-                                      runSpacing: 4,
-                                      children: [
-                                        Text(
-                                          _fmt(createdAt),
-                                          style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-                                        ),
-                                        if (orderId.isNotEmpty)
-                                          Text(
-                                            '訂單：$orderId',
-                                            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-                                          ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                                trailing: canWriteRead
-                                    ? (!isRead
-                                        ? IconButton(
-                                            tooltip: '標已讀',
-                                            icon: const Icon(Icons.done),
-                                            onPressed: id.isEmpty
-                                                ? null
-                                                : () => _markOneRead(
-                                                      notifSvc: notifSvc,
-                                                      selfUid: selfUid,
-                                                      notifId: id,
-                                                      canWrite: true,
-                                                    ),
-                                          )
-                                        : const Icon(Icons.check, color: Colors.grey))
-                                    : null,
-                              );
-                            },
-                          );
-                        },
-                      ),
+                    _Pill(
+                      label: read ? '已讀' : '未讀',
+                      color: read
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.error,
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: '複製 notificationId',
+                      onPressed: () =>
+                          _copy(row.id, done: '已複製 notificationId'),
+                      icon: const Icon(Icons.copy),
                     ),
                   ],
                 ),
+                const SizedBox(height: 10),
+                _InfoRow(label: 'type', value: type),
+                const SizedBox(height: 6),
+                _InfoRow(label: 'refId', value: refId),
+                const SizedBox(height: 6),
+                _InfoRow(label: 'level', value: level),
+                const SizedBox(height: 6),
+                _InfoRow(
+                  label: 'createdAt',
+                  value: _fmt(_toDate(d['createdAt'])),
+                ),
+                const SizedBox(height: 6),
+                _InfoRow(
+                  label: 'updatedAt',
+                  value: _fmt(_toDate(d['updatedAt'])),
+                ),
+                const SizedBox(height: 6),
+                _InfoRow(label: 'readAt', value: _fmt(_toDate(d['readAt']))),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '內容',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.outline.withValues(alpha: 0.18),
+                    ),
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest
+                        .withValues(alpha: 0.22),
+                  ),
+                  child: Text(body.isEmpty ? '（無內容）' : body),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _busy
+                          ? null
+                          : () async {
+                              Navigator.pop(context);
+                              await _markRead(row.id, !read);
+                            },
+                      icon: Icon(
+                        read
+                            ? Icons.mark_email_unread_outlined
+                            : Icons.mark_email_read_outlined,
+                      ),
+                      label: Text(read ? '標記未讀' : '標記已讀'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _copy(jsonEncode(d), done: '已複製 JSON'),
+                      icon: const Icon(Icons.code),
+                      label: const Text('複製 JSON'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('關閉'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // -------------------------
+  // Build
+  // -------------------------
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('通知中心')),
+      body: Stack(
+        children: [
+          Column(
+            children: [
+              _Filters(
+                searchCtrl: _searchCtrl,
+                isRead: _isRead,
+                onQueryChanged: (v) => setState(() => _q = v),
+                onClearQuery: () {
+                  _searchCtrl.clear();
+                  setState(() => _q = '');
+                },
+                onReadChanged: (v) => setState(() => _isRead = v),
               ),
-            );
-          },
-        );
-      },
+              const Divider(height: 1),
+              Expanded(
+                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _stream(),
+                  builder: (context, snap) {
+                    if (snap.hasError) {
+                      return Center(child: Text('讀取失敗：${snap.error}'));
+                    }
+                    if (!snap.hasData) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    final rows = snap.data!.docs
+                        .map((d) => _NotiRow(id: d.id, data: d.data()))
+                        .where(_matchLocal)
+                        .toList();
+
+                    // 清除不存在的選取
+                    final ids = rows.map((e) => e.id).toSet();
+                    _selectedIds.removeWhere((id) => !ids.contains(id));
+
+                    return Column(
+                      children: [
+                        _BatchBar(
+                          count: rows.length,
+                          selectedCount: _selectedIds.length,
+                          onSelectAll: rows.isEmpty
+                              ? null
+                              : () {
+                                  setState(() {
+                                    if (_selectedIds.length == rows.length) {
+                                      _selectedIds.clear();
+                                    } else {
+                                      _selectedIds
+                                        ..clear()
+                                        ..addAll(rows.map((e) => e.id));
+                                    }
+                                  });
+                                },
+                          onExport: rows.isEmpty || _busy
+                              ? null
+                              : () => _exportCsv(rows),
+                          onBatchRead: (_busy || _selectedIds.isEmpty)
+                              ? null
+                              : () => _batchMarkRead(rows, true),
+                          onBatchUnread: (_busy || _selectedIds.isEmpty)
+                              ? null
+                              : () => _batchMarkRead(rows, false),
+                        ),
+                        const Divider(height: 1),
+                        Expanded(
+                          child: rows.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    '沒有通知',
+                                    style: TextStyle(
+                                      color: cs.onSurfaceVariant,
+                                    ),
+                                  ),
+                                )
+                              : ListView.separated(
+                                  itemCount: rows.length,
+                                  separatorBuilder: (_, __) =>
+                                      const Divider(height: 1),
+                                  itemBuilder: (_, i) {
+                                    final r = rows[i];
+                                    final d = r.data;
+
+                                    final title = _s(d['title']).isEmpty
+                                        ? '（無標題）'
+                                        : _s(d['title']);
+                                    final body = _s(d['body']);
+                                    final type = _s(d['type']);
+                                    final refId = _s(d['refId']);
+                                    final level = _s(d['level']);
+                                    final read = _isTrue(d['isRead']);
+                                    final createdAt = _toDate(d['createdAt']);
+
+                                    final selected = _selectedIds.contains(
+                                      r.id,
+                                    );
+
+                                    return ListTile(
+                                      leading: Checkbox(
+                                        value: selected,
+                                        onChanged: _busy
+                                            ? null
+                                            : (v) {
+                                                setState(() {
+                                                  if (v == true) {
+                                                    _selectedIds.add(r.id);
+                                                  } else {
+                                                    _selectedIds.remove(r.id);
+                                                  }
+                                                });
+                                              },
+                                      ),
+                                      title: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              title,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                fontWeight: read
+                                                    ? FontWeight.w800
+                                                    : FontWeight.w900,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          _Pill(
+                                            label: read ? '已讀' : '未讀',
+                                            color: read ? cs.primary : cs.error,
+                                          ),
+                                        ],
+                                      ),
+                                      subtitle: Padding(
+                                        padding: const EdgeInsets.only(top: 6),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            if (body.isNotEmpty)
+                                              Text(
+                                                body,
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  color: cs.onSurfaceVariant,
+                                                ),
+                                              ),
+                                            const SizedBox(height: 4),
+                                            Wrap(
+                                              spacing: 10,
+                                              runSpacing: 4,
+                                              children: [
+                                                if (type.isNotEmpty)
+                                                  Text(
+                                                    'type：$type',
+                                                    style: TextStyle(
+                                                      color:
+                                                          cs.onSurfaceVariant,
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                if (refId.isNotEmpty)
+                                                  Text(
+                                                    'ref：$refId',
+                                                    style: TextStyle(
+                                                      color:
+                                                          cs.onSurfaceVariant,
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                if (level.isNotEmpty)
+                                                  Text(
+                                                    'level：$level',
+                                                    style: TextStyle(
+                                                      color:
+                                                          cs.onSurfaceVariant,
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                Text(
+                                                  '時間：${_fmt(createdAt)}',
+                                                  style: TextStyle(
+                                                    color: cs.onSurfaceVariant,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      trailing: PopupMenuButton<String>(
+                                        tooltip: '更多',
+                                        onSelected: _busy
+                                            ? null
+                                            : (v) async {
+                                                if (v == 'detail') {
+                                                  await _openDetail(r);
+                                                } else if (v == 'toggle') {
+                                                  await _markRead(r.id, !read);
+                                                } else if (v == 'copy_id') {
+                                                  await _copy(
+                                                    r.id,
+                                                    done: '已複製 notificationId',
+                                                  );
+                                                } else if (v == 'copy_json') {
+                                                  await _copy(
+                                                    jsonEncode(d),
+                                                    done: '已複製 JSON',
+                                                  );
+                                                }
+                                              },
+                                        itemBuilder: (_) => [
+                                          const PopupMenuItem(
+                                            value: 'detail',
+                                            child: Text('查看詳情'),
+                                          ),
+                                          PopupMenuItem(
+                                            value: 'toggle',
+                                            child: Text(read ? '標記未讀' : '標記已讀'),
+                                          ),
+                                          const PopupMenuItem(
+                                            value: 'copy_id',
+                                            child: Text('複製 notificationId'),
+                                          ),
+                                          const PopupMenuItem(
+                                            value: 'copy_json',
+                                            child: Text('複製 JSON'),
+                                          ),
+                                        ],
+                                      ),
+                                      onTap: () => _openDetail(r),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+          if (_busy)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: _BusyBar(
+                label: _busyLabel.isEmpty ? '處理中...' : _busyLabel,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
 
-// ----------------------------
-// Detail Sheet
-// ----------------------------
-class _NotificationDetailSheet extends StatelessWidget {
-  const _NotificationDetailSheet({
-    required this.title,
-    required this.body,
-    required this.typeLabel,
-    required this.chipColor,
-    required this.createdAt,
-    required this.updatedAt,
+// ------------------------------------------------------------
+// Models
+// ------------------------------------------------------------
+class _NotiRow {
+  final String id;
+  final Map<String, dynamic> data;
+  _NotiRow({required this.id, required this.data});
+}
+
+// ------------------------------------------------------------
+// Filters / Batch
+// ------------------------------------------------------------
+class _Filters extends StatelessWidget {
+  const _Filters({
+    required this.searchCtrl,
     required this.isRead,
-    required this.orderId,
-    required this.route,
-    required this.extra,
-    required this.footerHint,
-    required this.onGoRoute,
+    required this.onQueryChanged,
+    required this.onClearQuery,
+    required this.onReadChanged,
   });
 
-  final String title;
-  final String body;
-  final String typeLabel;
-  final Color chipColor;
+  final TextEditingController searchCtrl;
+  final bool? isRead;
 
-  final DateTime? createdAt;
-  final DateTime? updatedAt;
+  final ValueChanged<String> onQueryChanged;
+  final VoidCallback onClearQuery;
+  final ValueChanged<bool?> onReadChanged;
 
-  final bool isRead;
-  final String orderId;
+  @override
+  Widget build(BuildContext context) {
+    final search = TextField(
+      controller: searchCtrl,
+      decoration: InputDecoration(
+        isDense: true,
+        prefixIcon: const Icon(Icons.search),
+        border: const OutlineInputBorder(),
+        hintText: '搜尋：標題 / 內容 / type / refId / level / id',
+        suffixIcon: searchCtrl.text.trim().isEmpty
+            ? null
+            : IconButton(
+                tooltip: '清除',
+                onPressed: onClearQuery,
+                icon: const Icon(Icons.clear),
+              ),
+      ),
+      onChanged: onQueryChanged,
+    );
 
-  final String route;
-  final Map<String, dynamic>? extra;
+    // ✅ 避免 DropdownButtonFormField.value 的新版本 deprecated：改用 DropdownMenu
+    final dd = DropdownMenu<bool?>(
+      key: ValueKey(isRead),
+      initialSelection: isRead,
+      expandedInsets: EdgeInsets.zero,
+      label: const Text('已讀狀態'),
+      dropdownMenuEntries: const [
+        DropdownMenuEntry(value: null, label: '全部'),
+        DropdownMenuEntry(value: false, label: '未讀'),
+        DropdownMenuEntry(value: true, label: '已讀'),
+      ],
+      onSelected: onReadChanged,
+    );
 
-  final String footerHint;
-  final VoidCallback? onGoRoute;
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: LayoutBuilder(
+        builder: (context, c) {
+          final narrow = c.maxWidth < 980;
+          if (narrow) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [search, const SizedBox(height: 10), dd],
+            );
+          }
 
-  String _fmt(DateTime? d) {
-    if (d == null) return '-';
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+          return Row(
+            children: [
+              Expanded(flex: 3, child: search),
+              const SizedBox(width: 10),
+              SizedBox(width: 240, child: dd),
+            ],
+          );
+        },
+      ),
+    );
   }
+}
+
+class _BatchBar extends StatelessWidget {
+  const _BatchBar({
+    required this.count,
+    required this.selectedCount,
+    required this.onSelectAll,
+    required this.onExport,
+    required this.onBatchRead,
+    required this.onBatchUnread,
+  });
+
+  final int count;
+  final int selectedCount;
+
+  final VoidCallback? onSelectAll;
+  final VoidCallback? onExport;
+  final VoidCallback? onBatchRead;
+  final VoidCallback? onBatchUnread;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        children: [
+          Text(
+            '共 $count 筆',
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '已選 $selectedCount 筆',
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const Spacer(),
+          OutlinedButton.icon(
+            onPressed: onSelectAll,
+            icon: const Icon(Icons.select_all),
+            label: const Text('全選/取消'),
+          ),
+          const SizedBox(width: 10),
+          OutlinedButton.icon(
+            onPressed: onExport,
+            icon: const Icon(Icons.download_outlined),
+            label: const Text('匯出CSV'),
+          ),
+          const SizedBox(width: 10),
+          OutlinedButton.icon(
+            onPressed: onBatchUnread,
+            icon: const Icon(Icons.mark_email_unread_outlined),
+            label: const Text('批次未讀'),
+          ),
+          const SizedBox(width: 10),
+          FilledButton.icon(
+            onPressed: onBatchRead,
+            icon: const Icon(Icons.mark_email_read_outlined),
+            label: const Text('批次已讀'),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 8,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-        ),
-        child: SingleChildScrollView(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: chipColor.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: chipColor.withOpacity(0.25)),
-                  ),
-                  child: Text(typeLabel, style: TextStyle(color: chipColor, fontWeight: FontWeight.w800)),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    isRead ? '已讀' : '未讀',
-                    style: TextStyle(color: isRead ? Colors.grey : cs.primary, fontWeight: FontWeight.w900),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              title.isEmpty ? '（無標題）' : title,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 10),
-            Text(body.isEmpty ? '（無內容）' : body),
-            const SizedBox(height: 14),
-            const Divider(),
-            const SizedBox(height: 10),
-            _kv('建立時間', _fmt(createdAt), cs),
-            const SizedBox(height: 6),
-            _kv('更新時間', _fmt(updatedAt), cs),
-            const SizedBox(height: 6),
-            if (orderId.isNotEmpty) ...[
-              _kv('訂單ID', orderId, cs),
-              const SizedBox(height: 6),
-            ],
-            if (route.trim().isNotEmpty) ...[
-              _kv('路由', route.trim(), cs),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: onGoRoute,
-                  icon: const Icon(Icons.open_in_new),
-                  label: const Text('前往相關頁面'),
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
-            if (extra != null && extra!.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              const Text('extra', style: TextStyle(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 6),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: cs.surfaceVariant.withOpacity(0.25),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(extra.toString()),
-              ),
-            ],
-            const SizedBox(height: 14),
-            Text(footerHint, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
-            const SizedBox(height: 10),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('關閉'),
-              ),
-            ),
-          ]),
+// ------------------------------------------------------------
+// Shared Widgets
+// ------------------------------------------------------------
+class _Pill extends StatelessWidget {
+  const _Pill({required this.label, required this.color});
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w900,
+          fontSize: 12,
         ),
       ),
     );
   }
+}
 
-  Widget _kv(String k, String v, ColorScheme cs) {
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(width: 72, child: Text(k, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12))),
-        Expanded(child: Text(v, style: const TextStyle(fontWeight: FontWeight.w800))),
+        SizedBox(
+          width: 96,
+          child: Text(
+            label,
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value.isEmpty ? '-' : value,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
       ],
     );
   }
 }
 
-// ----------------------------
-// Error Page
-// ----------------------------
-class _SimpleErrorPage extends StatelessWidget {
-  const _SimpleErrorPage({
-    required this.title,
-    required this.message,
-    required this.onRetry,
-    required this.onLogout,
-  });
-
-  final String title;
-  final String message;
-  final VoidCallback onRetry;
-  final Future<void> Function() onLogout;
+class _BusyBar extends StatelessWidget {
+  const _BusyBar({required this.label});
+  final String label;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 10),
-                  Text(message, textAlign: TextAlign.center, style: TextStyle(color: cs.error)),
-                  const SizedBox(height: 14),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      OutlinedButton.icon(
-                        onPressed: onRetry,
-                        icon: const Icon(Icons.refresh),
-                        label: const Text('重試'),
-                      ),
-                      const SizedBox(width: 10),
-                      FilledButton.icon(
-                        onPressed: () async => onLogout(),
-                        icon: const Icon(Icons.logout),
-                        label: const Text('登出'),
-                      ),
-                    ],
-                  ),
-                ],
+    return Material(
+      elevation: 8,
+      color: cs.surface,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );

@@ -1,252 +1,241 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../services/firestore_mock_service.dart';
-import '../services/notification_service.dart';
+// lib/pages/daily_signin_page.dart
+//
+// ✅ DailySigninPage（完整版｜可編譯）
+// - ✅ 修正：uid 不再 required，若未傳入會自動用 FirebaseAuth.currentUser.uid
+// - 每日簽到：Firestore 寫入 signins/{uid}/days/{yyyyMMdd}
+// - 顯示今日是否已簽到
+// - 提供簽到按鈕（避免重複簽到）
+//
+// 依賴：cloud_firestore, firebase_auth, flutter/material
 
-/// 📅 每日簽到系統（完整版）
-///
-/// 功能：
-/// ✅ 顯示連續 7 日簽到進度  
-/// ✅ 單日簽到 + 積分獎勵  
-/// ✅ 連續簽滿七天額外送 200 積分  
-/// ✅ 動畫彈窗與通知整合  
-class DailySignInPage extends StatefulWidget {
-  const DailySignInPage({super.key});
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
+class DailySigninPage extends StatefulWidget {
+  const DailySigninPage({
+    super.key,
+    this.uid, // ✅ 不再 required
+  });
+
+  /// 可選：外部指定 uid；若不給，頁面會自動抓 FirebaseAuth uid
+  final String? uid;
 
   @override
-  State<DailySignInPage> createState() => _DailySignInPageState();
+  State<DailySigninPage> createState() => _DailySigninPageState();
 }
 
-class _DailySignInPageState extends State<DailySignInPage> {
-  int signedDays = 0; // 已簽到天數
-  bool todaySigned = false; // 今天是否已簽到
+class _DailySigninPageState extends State<DailySigninPage> {
+  final _db = FirebaseFirestore.instance;
+
+  bool _loading = true;
+  bool _signedInToday = false;
+  String? _error;
+
+  String? _uidResolved;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  String _todayKey(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y$m$day'; // yyyyMMdd
+  }
+
+  Future<void> _bootstrap() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final uid = (widget.uid ?? FirebaseAuth.instance.currentUser?.uid)
+          ?.trim();
+      if (uid == null || uid.isEmpty) {
+        setState(() {
+          _uidResolved = null;
+          _loading = false;
+          _error = '請先登入才能簽到';
+        });
+        return;
+      }
+
+      _uidResolved = uid;
+      await _loadTodayState(uid);
+    } catch (e) {
+      setState(() {
+        _error = '初始化失敗：$e';
+        _loading = false;
+      });
+    }
+  }
+
+  DocumentReference<Map<String, dynamic>> _todayRef(String uid) {
+    final key = _todayKey(DateTime.now());
+    return _db.collection('signins').doc(uid).collection('days').doc(key);
+  }
+
+  Future<void> _loadTodayState(String uid) async {
+    try {
+      final snap = await _todayRef(uid).get();
+      setState(() {
+        _signedInToday = snap.exists;
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = '讀取簽到狀態失敗：$e';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _signin() async {
+    final uid = _uidResolved;
+    if (uid == null || uid.isEmpty) {
+      _snack('請先登入');
+      return;
+    }
+    if (_signedInToday) {
+      _snack('你今天已簽到');
+      return;
+    }
+
+    setState(() => _loading = true);
+    try {
+      final now = DateTime.now();
+      await _todayRef(uid).set({
+        'uid': uid,
+        'dateKey': _todayKey(now),
+        'createdAt': FieldValue.serverTimestamp(),
+        'localCreatedAt': now.toIso8601String(),
+      }, SetOptions(merge: true));
+
+      setState(() {
+        _signedInToday = true;
+        _loading = false;
+      });
+      _snack('簽到成功！');
+    } catch (e) {
+      setState(() => _loading = false);
+      _snack('簽到失敗：$e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final store = context.watch<FirestoreMockService>();
-    final notifier = NotificationService.instance;
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("📅 每日簽到"),
-        backgroundColor: Colors.blueAccent,
-        foregroundColor: Colors.white,
+        title: const Text(
+          '每日簽到',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
+            tooltip: '重新整理',
+            onPressed: _loading ? null : _bootstrap,
             icon: const Icon(Icons.refresh),
-            tooltip: "重置簽到紀錄",
-            onPressed: () {
-              setState(() {
-                signedDays = 0;
-                todaySigned = false;
-              });
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(const SnackBar(content: Text("✅ 簽到紀錄已重置")));
-            },
-          )
+          ),
         ],
       ),
-      backgroundColor: const Color(0xFFF7F9FB),
-      body: Column(
-        children: [
-          const SizedBox(height: 20),
-          _buildProgressHeader(),
-          const SizedBox(height: 16),
-          _buildCalendar(),
-          const SizedBox(height: 24),
-          ElevatedButton.icon(
-            onPressed: todaySigned
-                ? null
-                : () {
-                    setState(() {
-                      todaySigned = true;
-                      signedDays++;
-                    });
-                    store.addPoints(20);
-                    notifier.addNotification(
-                      title: "📅 今日簽到成功",
-                      message: "您獲得 20 積分！目前已簽到 $signedDays 天 🎉",
-                      type: "mission",
-                      icon: Icons.calendar_today,
-                    );
-
-                    _showRewardDialog(context, signedDays);
-
-                    // 七日額外獎勵
-                    if (signedDays == 7) {
-                      store.addPoints(200);
-                      notifier.addNotification(
-                        title: "🏆 連續簽到 7 天",
-                        message: "恭喜您額外獲得 200 積分！",
-                        type: "mission",
-                        icon: Icons.emoji_events,
-                      );
-
-                      // 顯示七日完成特別彈窗
-                      Future.delayed(const Duration(milliseconds: 500), () {
-                        _showBonusDialog(context);
-                      });
-                    }
-                  },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: todaySigned ? Colors.grey : Colors.blueAccent,
-              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-            ),
-            icon: const Icon(Icons.touch_app),
-            label: Text(todaySigned ? "今日已簽到" : "立即簽到"),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            "已連續簽到：$signedDays 天",
-            style: const TextStyle(fontSize: 16, color: Colors.black54),
-          ),
-          const Spacer(),
-          Image.asset(
-            "assets/images/calendar_banner.png",
-            height: 120,
-            fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => const Icon(Icons.calendar_month,
-                color: Colors.blueAccent, size: 100),
-          ),
-          const SizedBox(height: 30),
-        ],
-      ),
-    );
-  }
-
-  /// 🔵 標題 + 進度
-  Widget _buildProgressHeader() {
-    return Column(
-      children: [
-        const Text(
-          "簽到七日挑戰",
-          style: TextStyle(
-              fontSize: 22, fontWeight: FontWeight.bold, color: Colors.blueAccent),
-        ),
-        const SizedBox(height: 10),
-        LinearProgressIndicator(
-          value: signedDays / 7,
-          backgroundColor: Colors.grey.shade300,
-          color: Colors.blueAccent,
-          minHeight: 8,
-        ),
-        const SizedBox(height: 6),
-        Text(
-          "進度：$signedDays / 7 天",
-          style: const TextStyle(color: Colors.black54),
-        ),
-      ],
-    );
-  }
-
-  /// 📆 顯示七日簽到格
-  Widget _buildCalendar() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: GridView.builder(
-        shrinkWrap: true,
-        itemCount: 7,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate:
-            const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 7),
-        itemBuilder: (_, i) {
-          final signed = i < signedDays;
-          return Column(
-            children: [
-              CircleAvatar(
-                radius: 20,
-                backgroundColor: signed ? Colors.blueAccent : Colors.grey.shade300,
-                child: signed
-                    ? const Icon(Icons.check, color: Colors.white)
-                    : Text("${i + 1}",
-                        style: const TextStyle(color: Colors.black87)),
-              ),
-              const SizedBox(height: 4),
-              Text("Day ${i + 1}",
-                  style: const TextStyle(fontSize: 10, color: Colors.black54)),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  /// 🎁 單日簽到獎勵彈窗
-  void _showRewardDialog(BuildContext context, int day) {
-    showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: "RewardDialog",
-      transitionDuration: const Duration(milliseconds: 400),
-      pageBuilder: (_, __, ___) => Center(
-        child: TweenAnimationBuilder<double>(
-          tween: Tween(begin: 0.8, end: 1.0),
-          duration: const Duration(milliseconds: 400),
-          builder: (_, scale, child) => Transform.scale(scale: scale, child: child),
-          child: Container(
-            width: 280,
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: const [
-                BoxShadow(color: Colors.black26, blurRadius: 15, offset: Offset(0, 4))
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.card_giftcard,
-                    color: Colors.orangeAccent, size: 80),
-                const SizedBox(height: 12),
-                const Text(
-                  "簽到成功！",
-                  style: TextStyle(
-                      fontSize: 22, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  "第 $day 天簽到 🎉\n獲得 20 積分！",
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.black54),
-                ),
-                const SizedBox(height: 20),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueAccent,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : (_error != null)
+          ? Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Card(
+                    elevation: 0,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.error_outline, size: 46, color: cs.error),
+                          const SizedBox(height: 10),
+                          Text(_error!, textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          FilledButton(
+                            onPressed: _bootstrap,
+                            child: const Text('重試'),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                  child: const Text("太棒了！"),
                 ),
-              ],
+              ),
+            )
+          : Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Card(
+                    elevation: 0,
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _signedInToday
+                                ? Icons.verified
+                                : Icons.calendar_month_outlined,
+                            size: 52,
+                            color: _signedInToday
+                                ? cs.primary
+                                : cs.onSurfaceVariant,
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            _signedInToday ? '今日已簽到' : '今日尚未簽到',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _signedInToday ? '明天再來簽到吧！' : '點一下即可完成今日簽到。',
+                            style: TextStyle(color: cs.onSurfaceVariant),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.icon(
+                            onPressed: _signedInToday ? null : _signin,
+                            icon: const Icon(Icons.check_circle_outline),
+                            label: Text(_signedInToday ? '已完成' : '立即簽到'),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            _uidResolved == null ? '' : 'uid：$_uidResolved',
+                            style: TextStyle(
+                              color: cs.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
-          ),
-        ),
-      ),
-      transitionBuilder: (_, anim, __, child) =>
-          FadeTransition(opacity: anim, child: child),
-    );
-  }
-
-  /// 🏆 七日特別獎勵彈窗
-  void _showBonusDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text("🏆 恭喜完成 7 日挑戰！"),
-        content: const Text("您已連續簽到 7 天，獲得額外 200 積分 🎉"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("太棒了！"),
-          )
-        ],
-      ),
     );
   }
 }

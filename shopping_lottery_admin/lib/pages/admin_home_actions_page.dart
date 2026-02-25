@@ -1,12 +1,15 @@
-// lib/pages/admin_home_actions_page.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
-import '../services/admin_gate.dart';
-import '../services/auth_service.dart';
-
+/// AdminHomeActionsPage (正式版｜完整版｜可直接編譯)
+///
+/// - 修正重點：移除非註解的雜字元（例如 `—`），避免 expected_token
+/// - 功能：
+///   - 後台快捷入口（Grid）
+///   - 搜尋過濾
+///   - 常用(星號)置頂（僅本頁記憶體狀態；你也可改成 SharedPreferences）
+///   - 使用 Navigator.pushNamed 跳轉（不依賴其他頁面 import，確保可編譯）
+///
+/// 注意：路由字串請依你專案實際 routes 對齊（下方 const 已列好）。
 class AdminHomeActionsPage extends StatefulWidget {
   const AdminHomeActionsPage({super.key});
 
@@ -15,708 +18,356 @@ class AdminHomeActionsPage extends StatefulWidget {
 }
 
 class _AdminHomeActionsPageState extends State<AdminHomeActionsPage> {
-  Future<RoleInfo>? _roleFuture;
-  String? _lastUid;
+  final _searchCtrl = TextEditingController();
+  final Set<String> _pinned = <String>{}; // action.id
 
-  bool _savingOrder = false;
-  bool _isReordering = false;
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
-  // 使用本地清單做「樂觀更新」，避免拖曳後畫面立刻跳回去
-  List<_HomeActionItem> _items = [];
+  List<_AdminAction> _allActions() {
+    return const <_AdminAction>[
+      _AdminAction(
+        id: 'dashboard',
+        title: '總覽',
+        icon: Icons.dashboard,
+        routeName: kRouteAdminDashboard,
+      ),
+      _AdminAction(
+        id: 'shop',
+        title: '商城設定',
+        icon: Icons.storefront,
+        routeName: kRouteAdminShopSettings,
+      ),
+      _AdminAction(
+        id: 'products',
+        title: '商品管理',
+        icon: Icons.inventory_2,
+        routeName: kRouteAdminProducts,
+      ),
+      _AdminAction(
+        id: 'orders',
+        title: '訂單管理',
+        icon: Icons.receipt_long,
+        routeName: kRouteAdminOrders,
+      ),
+      _AdminAction(
+        id: 'refunds',
+        title: '退款管理',
+        icon: Icons.currency_exchange,
+        routeName: kRouteAdminRefunds,
+      ),
+      _AdminAction(
+        id: 'shipping',
+        title: '出貨管理',
+        icon: Icons.local_shipping,
+        routeName: kRouteAdminShipping,
+      ),
+      _AdminAction(
+        id: 'members',
+        title: '會員管理',
+        icon: Icons.group,
+        routeName: kRouteAdminMembers,
+      ),
+      _AdminAction(
+        id: 'points',
+        title: '點數任務',
+        icon: Icons.stars,
+        routeName: kRouteAdminPointsTasks,
+      ),
+      _AdminAction(
+        id: 'vendors',
+        title: '商家管理',
+        icon: Icons.store,
+        routeName: kRouteAdminVendors,
+      ),
+      _AdminAction(
+        id: 'campaigns',
+        title: '活動管理',
+        icon: Icons.campaign,
+        routeName: kRouteAdminCampaigns,
+      ),
+      _AdminAction(
+        id: 'lottery',
+        title: '抽獎管理',
+        icon: Icons.casino,
+        routeName: kRouteAdminLottery,
+      ),
+      _AdminAction(
+        id: 'news',
+        title: '最新消息',
+        icon: Icons.article,
+        routeName: kRouteAdminNews,
+      ),
+      _AdminAction(
+        id: 'pages',
+        title: '頁面內容',
+        icon: Icons.description,
+        routeName: kRouteAdminPages,
+      ),
+      _AdminAction(
+        id: 'faq',
+        title: 'FAQ',
+        icon: Icons.help_center,
+        routeName: kRouteAdminFaq,
+      ),
+      _AdminAction(
+        id: 'approvals',
+        title: '審核/工單',
+        icon: Icons.rule,
+        routeName: kRouteAdminApprovals,
+      ),
+      _AdminAction(
+        id: 'announcements',
+        title: '內部公告',
+        icon: Icons.announcement,
+        routeName: kRouteAdminAnnouncements,
+      ),
+      _AdminAction(
+        id: 'contact',
+        title: '聯絡訊息',
+        icon: Icons.support_agent,
+        routeName: kRouteAdminContact,
+      ),
+      _AdminAction(
+        id: 'analytics',
+        title: '報表分析',
+        icon: Icons.query_stats,
+        routeName: kRouteAdminAnalytics,
+      ),
+      _AdminAction(
+        id: 'roles',
+        title: '角色/權限',
+        icon: Icons.admin_panel_settings,
+        routeName: kRouteAdminRoles,
+      ),
+      _AdminAction(
+        id: 'system',
+        title: '系統設定',
+        icon: Icons.settings,
+        routeName: kRouteAdminSystemSettings,
+      ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
-    final gate = context.read<AdminGate>();
-    final authSvc = context.read<AuthService>();
-
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, authSnap) {
-        final user = authSnap.data;
-
-        if (authSnap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        if (user == null) {
-          return const Scaffold(body: Center(child: Text('請先登入')));
-        }
-
-        if (_roleFuture == null || _lastUid != user.uid) {
-          _lastUid = user.uid;
-          _roleFuture = gate.ensureAndGetRole(user, forceRefresh: false);
-        }
-
-        return FutureBuilder<RoleInfo>(
-          future: _roleFuture,
-          builder: (context, roleSnap) {
-            if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
-            }
-
-            if (roleSnap.hasError) {
-              return _SimpleErrorPage(
-                title: '讀取角色失敗',
-                message: '${roleSnap.error}',
-                onRetry: () {
-                  setState(() {
-                    gate.clearCache();
-                    _roleFuture = gate.ensureAndGetRole(user, forceRefresh: true);
-                  });
-                },
-                onLogout: () async {
-                  gate.clearCache();
-                  await authSvc.signOut();
-                  if (!mounted) return;
-                  Navigator.pushReplacementNamed(context, '/login');
-                },
-              );
-            }
-
-            final role = (roleSnap.data?.role ?? '').toString().trim().toLowerCase();
-            if (role != 'admin') {
-              return _SimpleErrorPage(
-                title: '需要 Admin 權限',
-                message: '目前角色：$role',
-                onRetry: () {
-                  setState(() {
-                    gate.clearCache();
-                    _roleFuture = gate.ensureAndGetRole(user, forceRefresh: true);
-                  });
-                },
-                onLogout: () async {
-                  gate.clearCache();
-                  await authSvc.signOut();
-                  if (!mounted) return;
-                  Navigator.pushReplacementNamed(context, '/login');
-                },
-              );
-            }
-
-            return _buildAdminPage(context);
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildAdminPage(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    final query = FirebaseFirestore.instance.collection('home_actions');
+    final all = _allActions();
+    final keyword = _searchCtrl.text.trim().toLowerCase();
+
+    final filtered = all.where((a) {
+      if (keyword.isEmpty) return true;
+      return a.title.toLowerCase().contains(keyword) ||
+          a.id.toLowerCase().contains(keyword);
+    }).toList();
+
+    filtered.sort((a, b) {
+      final ap = _pinned.contains(a.id) ? 0 : 1;
+      final bp = _pinned.contains(b.id) ? 0 : 1;
+      final c = ap.compareTo(bp);
+      if (c != 0) return c;
+      return a.title.compareTo(b.title);
+    });
+
+    final width = MediaQuery.of(context).size.width;
+    final crossAxisCount = width >= 1200
+        ? 5
+        : width >= 980
+        ? 4
+        : width >= 680
+        ? 3
+        : 2;
+
+    final titleStyle =
+        Theme.of(context).textTheme.titleLarge ??
+        const TextStyle(fontSize: 18, fontWeight: FontWeight.w900);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('首頁快捷功能（簡單版）'),
+        title: const Text('後台快捷入口'),
         actions: [
           IconButton(
-            tooltip: '新增快捷功能',
-            onPressed: () => _openEditDialog(context, item: null),
-            icon: const Icon(Icons.add),
+            tooltip: '清除置頂',
+            onPressed: _pinned.isEmpty
+                ? null
+                : () {
+                    setState(_pinned.clear);
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已清除置頂')));
+                  },
+            icon: const Icon(Icons.auto_delete),
           ),
-          IconButton(
-            tooltip: '建立預設 4 個快捷',
-            onPressed: _savingOrder ? null : () => _seedDefaults(context),
-            icon: const Icon(Icons.auto_awesome),
-          ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: query.snapshots(),
-        builder: (context, snap) {
-          if (!snap.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final incoming = snap.data!.docs.map((d) => _HomeActionItem.fromDoc(d)).toList();
-
-          // 排序：以 order 為主，未設定的放最後，再用 title 穩定排序
-          incoming.sort((a, b) {
-            final ao = a.order ?? 999999;
-            final bo = b.order ?? 999999;
-            final c = ao.compareTo(bo);
-            if (c != 0) return c;
-            return a.title.toLowerCase().compareTo(b.title.toLowerCase());
-          });
-
-          // snapshot 更新時：若不是正在 reorder，就用最新資料覆蓋本地 _items
-          if (!_isReordering) {
-            _items = incoming;
-          }
-
-          if (_items.isEmpty) {
-            return Padding(
-              padding: const EdgeInsets.all(16),
-              child: Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: cs.surfaceVariant.withOpacity(0.35),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('目前沒有快捷功能', style: TextStyle(color: cs.onSurfaceVariant)),
-                    const SizedBox(height: 10),
-                    FilledButton.icon(
-                      onPressed: _savingOrder ? null : () => _seedDefaults(context),
-                      icon: const Icon(Icons.auto_awesome),
-                      label: const Text('一鍵建立預設 4 個'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: cs.surfaceVariant.withOpacity(0.25),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+            child: TextField(
+              controller: _searchCtrl,
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: '搜尋快捷入口…（例如：訂單、商品、會員）',
+                border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: cs.onSurfaceVariant),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        '拖曳右側手把排序；點鉛筆編輯；右側開關啟用/停用。',
-                        style: TextStyle(color: cs.onSurfaceVariant),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              // ✅ ReorderableListView（包在 SizedBox + shrinkWrap）
-              ReorderableListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _items.length,
-                onReorder: _savingOrder ? (_, __) {} : (oldIndex, newIndex) => _onReorder(context, oldIndex, newIndex),
-                proxyDecorator: (child, index, animation) {
-                  return Material(
-                    elevation: 6,
-                    borderRadius: BorderRadius.circular(12),
-                    child: child,
-                  );
-                },
-                itemBuilder: (context, i) {
-                  final it = _items[i];
-
-                  return Card(
-                    key: ValueKey(it.id),
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                      side: BorderSide(color: cs.outlineVariant.withOpacity(0.6)),
-                    ),
-                    child: ListTile(
-                      leading: Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: cs.primaryContainer.withOpacity(0.55),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Icon(_IconMap.fromName(it.icon), color: cs.primary),
-                      ),
-                      title: Text(
-                        it.title.isEmpty ? '（未命名）' : it.title,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                      subtitle: Text(
-                        'route: ${it.route.isEmpty ? '-' : it.route}\nrole: ${it.role}',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      isThreeLine: true,
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Switch(
-                            value: it.isActive,
-                            onChanged: _savingOrder
-                                ? null
-                                : (v) async {
-                                    await it.ref.set({'isActive': v}, SetOptions(merge: true));
-                                  },
-                          ),
-                          IconButton(
-                            tooltip: '編輯',
-                            onPressed: _savingOrder ? null : () => _openEditDialog(context, item: it),
-                            icon: const Icon(Icons.edit_outlined),
-                          ),
-                          ReorderableDragStartListener(
-                            index: i,
-                            enabled: !_savingOrder,
-                            child: const Padding(
-                              padding: EdgeInsets.only(left: 6),
-                              child: Icon(Icons.drag_handle),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-
-              const SizedBox(height: 10),
-              if (_savingOrder)
-                Center(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-                        SizedBox(width: 10),
-                        Text('儲存排序中…'),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  Future<void> _onReorder(BuildContext context, int oldIndex, int newIndex) async {
-    if (newIndex > oldIndex) newIndex -= 1;
-    if (oldIndex < 0 || oldIndex >= _items.length) return;
-    if (newIndex < 0 || newIndex >= _items.length) return;
-
-    setState(() {
-      _isReordering = true;
-      final moved = _items.removeAt(oldIndex);
-      _items.insert(newIndex, moved);
-      _savingOrder = true;
-    });
-
-    try {
-      // 依目前順序寫回 order（1..n）
-      final batch = FirebaseFirestore.instance.batch();
-      for (var i = 0; i < _items.length; i++) {
-        batch.set(_items[i].ref, {'order': i + 1}, SetOptions(merge: true));
-      }
-      await batch.commit();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('儲存排序失敗：$e')));
-    } finally {
-      if (!mounted) return;
-      setState(() {
-        _savingOrder = false;
-        _isReordering = false;
-      });
-    }
-  }
-
-  Future<void> _seedDefaults(BuildContext context) async {
-    final col = FirebaseFirestore.instance.collection('home_actions');
-
-    // 若已有資料，就不重複塞（避免越塞越多）
-    final existing = await col.limit(1).get();
-    if (existing.docs.isNotEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已存在快捷功能，不再建立預設資料。')));
-      return;
-    }
-
-    setState(() => _savingOrder = true);
-
-    try {
-      final batch = FirebaseFirestore.instance.batch();
-
-      // 預設四個
-      final defaults = [
-        {
-          'title': '商品管理',
-          'icon': 'inventory_2_outlined',
-          'route': '/products',
-          'role': 'all',
-          'order': 1,
-          'isActive': true,
-        },
-        {
-          'title': '訂單管理',
-          'icon': 'receipt_long_outlined',
-          'route': '/orders',
-          'role': 'all',
-          'order': 2,
-          'isActive': true,
-        },
-        {
-          'title': '公告管理',
-          'icon': 'campaign_outlined',
-          'route': '/announcements',
-          'role': 'admin',
-          'order': 3,
-          'isActive': true,
-        },
-        {
-          'title': '通知中心',
-          'icon': 'notifications_outlined',
-          'route': '/notifications',
-          'role': 'all',
-          'order': 4,
-          'isActive': true,
-        },
-      ];
-
-      for (final d in defaults) {
-        final ref = col.doc();
-        batch.set(ref, d, SetOptions(merge: true));
-      }
-
-      await batch.commit();
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已建立預設 4 個快捷功能')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('建立預設資料失敗：$e')));
-    } finally {
-      if (!mounted) return;
-      setState(() => _savingOrder = false);
-    }
-  }
-
-  Future<void> _openEditDialog(BuildContext context, {required _HomeActionItem? item}) async {
-    final isNew = item == null;
-    final col = FirebaseFirestore.instance.collection('home_actions');
-
-    final cs = Theme.of(context).colorScheme;
-
-    String title = item?.title ?? '';
-    String route = item?.route ?? '';
-    String role = item?.role ?? 'all';
-    String icon = item?.icon ?? 'apps';
-    bool isActive = item?.isActive ?? true;
-
-    // new 預設 order = max(order)+1
-    int suggestedOrder = 1;
-    if (isNew) {
-      final maxOrder = _items
-          .map((e) => e.order ?? 0)
-          .fold<num>(0, (p, c) => c > p ? c : p);
-      suggestedOrder = maxOrder.toInt() + 1;
-    }
-
-    await showDialog<void>(
-      context: context,
-      builder: (_) => StatefulBuilder(
-        builder: (context, setLocal) {
-          return AlertDialog(
-            title: Text(isNew ? '新增快捷功能' : '編輯快捷功能'),
-            content: SizedBox(
-              width: 520,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    decoration: const InputDecoration(
-                      labelText: '標題',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    controller: TextEditingController(text: title),
-                    onChanged: (v) => setLocal(() => title = v.trim()),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    decoration: const InputDecoration(
-                      labelText: '路由 route（例：/products）',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    controller: TextEditingController(text: route),
-                    onChanged: (v) => setLocal(() => route = v.trim()),
-                  ),
-                  const SizedBox(height: 10),
-                  DropdownButtonFormField<String>(
-                    value: role,
-                    decoration: const InputDecoration(
-                      labelText: '顯示對象 role',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    items: const [
-                      DropdownMenuItem(value: 'all', child: Text('all（全部）')),
-                      DropdownMenuItem(value: 'admin', child: Text('admin')),
-                      DropdownMenuItem(value: 'vendor', child: Text('vendor')),
-                    ],
-                    onChanged: (v) => setLocal(() => role = (v ?? 'all')),
-                  ),
-                  const SizedBox(height: 10),
-                  DropdownButtonFormField<String>(
-                    value: icon,
-                    decoration: const InputDecoration(
-                      labelText: '圖示 icon',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    items: _IconMap.supportedNames
-                        .map((n) => DropdownMenuItem(
-                              value: n,
-                              child: Row(
-                                children: [
-                                  Icon(_IconMap.fromName(n), color: cs.primary),
-                                  const SizedBox(width: 10),
-                                  Text(n),
-                                ],
-                              ),
-                            ))
-                        .toList(),
-                    onChanged: (v) => setLocal(() => icon = (v ?? 'apps')),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      const Text('啟用'),
-                      const SizedBox(width: 10),
-                      Switch(value: isActive, onChanged: (v) => setLocal(() => isActive = v)),
-                      const Spacer(),
-                      Text(
-                        'order：${isNew ? suggestedOrder : (item?.order?.toInt() ?? '-')}\n（排序用，拖曳即可）',
-                        style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-                        textAlign: TextAlign.right,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              if (!isNew)
-                TextButton.icon(
-                  onPressed: () async {
-                    final ok = await showDialog<bool>(
-                      context: context,
-                      builder: (_) => AlertDialog(
-                        title: const Text('刪除'),
-                        content: const Text('確定要刪除這個快捷功能嗎？'),
-                        actions: [
-                          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
-                        ],
-                      ),
-                    );
-                    if (ok != true) return;
-
-                    await item!.ref.delete();
-                    if (context.mounted) Navigator.pop(context); // close dialog
+                suffixIcon: IconButton(
+                  tooltip: '清除',
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    FocusScope.of(context).unfocus();
+                    setState(() {});
                   },
-                  icon: const Icon(Icons.delete_outline),
-                  label: const Text('刪除'),
+                  icon: const Icon(Icons.clear),
                 ),
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-              FilledButton(
-                onPressed: () async {
-                  final t = title.trim();
-                  final r = route.trim();
-
-                  if (t.isEmpty) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('標題不能空白')));
-                    return;
-                  }
-                  if (!r.startsWith('/')) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('route 請用 / 開頭，例如 /products')));
-                    return;
-                  }
-
-                  if (isNew) {
-                    final ref = col.doc();
-                    await ref.set(
-                      {
-                        'title': t,
-                        'route': r,
-                        'role': role,
-                        'icon': icon,
-                        'isActive': isActive,
-                        'order': suggestedOrder,
-                        'updatedAt': FieldValue.serverTimestamp(),
-                        'createdAt': FieldValue.serverTimestamp(),
-                      },
-                      SetOptions(merge: true),
-                    );
-                  } else {
-                    await item!.ref.set(
-                      {
-                        'title': t,
-                        'route': r,
-                        'role': role,
-                        'icon': icon,
-                        'isActive': isActive,
-                        'updatedAt': FieldValue.serverTimestamp(),
-                      },
-                      SetOptions(merge: true),
-                    );
-                  }
-
-                  if (context.mounted) Navigator.pop(context);
-                },
-                child: const Text('儲存'),
               ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _HomeActionItem {
-  final String id;
-  final DocumentReference ref;
-
-  final String title;
-  final String route;
-  final String role;
-  final String icon;
-  final bool isActive;
-  final num? order;
-
-  _HomeActionItem({
-    required this.id,
-    required this.ref,
-    required this.title,
-    required this.route,
-    required this.role,
-    required this.icon,
-    required this.isActive,
-    required this.order,
-  });
-
-  factory _HomeActionItem.fromDoc(QueryDocumentSnapshot doc) {
-    final m = (doc.data() as Map<String, dynamic>);
-
-    String s(dynamic v) => (v ?? '').toString().trim();
-
-    return _HomeActionItem(
-      id: doc.id,
-      ref: doc.reference,
-      title: s(m['title']),
-      route: s(m['route']),
-      role: s(m['role']).isEmpty ? 'all' : s(m['role']).toLowerCase(),
-      icon: s(m['icon']).isEmpty ? 'apps' : s(m['icon']),
-      isActive: (m['isActive'] ?? true) == true,
-      order: (m['order'] is num) ? (m['order'] as num) : null,
-    );
-  }
-}
-
-/// Icon name -> IconData
-class _IconMap {
-  static const List<String> supportedNames = [
-    'inventory_2_outlined',
-    'receipt_long_outlined',
-    'campaign_outlined',
-    'notifications_outlined',
-    'category_outlined',
-    'apartment_outlined',
-    'settings_outlined',
-    'people_outline',
-    'person_outline',
-    'bar_chart_outlined',
-    'assignment_outlined',
-    'local_offer_outlined',
-    'apps',
-  ];
-
-  static IconData fromName(String name) {
-    switch (name) {
-      case 'inventory_2_outlined':
-        return Icons.inventory_2_outlined;
-      case 'receipt_long_outlined':
-        return Icons.receipt_long_outlined;
-      case 'campaign_outlined':
-        return Icons.campaign_outlined;
-      case 'notifications_outlined':
-        return Icons.notifications_outlined;
-      case 'category_outlined':
-        return Icons.category_outlined;
-      case 'apartment_outlined':
-        return Icons.apartment_outlined;
-      case 'settings_outlined':
-        return Icons.settings_outlined;
-      case 'people_outline':
-        return Icons.people_outline;
-      case 'person_outline':
-        return Icons.person_outline;
-      case 'bar_chart_outlined':
-        return Icons.bar_chart_outlined;
-      case 'assignment_outlined':
-        return Icons.assignment_outlined;
-      case 'local_offer_outlined':
-        return Icons.local_offer_outlined;
-      case 'apps':
-      default:
-        return Icons.apps;
-    }
-  }
-}
-
-class _SimpleErrorPage extends StatelessWidget {
-  const _SimpleErrorPage({
-    required this.title,
-    required this.message,
-    required this.onRetry,
-    required this.onLogout,
-  });
-
-  final String title;
-  final String message;
-  final VoidCallback onRetry;
-  final Future<void> Function() onLogout;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                  const SizedBox(height: 10),
-                  Text(message, textAlign: TextAlign.center, style: TextStyle(color: cs.error)),
-                  const SizedBox(height: 14),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      OutlinedButton.icon(
-                        onPressed: onRetry,
-                        icon: const Icon(Icons.refresh),
-                        label: const Text('重試'),
-                      ),
-                      const SizedBox(width: 10),
-                      FilledButton.icon(
-                        onPressed: () async => onLogout(),
-                        icon: const Icon(Icons.logout),
-                        label: const Text('登出'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+              onChanged: (_) => setState(() {}),
             ),
           ),
-        ),
+          const Divider(height: 1),
+          Expanded(
+            child: filtered.isEmpty
+                ? Center(
+                    child: Text(
+                      '沒有符合的入口',
+                      style: TextStyle(color: Colors.grey[700]),
+                    ),
+                  )
+                : GridView.builder(
+                    padding: const EdgeInsets.all(12),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: crossAxisCount,
+                      crossAxisSpacing: 10,
+                      mainAxisSpacing: 10,
+                      childAspectRatio: 1.2,
+                    ),
+                    itemCount: filtered.length,
+                    itemBuilder: (context, i) {
+                      final a = filtered[i];
+                      final pinned = _pinned.contains(a.id);
+
+                      return InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () => _go(context, a),
+                        child: Card(
+                          elevation: 0.8,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    CircleAvatar(
+                                      // ✅ 修正：withOpacity(0.12) -> withValues(alpha: 31)
+                                      backgroundColor: cs.primary.withValues(
+                                        alpha: 31,
+                                      ),
+                                      child: Icon(a.icon, color: cs.primary),
+                                    ),
+                                    const Spacer(),
+                                    IconButton(
+                                      tooltip: pinned ? '取消置頂' : '置頂',
+                                      onPressed: () {
+                                        setState(() {
+                                          if (pinned) {
+                                            _pinned.remove(a.id);
+                                          } else {
+                                            _pinned.add(a.id);
+                                          }
+                                        });
+                                      },
+                                      icon: Icon(
+                                        pinned ? Icons.star : Icons.star_border,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  a.title,
+                                  style: titleStyle.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  a.routeName,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Colors.grey[700],
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Align(
+                                  alignment: Alignment.bottomRight,
+                                  child: FilledButton.tonalIcon(
+                                    onPressed: () => _go(context, a),
+                                    icon: const Icon(Icons.open_in_new),
+                                    label: const Text('開啟'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
       ),
     );
   }
+
+  void _go(BuildContext context, _AdminAction a) {
+    Navigator.of(context).pushNamed(a.routeName);
+  }
 }
+
+class _AdminAction {
+  const _AdminAction({
+    required this.id,
+    required this.title,
+    required this.icon,
+    required this.routeName,
+  });
+
+  final String id;
+  final String title;
+  final IconData icon;
+  final String routeName;
+}
+
+/// 你可以把這些 routeName 改成你專案已存在的命名路由
+const String kRouteAdminDashboard = '/admin/dashboard';
+const String kRouteAdminShopSettings = '/admin/shop_settings';
+const String kRouteAdminProducts = '/admin/products';
+const String kRouteAdminOrders = '/admin/orders';
+const String kRouteAdminRefunds = '/admin/refunds';
+const String kRouteAdminShipping = '/admin/shipping';
+const String kRouteAdminMembers = '/admin/members';
+const String kRouteAdminPointsTasks = '/admin/points_tasks';
+const String kRouteAdminVendors = '/admin/vendors';
+const String kRouteAdminCampaigns = '/admin/campaigns';
+const String kRouteAdminLottery = '/admin/lottery';
+const String kRouteAdminNews = '/admin/news';
+const String kRouteAdminPages = '/admin/pages';
+const String kRouteAdminFaq = '/admin/faq';
+const String kRouteAdminApprovals = '/admin/approvals';
+const String kRouteAdminAnnouncements = '/admin/announcements';
+const String kRouteAdminContact = '/admin/contact';
+const String kRouteAdminAnalytics = '/admin/analytics';
+const String kRouteAdminRoles = '/admin/roles';
+const String kRouteAdminSystemSettings = '/admin/system_settings';

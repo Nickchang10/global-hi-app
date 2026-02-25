@@ -1,228 +1,639 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:flutter_tts/flutter_tts.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
-import '../services/language_service.dart';
-import '../services/ai_recommendation_service.dart';
-import '../services/firestore_mock_service.dart';
 
-/// 🧠 AI 多模態客服中心
-/// - 偵測語音情緒（音調快慢、語氣特徵）
-/// - 調整語音回覆語氣（安撫、活潑、正式）
-/// - 後續可延伸表情偵測與鏡頭互動
-class AiEmotionCenterPage extends StatefulWidget {
-  const AiEmotionCenterPage({super.key});
+/// ✅ AIEmotionCenterPage（AI 情緒中心｜最終完整版｜可編譯）
+/// ------------------------------------------------------------
+/// Firestore（建議結構）
+/// 1) users/{uid}/ai_emotion_logs/{logId}
+///    - mood (String)        e.g. calm/happy/anxious/sad/angry/stressed/excited
+///    - intensity (int)     1~5
+///    - note (String)       可空
+///    - tags (List<String>) 可空
+///    - createdAt (Timestamp)
+///    - updatedAt (Timestamp)
+///
+/// 2) users/{uid}/ai_emotion_state/current
+///    - mood (String)
+///    - intensity (int)
+///    - note (String)
+///    - tags (List<String>)
+///    - updatedAt (Timestamp)
+///
+/// 功能
+/// - 快速設定「目前情緒狀態」（寫入 emotion_state/current）
+/// - 同步寫入一筆 log（ai_emotion_logs）
+/// - 顯示最近紀錄（可刪除、可套用為目前狀態）
+///
+/// ✅ Lints
+/// - prefer_const_constructors：能 const 的都 const
+/// - curly_braces_in_flow_control_structures：if 都用 {}
+/// - withOpacity deprecated：改 withValues(alpha: ...)
+class AIEmotionCenterPage extends StatefulWidget {
+  const AIEmotionCenterPage({super.key});
+
   @override
-  State<AiEmotionCenterPage> createState() => _AiEmotionCenterPageState();
+  State<AIEmotionCenterPage> createState() => _AIEmotionCenterPageState();
 }
 
-class _AiEmotionCenterPageState extends State<AiEmotionCenterPage> {
-  late FlutterTts _tts;
-  late stt.SpeechToText _speech;
-  bool _isListening = false;
-  bool _isThinking = false;
-  String _query = "";
-  String _emotion = "neutral";
-  final List<Map<String, dynamic>> _chat = [];
+class _AIEmotionCenterPageState extends State<AIEmotionCenterPage> {
+  final _fs = FirebaseFirestore.instance;
+
+  final _noteCtrl = TextEditingController();
+
+  String _mood = 'calm';
+  int _intensity = 3; // 1~5
+  final Set<String> _tags = <String>{};
+
+  bool _saving = false;
 
   @override
-  void initState() {
-    super.initState();
-    _tts = FlutterTts();
-    _speech = stt.SpeechToText();
+  void dispose() {
+    _noteCtrl.dispose();
+    super.dispose();
   }
 
-  Future<void> _listen() async {
-    if (!_isListening) {
-      bool available = await _speech.initialize();
-      if (available) {
-        setState(() => _isListening = true);
-        _speech.listen(onResult: (val) {
-          setState(() {
-            _query = val.recognizedWords;
-          });
-          if (val.finalResult) {
-            _detectEmotionAndRespond();
-          }
-        });
+  // -------------------------
+  // Firestore refs
+  // -------------------------
+  CollectionReference<Map<String, dynamic>> _logCol(String uid) =>
+      _fs.collection('users').doc(uid).collection('ai_emotion_logs');
+
+  DocumentReference<Map<String, dynamic>> _stateDoc(String uid) => _fs
+      .collection('users')
+      .doc(uid)
+      .collection('ai_emotion_state')
+      .doc('current');
+
+  // -------------------------
+  // Mood presets
+  // -------------------------
+  static const List<_MoodPreset> _moods = <_MoodPreset>[
+    _MoodPreset('calm', '平靜', Icons.spa),
+    _MoodPreset('happy', '開心', Icons.sentiment_very_satisfied),
+    _MoodPreset('excited', '興奮', Icons.bolt),
+    _MoodPreset('anxious', '焦慮', Icons.psychology_alt),
+    _MoodPreset('stressed', '壓力', Icons.warning_amber),
+    _MoodPreset('sad', '難過', Icons.sentiment_dissatisfied),
+    _MoodPreset('angry', '生氣', Icons.sentiment_very_dissatisfied),
+  ];
+
+  static const List<String> _tagPresets = <String>[
+    '工作',
+    '家庭',
+    '健康',
+    '睡眠',
+    '金錢',
+    '學業',
+    '人際',
+    '通勤',
+    '運動',
+    '購物',
+  ];
+
+  _MoodPreset get _currentPreset {
+    for (final m in _moods) {
+      if (m.key == _mood) {
+        return m;
       }
-    } else {
-      setState(() => _isListening = false);
-      _speech.stop();
+    }
+    return _moods.first;
+  }
+
+  // -------------------------
+  // Save
+  // -------------------------
+  Future<void> _saveNow({required String uid, bool alsoWriteLog = true}) async {
+    if (_saving) {
+      return;
+    }
+
+    final messenger = ScaffoldMessenger.of(context); // ✅ async 前先取出
+    setState(() => _saving = true);
+
+    try {
+      final now = FieldValue.serverTimestamp();
+      final payload = <String, dynamic>{
+        'mood': _mood,
+        'intensity': _intensity,
+        'note': _noteCtrl.text.trim(),
+        'tags': _tags.toList(),
+        'updatedAt': now,
+      };
+
+      // 1) state/current
+      await _stateDoc(uid).set(payload, SetOptions(merge: true));
+
+      // 2) log
+      if (alsoWriteLog) {
+        await _logCol(uid).add(<String, dynamic>{...payload, 'createdAt': now});
+      }
+
+      if (!mounted) {
+        return;
+      }
+      setState(() => _saving = false);
+      messenger.showSnackBar(const SnackBar(content: Text('✅ 已更新目前情緒狀態')));
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _saving = false);
+      messenger.showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
     }
   }
 
-  /// 🎭 根據語音長度與關鍵詞模擬情緒辨識
-  String _analyzeEmotion(String text) {
-    final lower = text.toLowerCase();
-    if (lower.contains("angry") || lower.contains("生氣") || lower.contains("不爽")) {
-      return "angry";
-    } else if (lower.contains("sad") || lower.contains("傷心") || lower.contains("難過")) {
-      return "sad";
-    } else if (lower.contains("happy") || lower.contains("開心") || lower.contains("棒")) {
-      return "happy";
-    } else if (text.length < 3) {
-      return "neutral";
-    } else if (text.endsWith("!") || text.contains("！")) {
-      return "excited";
-    }
-    return "neutral";
-  }
-
-  Future<void> _detectEmotionAndRespond() async {
-    final lang = Provider.of<LanguageService>(context, listen: false);
-    final ai = AIRecommendationService.instance;
-    final products = FirestoreMockService.instance.getMockProducts(lang.locale.languageCode);
+  Future<void> _applyFromLog({
+    required String uid,
+    required _EmotionLog log,
+  }) async {
+    final messenger = ScaffoldMessenger.of(context); // ✅ async 前先取出
 
     setState(() {
-      _isListening = false;
-      _isThinking = true;
-      _emotion = _analyzeEmotion(_query);
-      _chat.insert(0, {"from": "user", "text": _query});
+      _mood = log.mood;
+      _intensity = log.intensity.clamp(1, 5);
+      _noteCtrl.text = log.note;
+      _tags
+        ..clear()
+        ..addAll(log.tags);
     });
 
-    String reply;
-    switch (_emotion) {
-      case "angry":
-        reply = "我理解您現在的心情，我會盡力幫您處理這個問題。";
-        break;
-      case "sad":
-        reply = "別難過，或許我們可以找一些讓您開心的商品。";
-        break;
-      case "happy":
-        reply = "太好了！我很開心能幫到您～要不要看看最新優惠？";
-        break;
-      case "excited":
-        reply = "您看起來很興奮！這裡有幾個超棒的新款推薦給您！";
-        break;
-      default:
-        reply = "了解，我會根據您的需求進行推薦。";
-    }
+    // 只更新 current，不再額外寫一筆 log（避免重複）
+    await _saveNow(uid: uid, alsoWriteLog: false);
 
-    final recommend = products.take(3).toList();
-    _chat.insert(0, {"from": "ai", "text": reply, "emotion": _emotion, "products": recommend});
-    await _speak(reply);
-    setState(() => _isThinking = false);
+    if (!mounted) {
+      return;
+    }
+    messenger.showSnackBar(const SnackBar(content: Text('已套用為目前狀態')));
   }
 
-  Future<void> _speak(String text) async {
-    switch (_emotion) {
-      case "angry":
-        await _tts.setSpeechRate(0.8);
-        await _tts.setPitch(0.7);
-        break;
-      case "sad":
-        await _tts.setSpeechRate(0.9);
-        await _tts.setPitch(0.8);
-        break;
-      case "happy":
-      case "excited":
-        await _tts.setSpeechRate(1.2);
-        await _tts.setPitch(1.2);
-        break;
-      default:
-        await _tts.setSpeechRate(1.0);
-        await _tts.setPitch(1.0);
-    }
-    await _tts.speak(text);
-  }
+  Future<void> _deleteLog({
+    required String uid,
+    required _EmotionLog log,
+  }) async {
+    final messenger = ScaffoldMessenger.of(context); // ✅ async 前先取出
 
-  @override
-  Widget build(BuildContext context) {
-    final lang = Provider.of<LanguageService>(context);
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(lang.tr("ai_emotion_center")),
-        backgroundColor: const Color(0xFF0059FF),
-      ),
-      body: Column(
-        children: [
-          const SizedBox(height: 10),
-          Text(
-            "🎭 ${lang.tr("detected_emotion")}: ${_emotion.toUpperCase()}",
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('刪除紀錄'),
+        content: Text('確定刪除這筆「${_labelOfMood(log.mood)}」紀錄嗎？此操作無法復原。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
           ),
-          Expanded(
-            child: ListView.builder(
-              reverse: true,
-              padding: const EdgeInsets.all(12),
-              itemCount: _chat.length,
-              itemBuilder: (_, i) {
-                final msg = _chat[i];
-                final isUser = msg["from"] == "user";
-                final emotion = msg["emotion"];
-                Color bubbleColor = isUser
-                    ? const Color(0xFF0059FF)
-                    : (emotion == "happy"
-                        ? Colors.lightGreen[100]!
-                        : (emotion == "sad"
-                            ? Colors.blue[100]!
-                            : (emotion == "angry"
-                                ? Colors.red[100]!
-                                : Colors.grey[200]!)));
-                return Align(
-                  alignment:
-                      isUser ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 6),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: bubbleColor,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(msg["text"],
-                            style: TextStyle(
-                                color: isUser ? Colors.white : Colors.black87)),
-                        if (msg["products"] != null)
-                          ...List.generate(
-                            (msg["products"] as List).length.clamp(0, 3),
-                            (idx) {
-                              final p = msg["products"][idx];
-                              return Padding(
-                                padding: const EdgeInsets.only(top: 6),
-                                child: Row(
-                                  children: [
-                                    const Icon(Icons.watch,
-                                        color: Colors.amber, size: 20),
-                                    const SizedBox(width: 6),
-                                    Text("${p["name"]} - NT\$${p["price"]}"),
-                                  ],
-                                ),
-                              );
-                            },
-                          )
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('刪除'),
           ),
-          if (_isThinking)
-            const Padding(
-              padding: EdgeInsets.all(8.0),
-              child: CircularProgressIndicator(),
-            ),
-          const SizedBox(height: 8),
-          GestureDetector(
-            onTap: _listen,
-            child: CircleAvatar(
-              radius: 38,
-              backgroundColor:
-                  _isListening ? Colors.redAccent : const Color(0xFF0059FF),
-              child: Icon(
-                _isListening ? Icons.hearing : Icons.mic,
-                color: Colors.white,
-                size: 40,
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
         ],
       ),
+    );
+
+    if (ok != true) {
+      return;
+    }
+
+    try {
+      await _logCol(uid).doc(log.id).delete();
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(const SnackBar(content: Text('已刪除紀錄')));
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
+    }
+  }
+
+  // -------------------------
+  // Build
+  // -------------------------
+  @override
+  Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('AI 情緒中心')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.lock_outline, size: 56, color: Colors.grey),
+                const SizedBox(height: 12),
+                const Text('請先登入才能使用', style: TextStyle(color: Colors.grey)),
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: () => Navigator.of(
+                    context,
+                    rootNavigator: true,
+                  ).pushNamed('/login'),
+                  child: const Text('前往登入'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final uid = user.uid;
+    final cs = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('AI 情緒中心'),
+        actions: [
+          IconButton(
+            tooltip: '讀取目前狀態',
+            onPressed: _saving ? null : () => _loadCurrent(uid),
+            icon: const Icon(Icons.sync),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _sectionTitle('目前情緒狀態'),
+          _currentCard(cs, uid),
+          const SizedBox(height: 16),
+          _sectionTitle('最近紀錄'),
+          _recentLogs(uid),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _loadCurrent(String uid) async {
+    final messenger = ScaffoldMessenger.of(context); // ✅ async 前先取出
+
+    try {
+      final doc = await _stateDoc(uid).get();
+      final data = doc.data() ?? <String, dynamic>{};
+
+      setState(() {
+        _mood = (data['mood'] ?? _mood).toString();
+        _intensity = _asInt(
+          data['intensity'],
+          fallback: _intensity,
+        ).clamp(1, 5);
+        _noteCtrl.text = (data['note'] ?? '').toString();
+        _tags
+          ..clear()
+          ..addAll(_asStringList(data['tags']));
+      });
+
+      messenger.showSnackBar(const SnackBar(content: Text('已讀取目前狀態')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('讀取失敗：$e')));
+    }
+  }
+
+  Widget _sectionTitle(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Text(
+        text,
+        style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+      ),
+    );
+  }
+
+  Widget _currentCard(ColorScheme cs, String uid) {
+    final preset = _currentPreset;
+
+    return Card(
+      elevation: 1,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // header
+            Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: cs.surfaceContainerHighest.withValues(
+                    alpha: 0.75,
+                  ),
+                  child: Icon(preset.icon, color: cs.onSurface),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    '狀態：${preset.label}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                _pill(cs, '強度 $_intensity/5', cs.primary),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // mood selection
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _moods.map((m) {
+                final selected = m.key == _mood;
+                return ChoiceChip(
+                  selected: selected,
+                  label: Text(m.label),
+                  avatar: Icon(m.icon, size: 18),
+                  onSelected: _saving
+                      ? null
+                      : (v) {
+                          if (v) {
+                            setState(() => _mood = m.key);
+                          }
+                        },
+                );
+              }).toList(),
+            ),
+
+            const SizedBox(height: 14),
+
+            // intensity
+            Row(
+              children: [
+                const Text('強度', style: TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Slider(
+                    value: _intensity.toDouble(),
+                    min: 1,
+                    max: 5,
+                    divisions: 4,
+                    label: '$_intensity',
+                    onChanged: _saving
+                        ? null
+                        : (v) {
+                            setState(() => _intensity = v.round().clamp(1, 5));
+                          },
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            // note
+            TextField(
+              controller: _noteCtrl,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: '備註（可空）',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              enabled: !_saving,
+            ),
+
+            const SizedBox(height: 12),
+
+            // tags
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _tagPresets.map((t) {
+                final selected = _tags.contains(t);
+                return FilterChip(
+                  selected: selected,
+                  label: Text(t),
+                  onSelected: _saving
+                      ? null
+                      : (v) {
+                          setState(() {
+                            if (v) {
+                              _tags.add(t);
+                            } else {
+                              _tags.remove(t);
+                            }
+                          });
+                        },
+                );
+              }).toList(),
+            ),
+
+            const SizedBox(height: 14),
+
+            // actions
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _saving
+                        ? null
+                        : () => _saveNow(uid: uid, alsoWriteLog: true),
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.save),
+                    label: Text(_saving ? '儲存中…' : '儲存並寫入紀錄'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '提示：寫入「目前狀態」可讓 AI 對話/推薦在語氣上更貼近你的狀態。',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _recentLogs(String uid) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _logCol(
+        uid,
+      ).orderBy('createdAt', descending: true).limit(30).snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text('讀取失敗：${snap.error}'),
+          );
+        }
+        if (!snap.hasData) {
+          return const Center(
+            child: Padding(
+              padding: EdgeInsets.all(12),
+              child: CircularProgressIndicator(),
+            ),
+          );
+        }
+
+        final items = snap.data!.docs
+            .map((d) => _EmotionLog.fromDoc(d))
+            .toList();
+        if (items.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.all(12),
+            child: Text('尚無紀錄', style: TextStyle(color: Colors.grey)),
+          );
+        }
+
+        return Column(
+          children: items.map((log) => _logTile(uid, log)).toList(),
+        );
+      },
+    );
+  }
+
+  Widget _logTile(String uid, _EmotionLog log) {
+    final cs = Theme.of(context).colorScheme;
+
+    final title = _labelOfMood(log.mood);
+    final subtitle = [
+      '強度 ${log.intensity}/5',
+      if (log.tags.isNotEmpty) '標籤：${log.tags.join('、')}',
+      if (log.note.trim().isNotEmpty) '備註：${log.note}',
+    ].join('   ·   ');
+
+    return Card(
+      elevation: 1,
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: cs.surfaceContainerHighest.withValues(alpha: 0.75),
+          child: Icon(_iconOfMood(log.mood)),
+        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
+        subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: Wrap(
+          spacing: 6,
+          children: [
+            IconButton(
+              tooltip: '套用為目前狀態',
+              onPressed: _saving
+                  ? null
+                  : () => _applyFromLog(uid: uid, log: log),
+              icon: const Icon(Icons.check_circle_outline),
+            ),
+            IconButton(
+              tooltip: '刪除',
+              onPressed: _saving ? null : () => _deleteLog(uid: uid, log: log),
+              icon: const Icon(Icons.delete_outline),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pill(ColorScheme cs, String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: cs.onSurface,
+          fontWeight: FontWeight.w800,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
+  // -------------------------
+  // Utils
+  // -------------------------
+  static int _asInt(dynamic v, {int fallback = 0}) {
+    if (v == null) return fallback;
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  static List<String> _asStringList(dynamic v) {
+    if (v == null) return <String>[];
+    if (v is List) {
+      return v
+          .map((e) => e.toString())
+          .where((e) => e.trim().isNotEmpty)
+          .toList();
+    }
+    if (v is String && v.trim().isNotEmpty) return <String>[v.trim()];
+    return <String>[];
+  }
+
+  static String _labelOfMood(String mood) {
+    for (final m in _moods) {
+      if (m.key == mood) {
+        return m.label;
+      }
+    }
+    return mood;
+  }
+
+  static IconData _iconOfMood(String mood) {
+    for (final m in _moods) {
+      if (m.key == mood) {
+        return m.icon;
+      }
+    }
+    return Icons.mood;
+  }
+}
+
+// -------------------------
+// Models
+// -------------------------
+class _MoodPreset {
+  final String key;
+  final String label;
+  final IconData icon;
+  const _MoodPreset(this.key, this.label, this.icon);
+}
+
+class _EmotionLog {
+  final String id;
+  final String mood;
+  final int intensity;
+  final String note;
+  final List<String> tags;
+
+  const _EmotionLog({
+    required this.id,
+    required this.mood,
+    required this.intensity,
+    required this.note,
+    required this.tags,
+  });
+
+  factory _EmotionLog.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final d = doc.data();
+    return _EmotionLog(
+      id: doc.id,
+      mood: (d['mood'] ?? 'calm').toString(),
+      intensity: _AIEmotionCenterPageState._asInt(
+        d['intensity'],
+        fallback: 3,
+      ).clamp(1, 5),
+      note: (d['note'] ?? '').toString(),
+      tags: _AIEmotionCenterPageState._asStringList(d['tags']),
     );
   }
 }

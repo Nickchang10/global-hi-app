@@ -32,6 +32,14 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
     },
   ];
 
+  bool _uploading = false;
+
+  @override
+  void dispose() {
+    _descController.dispose();
+    super.dispose();
+  }
+
   Future<void> _pickVideo() async {
     final picker = ImagePicker();
     final picked = await picker.pickVideo(source: ImageSource.gallery);
@@ -43,7 +51,7 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
   void _selectProduct() {
     showModalBottomSheet(
       context: context,
-      builder: (_) => Container(
+      builder: (sheetCtx) => Container(
         height: 280,
         padding: const EdgeInsets.all(10),
         child: ListView.builder(
@@ -56,7 +64,7 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
                 title: Text(p["name"]),
                 subtitle: Text("NT\$${p["price"]}"),
                 onTap: () {
-                  Navigator.pop(context);
+                  Navigator.pop(sheetCtx);
                   setState(() => _selectedProduct = p);
                 },
               ),
@@ -67,34 +75,48 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
     );
   }
 
-  void _uploadVideo() {
-    if (_videoFile == null || _descController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("請選擇影片並輸入描述")),
-      );
+  Future<void> _uploadVideo() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final nav = Navigator.of(context);
+
+    if (_uploading) return;
+
+    if (_videoFile == null || _descController.text.trim().isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text("請選擇影片並輸入描述")));
       return;
     }
 
-    // 模擬上傳
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("上傳中... 🚀")),
-    );
+    setState(() => _uploading = true);
 
-    Future.delayed(const Duration(seconds: 2), () {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("影片上傳成功 ✅")),
-      );
-      Navigator.pop(context, {
-        "url": _videoFile!.path,
-        "desc": _descController.text,
+    messenger.showSnackBar(const SnackBar(content: Text("上傳中... 🚀")));
+
+    try {
+      await Future.delayed(const Duration(seconds: 2));
+
+      if (!mounted) return;
+
+      messenger.showSnackBar(const SnackBar(content: Text("影片上傳成功 ✅")));
+
+      nav.pop({
+        // ✅ null-aware：這裡 _videoFile 保證非 null，但維持簡潔安全寫法
+        "url": _videoFile?.path ?? "",
+        "desc": _descController.text.trim(),
         "product": _selectedProduct,
         "likes": 0,
       });
-    });
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text("上傳失敗：$e")));
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    // ✅ prefer_null_aware_operators：用 ?. 串接取值
+    final pickedName = _videoFile?.path.split('/').last;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text("上傳短影片"),
@@ -104,42 +126,47 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            _videoFile == null
-                ? GestureDetector(
-                    onTap: _pickVideo,
-                    child: Container(
-                      height: 200,
-                      width: double.infinity,
-                      color: Colors.grey.shade200,
-                      child: const Center(
-                        child: Text("📹 點擊選擇影片"),
+            if (_videoFile == null)
+              GestureDetector(
+                onTap: _uploading ? null : _pickVideo,
+                child: Container(
+                  height: 200,
+                  width: double.infinity,
+                  color: Colors.grey.shade200,
+                  child: Center(
+                    child: Text(_uploading ? "上傳中…請稍候" : "📹 點擊選擇影片"),
+                  ),
+                ),
+              )
+            else
+              Stack(
+                alignment: Alignment.topRight,
+                children: [
+                  Container(
+                    height: 200,
+                    width: double.infinity,
+                    color: Colors.black12,
+                    child: Center(
+                      child: Text(
+                        // ✅ null-aware：pickedName 可能為 null（理論上不會，但 lint 友善）
+                        "🎬 已選影片：${pickedName ?? ''}",
+                        style: const TextStyle(color: Colors.pinkAccent),
                       ),
                     ),
-                  )
-                : Stack(
-                    alignment: Alignment.topRight,
-                    children: [
-                      Container(
-                        height: 200,
-                        width: double.infinity,
-                        color: Colors.black12,
-                        child: Center(
-                          child: Text(
-                            "🎬 已選影片：${_videoFile!.path.split('/').last}",
-                            style: const TextStyle(color: Colors.pinkAccent),
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.redAccent),
-                        onPressed: () => setState(() => _videoFile = null),
-                      ),
-                    ],
                   ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.redAccent),
+                    onPressed: _uploading
+                        ? null
+                        : () => setState(() => _videoFile = null),
+                  ),
+                ],
+              ),
             const SizedBox(height: 20),
             TextField(
               controller: _descController,
               maxLines: 3,
+              enabled: !_uploading,
               decoration: const InputDecoration(
                 labelText: "影片描述",
                 border: OutlineInputBorder(),
@@ -148,17 +175,22 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
             const SizedBox(height: 20),
             ListTile(
               leading: const Icon(Icons.shopping_bag, color: Colors.pinkAccent),
-              title: Text(_selectedProduct == null
-                  ? "綁定商品（可選）"
-                  : _selectedProduct!["name"]),
+              // ✅ 用 ?? 取代 null 比較 + !
+              title: Text(_selectedProduct?["name"]?.toString() ?? "綁定商品（可選）"),
               trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-              onTap: _selectProduct,
+              onTap: _uploading ? null : _selectProduct,
             ),
             const SizedBox(height: 20),
             ElevatedButton.icon(
-              onPressed: _uploadVideo,
-              icon: const Icon(Icons.cloud_upload),
-              label: const Text("上傳影片"),
+              onPressed: _uploading ? null : _uploadVideo,
+              icon: _uploading
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.cloud_upload),
+              label: Text(_uploading ? "上傳中..." : "上傳影片"),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.pinkAccent,
                 minimumSize: const Size(double.infinity, 50),

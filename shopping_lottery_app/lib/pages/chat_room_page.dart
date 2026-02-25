@@ -1,491 +1,519 @@
-// lib/pages/chat_room_page.dart
-import 'dart:async';
-import 'dart:typed_data';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:flutter/services.dart';
 
+/// ✅ ChatRoomPage（聊天房｜最終完整版｜可編譯）
+/// ------------------------------------------------------------
+/// 修正/強化：
+/// - ✅ control_flow_in_finally：finally 只做收尾，不使用 return（包含 if(!mounted) return 也不行）
+/// - ✅ withOpacity -> withValues(alpha: ...)（避免 deprecated_member_use）
+/// - ✅ async gap 後使用 context：先檢查 mounted
+///
+/// Firestore 結構建議：
+/// chat_rooms/{roomId}
+///   - title: String
+///   - updatedAt: Timestamp
+///   - createdAt: Timestamp
+///   - lastMessage: String
+///   - lastSenderId: String
+///
+/// chat_rooms/{roomId}/messages/{messageId}
+///   - text: String
+///   - senderId: String
+///   - senderName: String (optional)
+///   - createdAt: Timestamp
+///   - type: "text" (可擴充)
 class ChatRoomPage extends StatefulWidget {
-  final String title;
-  final List<String> members; // 群組成員或對方名稱
-  final bool isGroup;
+  final String roomId;
+  final String? title;
 
-  const ChatRoomPage({
-    super.key,
-    required this.title,
-    required this.members,
-    this.isGroup = false,
-  });
+  const ChatRoomPage({super.key, required this.roomId, this.title});
+
+  /// 若你用命名路由：Navigator.pushNamed(context, '/chat', arguments: {...})
+  static ChatRoomPage fromRouteArgs(Object? args) {
+    final map = (args is Map) ? args : <String, dynamic>{};
+    final roomId = (map['roomId'] ?? map['id'] ?? '').toString();
+    final title = (map['title'] ?? '').toString();
+    return ChatRoomPage(
+      roomId: roomId.isEmpty ? 'general' : roomId,
+      title: title.isEmpty ? null : title,
+    );
+  }
 
   @override
   State<ChatRoomPage> createState() => _ChatRoomPageState();
 }
 
 class _ChatRoomPageState extends State<ChatRoomPage> {
-  final List<Map<String, dynamic>> _messages = [];
-  final TextEditingController _ctrl = TextEditingController();
-  final ScrollController _sc = ScrollController();
-  final ImagePicker _picker = ImagePicker();
+  final _fs = FirebaseFirestore.instance;
+  final _auth = FirebaseAuth.instance;
 
-  bool _peerTyping = false;
-  Timer? _typingTimer;
+  final _inputCtrl = TextEditingController();
+  final _scrollCtrl = ScrollController();
+
+  bool _sending = false;
+  String? _sendError;
+
+  DocumentReference<Map<String, dynamic>> get _roomRef =>
+      _fs.collection('chat_rooms').doc(widget.roomId);
+
+  CollectionReference<Map<String, dynamic>> get _msgRef =>
+      _roomRef.collection('messages');
+
+  String? get _uid => _auth.currentUser?.uid;
 
   @override
   void initState() {
     super.initState();
-    // 預設幾則訊息示範
-    _messages.addAll([
-      {
-        'id': 'm1',
-        'user': widget.isGroup ? widget.members[0] : widget.title,
-        'text': '嗨，你好！',
-        'time': DateTime.now().subtract(const Duration(minutes: 10)),
-        'isMe': false,
-        'imageBytes': null,
-        'reaction': null,
-        'status': 'read'
-      },
-      {
-        'id': 'm2',
-        'user': '我',
-        'text': '你好，很高興跟你聊天！',
-        'time': DateTime.now().subtract(const Duration(minutes: 9)),
-        'isMe': true,
-        'imageBytes': null,
-        'reaction': null,
-        'status': 'read'
-      },
-    ]);
-
-    // 模擬對方後續訊息
-    Future.delayed(const Duration(seconds: 4), () => _simulateIncoming('剛剛看了你張貼的貼文，超讚的！'));
+    _ensureRoomDoc();
   }
 
   @override
   void dispose() {
-    _typingTimer?.cancel();
-    _sc.dispose();
-    _ctrl.dispose();
+    _inputCtrl.dispose();
+    _scrollCtrl.dispose();
     super.dispose();
   }
 
-  // 送文字訊息
-  void _sendText() {
-    final txt = _ctrl.text.trim();
-    if (txt.isEmpty) return;
-    _ctrl.clear();
-    _addMessage(user: '我', text: txt, isMe: true);
-  }
-
-  // 送圖片（使用 image_picker）
-  Future<void> _sendImage() async {
+  Future<void> _ensureRoomDoc() async {
     try {
-      final XFile? picked = await _picker.pickImage(source: ImageSource.gallery, maxWidth: 1600);
-      if (picked == null) return;
-      final bytes = await picked.readAsBytes();
-      _addMessage(user: '我', text: null, isMe: true, imageBytes: bytes);
+      final doc = await _roomRef.get();
+      if (doc.exists) {
+        return;
+      }
+      await _roomRef.set(<String, dynamic>{
+        'title': widget.title ?? '聊天室',
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'lastMessage': '',
+        'lastSenderId': '',
+      }, SetOptions(merge: true));
+    } catch (_) {
+      // ignore (rules/權限未設好時不阻擋 UI)
+    }
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _messageStream() {
+    return _msgRef
+        .orderBy('createdAt', descending: false)
+        .limit(300)
+        .snapshots();
+  }
+
+  Future<void> _sendText() async {
+    final uid = _uid;
+    if (uid == null) {
+      _snack('請先登入');
+      return;
+    }
+
+    final text = _inputCtrl.text.trim();
+    if (text.isEmpty) {
+      return;
+    }
+
+    if (_sending) {
+      return;
+    }
+
+    setState(() {
+      _sending = true;
+      _sendError = null;
+    });
+
+    try {
+      _inputCtrl.clear();
+
+      final user = _auth.currentUser;
+      final senderName = (user?.displayName ?? user?.email ?? '').trim();
+
+      await _msgRef.add(<String, dynamic>{
+        'type': 'text',
+        'text': text,
+        'senderId': uid,
+        'senderName': senderName,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      await _roomRef.set(<String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+        'lastMessage': text,
+        'lastSenderId': uid,
+        if ((widget.title ?? '').trim().isNotEmpty)
+          'title': widget.title!.trim(),
+      }, SetOptions(merge: true));
+
+      _scrollToBottomSoon();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('選圖失敗：$e')));
+      if (!mounted) {
+        return;
+      }
+      setState(() => _sendError = '送出失敗：$e');
+    } finally {
+      // ✅ finally 只做收尾，不可以有 return（包含 if(!mounted) return 也不行）
+      if (mounted) {
+        setState(() => _sending = false);
+      }
     }
   }
 
-  // 共用新增訊息函式（含模擬送達狀態）
-  void _addMessage({
-    required String user,
-    String? text,
-    required bool isMe,
-    Uint8List? imageBytes,
-  }) {
-    final msg = {
-      'id': DateTime.now().millisecondsSinceEpoch.toString(),
-      'user': user,
-      'text': text ?? '',
-      'time': DateTime.now(),
-      'isMe': isMe,
-      'imageBytes': imageBytes,
-      'reaction': null,
-      'status': isMe ? 'sending' : 'delivered',
-    };
-
-    setState(() => _messages.add(msg));
-    _jumpToBottom();
-
-    // 如果是自己發送，模擬送達流程
-    if (isMe) {
-      Future.delayed(const Duration(milliseconds: 350), () {
-        _updateStatus(msg['id'], 'sent');
-      });
-      Future.delayed(const Duration(seconds: 1), () {
-        _updateStatus(msg['id'], 'delivered');
-      });
-      Future.delayed(const Duration(seconds: 3), () {
-        _updateStatus(msg['id'], 'read');
-      });
-      // 如果對方沒在回應，模擬對方 typing 與回覆
-      Future.delayed(const Duration(seconds: 2), () {
-        _simulatePeerTypingThenReply();
-      });
+  Future<void> _clearMyMessages() async {
+    final uid = _uid;
+    if (uid == null) {
+      _snack('請先登入');
+      return;
     }
-  }
 
-  void _updateStatus(String id, String status) {
-    final idx = _messages.indexWhere((m) => m['id'] == id);
-    if (idx >= 0) {
-      setState(() => _messages[idx]['status'] = status);
-    }
-  }
-
-  // 模擬對方輸入與回覆
-  void _simulatePeerTypingThenReply() {
-    setState(() => _peerTyping = true);
-    _typingTimer?.cancel();
-    _typingTimer = Timer(const Duration(seconds: 2), () {
-      setState(() => _peerTyping = false);
-      _addMessage(user: widget.isGroup ? widget.members[0] : widget.title, text: '謝謝你的分享！我稍後再看商品連結～', isMe: false);
-    });
-  }
-
-  // 模擬外部收到訊息
-  void _simulateIncoming(String text) {
-    setState(() => _peerTyping = true);
-    _typingTimer?.cancel();
-    _typingTimer = Timer(const Duration(seconds: 2), () {
-      setState(() => _peerTyping = false);
-      _addMessage(user: widget.isGroup ? widget.members[0] : widget.title, text: text, isMe: false);
-    });
-  }
-
-  // 長按訊息加入 reaction
-  void _showReactionPicker(Map<String, dynamic> message) {
-    showModalBottomSheet(
+    final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) {
-        final emojis = ['👍','❤️','😂','😮','😢','👏'];
-        return Container(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: emojis.map((e) {
-              return InkWell(
-                onTap: () {
-                  setState(() => message['reaction'] = e);
-                  Navigator.pop(ctx);
-                },
-                child: Text(e, style: const TextStyle(fontSize: 22)),
-              );
-            }).toList(),
+      builder: (ctx) => AlertDialog(
+        title: const Text('清除我的訊息'),
+        content: const Text('只會刪除你自己送出的訊息，確定要繼續？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
           ),
-        );
-      }
-    );
-  }
-
-  // 複製訊息
-  void _copyMessage(String text) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製訊息')));
-  }
-
-  // 滾到底
-  void _jumpToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_sc.hasClients) {
-        _sc.animateTo(_sc.position.maxScrollExtent + 120,
-            duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
-      }
-    });
-  }
-
-  Widget _buildMessageBubble(Map<String, dynamic> m, bool showAvatar) {
-    final isMe = m['isMe'] as bool;
-    final time = m['time'] as DateTime;
-    final reaction = m['reaction'] as String?;
-    final status = m['status'] as String?;
-    final bubbleColor = isMe ? Colors.blue.shade100 : Colors.white;
-    final align = isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start;
-    final radius = BorderRadius.only(
-      topLeft: const Radius.circular(12),
-      topRight: const Radius.circular(12),
-      bottomLeft: Radius.circular(isMe ? 12 : 4),
-      bottomRight: Radius.circular(isMe ? 4 : 12),
-    );
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
-        children: [
-          if (!isMe)
-            if (showAvatar)
-              Padding(
-                padding: const EdgeInsets.only(right: 8.0),
-                child: CircleAvatar(
-                  radius: 16,
-                  backgroundColor: Colors.grey.shade400,
-                  child: Text(((m['user'] as String).isNotEmpty ? (m['user'] as String)[0] : '?')),
-                ),
-              )
-            else
-              const SizedBox(width: 40),
-          Flexible(
-            child: Column(
-              crossAxisAlignment: align,
-              children: [
-                if (!isMe && showAvatar) Text(m['user'] as String, style: const TextStyle(fontSize: 12, color: Colors.black54)),
-                GestureDetector(
-                  onLongPress: () => _showMessageActions(m),
-                  child: Container(
-                    margin: const EdgeInsets.only(top: 4),
-                    padding: m['imageBytes'] != null
-                        ? const EdgeInsets.all(6)
-                        : const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: bubbleColor,
-                      borderRadius: radius,
-                      boxShadow: [BoxShadow(color: Colors.black12.withOpacity(0.03), blurRadius: 2)],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        if (m['imageBytes'] != null)
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.memory(m['imageBytes'] as Uint8List, width: 220, fit: BoxFit.cover),
-                          ),
-                        if ((m['text'] as String).isNotEmpty) ...[
-                          Text(m['text'] as String, style: const TextStyle(fontSize: 15)),
-                          const SizedBox(height: 6),
-                        ],
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(_formatTime(time), style: const TextStyle(fontSize: 11, color: Colors.black54)),
-                            const SizedBox(width: 6),
-                            if (reaction != null) Text(reaction, style: const TextStyle(fontSize: 16)),
-                            if (isMe) const SizedBox(width: 6),
-                            if (isMe)
-                              _statusIcon(status),
-                          ],
-                        )
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('確定刪除'),
           ),
-          if (isMe) const SizedBox(width: 8),
-          if (isMe)
-            // 我方頭像
-            if (showAvatar)
-              CircleAvatar(radius: 16, backgroundColor: Colors.blue.shade300, child: const Text('我'))
-            else
-              const SizedBox(width: 40),
         ],
       ),
     );
-  }
 
-  Widget _statusIcon(String? status) {
-    switch (status) {
-      case 'sending':
-        return const Icon(Icons.access_time, size: 14, color: Colors.grey);
-      case 'sent':
-        return const Icon(Icons.check, size: 14, color: Colors.grey);
-      case 'delivered':
-        return const Icon(Icons.done_all, size: 14, color: Colors.grey);
-      case 'read':
-        return const Icon(Icons.done_all, size: 14, color: Colors.blue);
-      default:
-        return const SizedBox.shrink();
+    if (ok != true) {
+      return;
+    }
+
+    try {
+      final snap = await _msgRef.where('senderId', isEqualTo: uid).get();
+      if (snap.docs.isEmpty) {
+        _snack('沒有可刪除的訊息');
+        return;
+      }
+
+      final batch = _fs.batch();
+      for (final d in snap.docs) {
+        batch.delete(d.reference);
+      }
+      await batch.commit();
+      _snack('已清除你的訊息');
+    } catch (e) {
+      _snack('清除失敗：$e');
     }
   }
 
-  // 訊息操作選單（長按）
-  void _showMessageActions(Map<String, dynamic> m) {
-    showModalBottomSheet(
-        context: context,
-        builder: (ctx) {
-          return SafeArea(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.emoji_emotions_outlined),
-                  title: const Text('加入表情'),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _showReactionPicker(m);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.copy),
-                  title: const Text('複製'),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _copyMessage(m['text'] as String? ?? '');
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.delete_outline),
-                  title: const Text('刪除'),
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    setState(() => _messages.removeWhere((x) => x['id'] == m['id']));
-                  },
-                ),
-                const SizedBox(height: 8),
-              ],
-            ),
-          );
-        });
+  void _snack(String msg) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  String _formatTime(DateTime t) {
-    final h = t.hour.toString().padLeft(2, '0');
-    final m = t.minute.toString().padLeft(2, '0');
-    return '$h:$m';
-  }
-
-  // 判斷是否要顯示頭像（若前一筆同使用者且時間差少於 5 分鐘，則不顯示）
-  bool _shouldShowAvatar(int index) {
-    if (index == 0) return true;
-    final cur = _messages[index];
-    final prev = _messages[index - 1];
-    if (cur['user'] != prev['user']) return true;
-    final diff = (cur['time'] as DateTime).difference(prev['time'] as DateTime).inMinutes;
-    return diff > 5;
-  }
-
-  // 日期 separator
-  Widget _buildDateSeparator(DateTime date) {
-    final today = DateTime.now();
-    final sameDay = date.year == today.year && date.month == today.month && date.day == today.day;
-    final text = sameDay ? '今天' : '${date.year}/${date.month}/${date.day}';
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(children: [
-        const Expanded(child: Divider()),
-        Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: Text(text, style: const TextStyle(color: Colors.black54))),
-        const Expanded(child: Divider()),
-      ]),
-    );
+  void _scrollToBottomSoon() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollCtrl.hasClients) {
+        return;
+      }
+      _scrollCtrl.animateTo(
+        _scrollCtrl.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    final uid = _uid;
+    if (uid == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('聊天室')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.lock_outline, size: 52, color: Colors.grey),
+                const SizedBox(height: 12),
+                Text(
+                  '請先登入才能使用聊天功能',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pushNamed('/login'),
+                  child: const Text('前往登入'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final title = (widget.title ?? '聊天室').trim().isEmpty
+        ? '聊天室'
+        : widget.title!.trim();
+
     return Scaffold(
       appBar: AppBar(
-        title: Row(children: [
-          CircleAvatar(backgroundColor: Colors.blueGrey, child: Text(widget.title.isNotEmpty ? widget.title[0] : '?')),
-          const SizedBox(width: 10),
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(widget.title, style: const TextStyle(fontSize: 16)),
-            Text(widget.isGroup ? '${widget.members.length} 位成員' : '線上', style: const TextStyle(fontSize: 12, color: Colors.white70)),
-          ]),
-        ]),
+        title: Text(title),
         actions: [
-          IconButton(icon: const Icon(Icons.call), onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('語音通話（示範）')))),
-          IconButton(icon: const Icon(Icons.videocam), onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('視訊通話（示範）')))),
-          IconButton(icon: const Icon(Icons.info_outline), onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('聊天室資訊（示範）')))),
+          IconButton(
+            tooltip: '清除我的訊息',
+            onPressed: _clearMyMessages,
+            icon: const Icon(Icons.delete_outline),
+          ),
         ],
       ),
       body: Column(
         children: [
-          Expanded(
-            child: NotificationListener<ScrollNotification>(
-              onNotification: (sn) {
-                // 可根據需要顯示「往下」按鈕
-                return false;
-              },
-              child: ListView.builder(
-                controller: _sc,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                itemCount: _messages.length + (_peerTyping ? 1 : 0),
-                itemBuilder: (ctx, idx) {
-                  // 如果 peer typing，放在最底下
-                  if (_peerTyping && idx == _messages.length) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 6),
-                      child: Row(
-                        children: [
-                          CircleAvatar(radius: 16, backgroundColor: Colors.grey.shade400, child: Text(widget.isGroup ? widget.members[0][0] : widget.title[0])),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            decoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(12)),
-                            child: const Text('正在輸入...'),
-                          )
-                        ],
-                      ),
-                    );
-                  }
-
-                  final m = _messages[idx];
-                  // show date separator when first item or date different from previous
-                  final prevDate = idx == 0 ? null : (_messages[idx - 1]['time'] as DateTime);
-                  final curDate = m['time'] as DateTime;
-                  final needDateSep = prevDate == null ||
-                      prevDate.year != curDate.year ||
-                      prevDate.month != curDate.month ||
-                      prevDate.day != curDate.day;
-
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (needDateSep) _buildDateSeparator(curDate),
-                      _buildMessageBubble(m, _shouldShowAvatar(idx)),
-                    ],
-                  );
-                },
-              ),
-            ),
-          ),
-
-          // input
-          SafeArea(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              color: Colors.white,
-              child: Row(
-                children: [
-                  IconButton(icon: const Icon(Icons.photo), onPressed: _sendImage),
-                  IconButton(icon: const Icon(Icons.emoji_emotions_outlined), onPressed: () {
-                    // 簡單示範 emoji 插入
-                    _ctrl.text = '${_ctrl.text}🙂';
-                    _ctrl.selection = TextSelection.fromPosition(TextPosition(offset: _ctrl.text.length));
-                  }),
-                  Expanded(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 120),
-                      child: TextField(
-                        controller: _ctrl,
-                        minLines: 1,
-                        maxLines: 6,
-                        decoration: const InputDecoration(
-                          hintText: '輸入訊息...',
-                          border: OutlineInputBorder(borderSide: BorderSide.none),
-                          isDense: true,
-                        ),
-                        onSubmitted: (_) => _sendText(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  FloatingActionButton(
-                    heroTag: 'send_btn',
-                    mini: true,
-                    backgroundColor: Colors.blue,
-                    child: const Icon(Icons.send, color: Colors.white),
-                    onPressed: _sendText,
-                  )
-                ],
-              ),
-            ),
-          )
+          _roomHintBar(cs),
+          const Divider(height: 1),
+          Expanded(child: _messageList(cs, uid)),
+          const Divider(height: 1),
+          _composer(cs),
         ],
       ),
     );
+  }
+
+  Widget _roomHintBar(ColorScheme cs) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+        border: Border(
+          bottom: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.5)),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.forum_outlined, color: cs.onSurfaceVariant, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Room: ${widget.roomId}',
+              style: TextStyle(
+                color: cs.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _messageList(ColorScheme cs, String uid) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _messageStream(),
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                '載入失敗：${snap.error}',
+                style: TextStyle(color: cs.onSurfaceVariant),
+              ),
+            ),
+          );
+        }
+        if (!snap.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final docs = snap.data!.docs;
+
+        if (docs.isEmpty) {
+          return Center(
+            child: Text(
+              '還沒有訊息，輸入一句話開始聊天吧',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+          );
+        }
+
+        // 每次更新後把畫面往下（避免一直跳，可依需求關掉）
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!_scrollCtrl.hasClients) {
+            return;
+          }
+          final max = _scrollCtrl.position.maxScrollExtent;
+          if (max <= 0) {
+            return;
+          }
+          _scrollCtrl.jumpTo(max);
+        });
+
+        return ListView.separated(
+          controller: _scrollCtrl,
+          padding: const EdgeInsets.all(12),
+          itemCount: docs.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, i) {
+            final d = docs[i].data();
+            final senderId = (d['senderId'] ?? '').toString();
+            final senderName = (d['senderName'] ?? '').toString();
+            final text = (d['text'] ?? '').toString();
+            final createdAt = (d['createdAt'] is Timestamp)
+                ? (d['createdAt'] as Timestamp).toDate()
+                : null;
+
+            final isMe = senderId == uid;
+
+            return _bubble(
+              cs,
+              isMe: isMe,
+              senderLabel: isMe
+                  ? '我'
+                  : (senderName.trim().isEmpty ? '對方' : senderName.trim()),
+              text: text.isEmpty ? '(空訊息)' : text,
+              time: createdAt,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _bubble(
+    ColorScheme cs, {
+    required bool isMe,
+    required String senderLabel,
+    required String text,
+    DateTime? time,
+  }) {
+    final bg = isMe
+        ? cs.primary.withValues(alpha: 0.12)
+        : cs.secondary.withValues(alpha: 0.12);
+    final align = isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start;
+
+    return Column(
+      crossAxisAlignment: align,
+      children: [
+        Row(
+          mainAxisAlignment: isMe
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: [
+            Icon(
+              isMe ? Icons.person : Icons.support_agent,
+              size: 16,
+              color: cs.onSurfaceVariant,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              senderLabel,
+              style: TextStyle(
+                color: cs.onSurfaceVariant,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            if (time != null) ...[
+              const SizedBox(width: 8),
+              Text(
+                _fmtTime(time),
+                style: TextStyle(
+                  color: cs.onSurfaceVariant.withValues(alpha: 0.8),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 6),
+        Container(
+          constraints: const BoxConstraints(maxWidth: 560),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: cs.outlineVariant.withValues(alpha: 0.45),
+            ),
+          ),
+          child: Text(
+            text,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _composer(ColorScheme cs) {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_sendError != null) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.25)),
+                ),
+                child: Text(
+                  _sendError!,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _inputCtrl,
+                    minLines: 1,
+                    maxLines: 4,
+                    enabled: !_sending,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _sendText(),
+                    decoration: const InputDecoration(
+                      hintText: '輸入訊息…',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                IconButton.filled(
+                  tooltip: '送出',
+                  onPressed: _sending ? null : _sendText,
+                  icon: _sending
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.send),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _fmtTime(DateTime dt) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(dt.hour)}:${two(dt.minute)}';
   }
 }

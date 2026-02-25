@@ -64,11 +64,16 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
         title: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(win ? Icons.emoji_events : Icons.sentiment_dissatisfied,
-                color: win ? Colors.orangeAccent : Colors.grey, size: 32),
+            Icon(
+              win ? Icons.emoji_events : Icons.sentiment_dissatisfied,
+              color: win ? Colors.orangeAccent : Colors.grey,
+              size: 32,
+            ),
             const SizedBox(width: 8),
-            Text(win ? "挑戰成功！" : "挑戰失敗",
-                style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text(
+              win ? "挑戰成功！" : "挑戰失敗",
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
           ],
         ),
         content: Column(
@@ -85,14 +90,15 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.orangeAccent,
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20)),
+                  borderRadius: BorderRadius.circular(20),
+                ),
               ),
               onPressed: () {
                 Navigator.pop(context);
                 Navigator.pop(context);
               },
               child: const Text("返回好友頁"),
-            )
+            ),
           ],
         ),
       ),
@@ -131,7 +137,7 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
               Colors.amber,
               Colors.pinkAccent,
               Colors.blueAccent,
-              Colors.green
+              Colors.green,
             ],
           ),
         ],
@@ -148,12 +154,7 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
           const SizedBox(height: 20),
           _buildCountdown(),
           const SizedBox(height: 40),
-          _buildPlayerBar(
-            "我",
-            myProgress,
-            Colors.blueAccent,
-            true,
-          ),
+          _buildPlayerBar("我", myProgress, Colors.blueAccent, true),
           const SizedBox(height: 24),
           _buildPlayerBar(
             widget.friendName,
@@ -175,13 +176,18 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
         Text(
           "倒數計時",
           style: TextStyle(
-              color: Colors.grey.shade700, fontWeight: FontWeight.w600),
+            color: Colors.grey.shade700,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 4),
         Text(
           "$secondsLeft 秒",
           style: const TextStyle(
-              fontSize: 28, fontWeight: FontWeight.bold, color: Colors.orange),
+            fontSize: 28,
+            fontWeight: FontWeight.bold,
+            color: Colors.orange,
+          ),
         ),
       ],
     );
@@ -189,12 +195,14 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
 
   Widget _buildPlayerBar(String name, double progress, Color color, bool me) {
     return Column(
-      crossAxisAlignment:
-          me ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+      crossAxisAlignment: me
+          ? CrossAxisAlignment.start
+          : CrossAxisAlignment.end,
       children: [
         Row(
-          mainAxisAlignment:
-              me ? MainAxisAlignment.start : MainAxisAlignment.end,
+          mainAxisAlignment: me
+              ? MainAxisAlignment.start
+              : MainAxisAlignment.end,
           children: [
             if (me)
               const CircleAvatar(
@@ -204,7 +212,8 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
             if (!me) const Spacer(),
             if (!me)
               CircleAvatar(
-                backgroundColor: Colors.orangeAccent.withOpacity(0.8),
+                // ✅ FIX: withOpacity -> withValues(alpha: ...)
+                backgroundColor: Colors.orangeAccent.withValues(alpha: 0.8),
                 child: const Icon(Icons.star, color: Colors.white),
               ),
           ],
@@ -224,10 +233,13 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
               height: 20,
               width: MediaQuery.of(context).size.width * progress * 0.8,
               decoration: BoxDecoration(
-                gradient: LinearGradient(colors: [
-                  color.withOpacity(0.8),
-                  color,
-                ]),
+                gradient: LinearGradient(
+                  colors: [
+                    // ✅ FIX: withOpacity -> withValues(alpha: ...)
+                    color.withValues(alpha: 0.8),
+                    color,
+                  ],
+                ),
                 borderRadius: BorderRadius.circular(20),
               ),
             ),
@@ -237,8 +249,9 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
         Text(
           "$name ${(progress * 100).toStringAsFixed(0)}%",
           style: TextStyle(
-              fontWeight: FontWeight.bold,
-              color: me ? Colors.blueAccent : Colors.orangeAccent),
+            fontWeight: FontWeight.bold,
+            color: me ? Colors.blueAccent : Colors.orangeAccent,
+          ),
         ),
       ],
     );
@@ -256,14 +269,16 @@ class _FriendChallengePageState extends State<FriendChallengePage> {
           Text(
             win ? "你贏了！🔥" : "差一點，下次再挑戰！",
             style: TextStyle(
-                color: win ? Colors.orangeAccent : Colors.grey,
-                fontWeight: FontWeight.bold,
-                fontSize: 18),
+              color: win ? Colors.orangeAccent : Colors.grey,
+              fontWeight: FontWeight.bold,
+              fontSize: 18,
+            ),
           )
         else
-          const Text("比賽進行中...",
-              style:
-                  TextStyle(color: Colors.grey, fontWeight: FontWeight.w500)),
+          const Text(
+            "比賽進行中...",
+            style: TextStyle(color: Colors.grey, fontWeight: FontWeight.w500),
+          ),
       ],
     );
   }

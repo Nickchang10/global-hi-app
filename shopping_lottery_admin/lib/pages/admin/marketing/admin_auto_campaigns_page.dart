@@ -1,394 +1,432 @@
-// lib/pages/admin/marketing/admin_auto_campaigns_page.dart
+// lib/pages/admin/marketing/admin_lottery_edit_page.dart
 //
-// ✅ AdminAutoCampaignsPage（自動派發管理｜最終可編譯完整版本）
+// ✅ AdminLotteryEditPage（正式版｜完整版｜可直接編譯）
 // ------------------------------------------------------------
-// - Firestore：auto_campaigns（即時監聽）
-// - 搜尋：title / message / segmentId / couponId / lotteryId / channel
-// - 篩選：類型 / 狀態 / 渠道
-// - 排序：updatedAt / nextRunAt / conversionCount / sentCount
-// - 批次：啟用 / 停用 / 刪除
-// - KPI：總數、啟用數、總發送、總轉換、平均CVR
-// - UI：避免 overflow（整頁可捲動）
-// - 串接路由：
-//   - /admin/auto_campaigns/edit（arguments = id 或 {id: ...}）
+// ✅ 修正：移除不必要 cast（避免 unnecessary_cast 警告）
+// ✅ 修正：control_flow_in_finally（finally 內不可 return）
+// ✅ Firestore collection: lotteries（可透過 constructor 調整）
+//
+// 文件欄位（建議）：
+// - title            String
+// - description      String
+// - enabled          bool
+// - startAt          Timestamp?
+// - endAt            Timestamp?
+// - costPoints       int
+// - minOrderAmount   double
+// - prizes           List<Map>
+//    - name           String
+//    - imageUrl       String
+//    - stock          int
+//    - weight         double
+//    - value          double
+//    - active         bool
+// - createdAt        Timestamp
+// - updatedAt        Timestamp
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
-class AdminAutoCampaignsPage extends StatefulWidget {
-  const AdminAutoCampaignsPage({super.key});
+class AdminLotteryEditPage extends StatefulWidget {
+  const AdminLotteryEditPage({
+    super.key,
+    this.lotteryId,
+    this.collectionName = 'lotteries',
+  });
+
+  /// null => 新增；有值 => 編輯
+  final String? lotteryId;
+
+  /// 依你的 Firestore 命名調整
+  final String collectionName;
 
   @override
-  State<AdminAutoCampaignsPage> createState() => _AdminAutoCampaignsPageState();
+  State<AdminLotteryEditPage> createState() => _AdminLotteryEditPageState();
 }
 
-class _AdminAutoCampaignsPageState extends State<AdminAutoCampaignsPage> {
-  // filters
-  final _keywordCtrl = TextEditingController();
-  String _type = 'all';
-  String _status = 'all'; // all/active/inactive
-  String _channel = 'all'; // all/push/line/email/inapp/none
+class _AdminLotteryEditPageState extends State<AdminLotteryEditPage> {
+  final _formKey = GlobalKey<FormState>();
 
-  // sort (client-side)
-  String _sortBy = 'updatedAt'; // updatedAt/nextRunAt/conversionCount/sentCount
-  bool _desc = true;
+  late final DocumentReference<Map<String, dynamic>> _ref;
 
-  // selection
-  final Set<String> _selected = {};
+  bool _loading = true;
+  String? _loadError;
 
-  static const int _limit = 500;
+  // ---- basic fields
+  final _titleCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+
+  bool _enabled = true;
+  DateTime? _startAt;
+  DateTime? _endAt;
+
+  final _costPointsCtrl = TextEditingController(text: '0');
+  final _minOrderAmountCtrl = TextEditingController(text: '0');
+
+  // ---- prizes
+  final List<_PrizeDraft> _prizes = [];
+
+  bool get _isEdit => (widget.lotteryId ?? '').trim().isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    final col = FirebaseFirestore.instance.collection(widget.collectionName);
+    _ref = _isEdit ? col.doc(widget.lotteryId!.trim()) : col.doc();
+    _load();
+  }
 
   @override
   void dispose() {
-    _keywordCtrl.dispose();
+    _titleCtrl.dispose();
+    _descCtrl.dispose();
+    _costPointsCtrl.dispose();
+    _minOrderAmountCtrl.dispose();
+    for (final p in _prizes) {
+      p.dispose();
+    }
     super.dispose();
   }
 
-  // ============================================================
-  // helpers
-  // ============================================================
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
 
-  String _s(dynamic v, {String fallback = ''}) => v == null ? fallback : v.toString();
+    try {
+      if (_isEdit) {
+        final snap = await _ref.get();
+        final data = snap.data();
+        if (data == null) throw StateError('找不到抽獎活動：${_ref.id}');
+        _applyData(data);
+      } else {
+        // create default
+        _enabled = true;
+        _startAt = DateTime.now();
+        _endAt = null;
 
-  num _n(dynamic v, {num fallback = 0}) {
-    if (v == null) return fallback;
-    if (v is num) return v;
-    final parsed = num.tryParse(v.toString());
-    return parsed ?? fallback;
+        for (final p in _prizes) {
+          p.dispose();
+        }
+        _prizes
+          ..clear()
+          ..add(_PrizeDraft.defaults());
+      }
+    } catch (e) {
+      _loadError = e.toString();
+    } finally {
+      // ✅ FIX: finally 內不能 return
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
   }
 
-  bool _b(dynamic v, {bool fallback = false}) => v == true ? true : (v == false ? false : fallback);
+  void _applyData(Map<String, dynamic> d) {
+    _titleCtrl.text = (d['title'] ?? d['name'] ?? '').toString();
+    _descCtrl.text = (d['description'] ?? d['desc'] ?? '').toString();
+    _enabled = d['enabled'] == true;
 
-  DateTime? _dt(dynamic v) {
-    if (v == null) return null;
-    if (v is Timestamp) return v.toDate();
-    if (v is DateTime) return v;
+    _startAt = _asDateTime(d['startAt'] ?? d['start_at']);
+    _endAt = _asDateTime(d['endAt'] ?? d['end_at']);
+
+    _costPointsCtrl.text = _asInt(
+      d['costPoints'] ?? d['cost_points'],
+    ).toString();
+    _minOrderAmountCtrl.text = _asDouble(
+      d['minOrderAmount'] ?? d['min_order_amount'],
+    ).toString();
+
+    // prizes
+    for (final p in _prizes) {
+      p.dispose();
+    }
+    _prizes.clear();
+
+    final rawPrizes = d['prizes'];
+    if (rawPrizes is List) {
+      for (final item in rawPrizes) {
+        final m = _asMap(item);
+        _prizes.add(_PrizeDraft.fromMap(m));
+      }
+    }
+
+    if (_prizes.isEmpty) {
+      _prizes.add(_PrizeDraft.defaults());
+    }
+  }
+
+  // ---------- helpers (no casts) ----------
+  Map<String, dynamic> _asMap(dynamic v) {
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return <String, dynamic>{};
+  }
+
+  DateTime? _asDateTime(dynamic v) {
+    try {
+      if (v == null) return null;
+      if (v is Timestamp) return v.toDate();
+      if (v is DateTime) return v;
+      if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+      if (v is String) return DateTime.tryParse(v);
+    } catch (_) {}
     return null;
   }
 
-  String _typeLabel(String t) {
-    switch (t) {
-      case 'birthday':
-        return '生日';
-      case 'new_user':
-        return '新用戶';
-      case 'winback':
-        return '喚回';
-      case 'cart_abandon':
-        return '購物車';
-      case 'segment_blast':
-        return '分群群發';
-      case 'custom':
-        return '自訂';
-      default:
-        return t.isEmpty ? '未知' : t;
-    }
+  int _asInt(dynamic v) {
+    try {
+      if (v == null) return 0;
+      if (v is int) return v;
+      if (v is double) return v.round();
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v.trim()) ?? 0;
+    } catch (_) {}
+    return 0;
   }
 
-  String _channelLabel(String c) {
-    switch (c) {
-      case 'push':
-        return '推播';
-      case 'line':
-        return 'LINE';
-      case 'email':
-        return 'Email';
-      case 'inapp':
-        return '站內通知';
-      default:
-        return c.isEmpty ? '未設定' : c;
-    }
+  double _asDouble(dynamic v) {
+    try {
+      if (v == null) return 0.0;
+      if (v is double) return v;
+      if (v is int) return v.toDouble();
+      if (v is num) return v.toDouble();
+      if (v is String) return double.tryParse(v.trim()) ?? 0.0;
+    } catch (_) {}
+    return 0.0;
   }
 
-  Color _statusColor(bool isActive) => isActive ? Colors.green : Colors.grey;
+  int _parseIntCtrl(TextEditingController c) =>
+      int.tryParse(c.text.trim()) ?? 0;
+  double _parseDoubleCtrl(TextEditingController c) =>
+      double.tryParse(c.text.trim()) ?? 0.0;
 
-  // ============================================================
-  // local filter/sort
-  // ============================================================
-
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _applyFilters(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
-    final kw = _keywordCtrl.text.trim().toLowerCase();
-
-    bool matchKeyword(Map<String, dynamic> d) {
-      if (kw.isEmpty) return true;
-      final hay = <String>[
-        _s(d['title']),
-        _s(d['message']),
-        _s(d['segmentId']),
-        _s(d['couponId']),
-        _s(d['lotteryId']),
-        _s(d['channel']),
-        _s(d['type']),
-        _s(d['status']),
-      ].join(' | ').toLowerCase();
-      return hay.contains(kw);
-    }
-
-    bool matchType(Map<String, dynamic> d) {
-      if (_type == 'all') return true;
-      return _s(d['type']).trim() == _type;
-    }
-
-    bool matchStatus(Map<String, dynamic> d) {
-      if (_status == 'all') return true;
-      final active = _b(d['isActive'], fallback: false);
-      if (_status == 'active') return active;
-      if (_status == 'inactive') return !active;
-      return true;
-    }
-
-    bool matchChannel(Map<String, dynamic> d) {
-      if (_channel == 'all') return true;
-      final c = _s(d['channel']).trim();
-      if (_channel == 'none') return c.isEmpty;
-      return c == _channel;
-    }
-
-    final filtered = docs.where((doc) {
-      final d = doc.data();
-      return matchKeyword(d) && matchType(d) && matchStatus(d) && matchChannel(d);
-    }).toList(growable: false);
-
-    int compareDocs(
-      QueryDocumentSnapshot<Map<String, dynamic>> a,
-      QueryDocumentSnapshot<Map<String, dynamic>> b,
-    ) {
-      final da = a.data();
-      final db = b.data();
-
-      int cmpNum(num x, num y) => x == y ? 0 : (x < y ? -1 : 1);
-      int cmpDate(DateTime? x, DateTime? y) {
-        if (x == null && y == null) return 0;
-        if (x == null) return -1;
-        if (y == null) return 1;
-        return x.compareTo(y);
-      }
-
-      int base;
-      switch (_sortBy) {
-        case 'nextRunAt':
-          base = cmpDate(_dt(da['nextRunAt']), _dt(db['nextRunAt']));
-          break;
-        case 'conversionCount':
-          base = cmpNum(_n(da['conversionCount']), _n(db['conversionCount']));
-          break;
-        case 'sentCount':
-          base = cmpNum(_n(da['sentCount']), _n(db['sentCount']));
-          break;
-        case 'updatedAt':
-        default:
-          base = cmpDate(_dt(da['updatedAt']) ?? _dt(da['createdAt']),
-              _dt(db['updatedAt']) ?? _dt(db['createdAt']));
-      }
-
-      return _desc ? -base : base;
-    }
-
-    final sorted = filtered.toList()..sort(compareDocs);
-    return sorted;
+  String _fmtDateTime(DateTime? dt) {
+    if (dt == null) return '未設定';
+    String two(int x) => x.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
   }
 
-  // ============================================================
-  // batch actions
-  // ============================================================
+  Future<void> _pickDateTime({required bool isStart}) async {
+    final now = DateTime.now();
+    final base = (isStart ? _startAt : _endAt) ?? now;
 
-  Future<void> _batchToggle(bool newState) async {
-    if (_selected.isEmpty) return;
-    final fs = FirebaseFirestore.instance;
-    final batch = fs.batch();
-    for (final id in _selected) {
-      batch.update(fs.collection('auto_campaigns').doc(id), {
-        'isActive': newState,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    }
-    final count = _selected.length;
-    await batch.commit();
-    _selected.clear();
-    if (!mounted) return;
-    setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已批次${newState ? '啟用' : '停用'} $count 筆')),
+    final date = await showDatePicker(
+      context: context,
+      initialDate: base,
+      firstDate: DateTime(now.year - 2),
+      lastDate: DateTime(now.year + 5),
     );
+    if (date == null || !mounted) return;
+
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(base),
+    );
+    if (time == null || !mounted) return;
+
+    final dt = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      time.hour,
+      time.minute,
+    );
+    setState(() {
+      if (isStart) {
+        _startAt = dt;
+      } else {
+        _endAt = dt;
+      }
+    });
   }
 
-  Future<void> _batchDelete() async {
-    if (_selected.isEmpty) return;
+  // ---------- actions ----------
+  void _addPrize() {
+    setState(() => _prizes.add(_PrizeDraft.defaults()));
+  }
+
+  void _removePrize(int i) {
+    if (_prizes.length <= 1) return;
+    setState(() {
+      _prizes[i].dispose();
+      _prizes.removeAt(i);
+    });
+  }
+
+  void _movePrize(int from, int to) {
+    if (from == to) return;
+    setState(() {
+      final item = _prizes.removeAt(from);
+      _prizes.insert(to, item);
+    });
+  }
+
+  Future<void> _save() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    final title = _titleCtrl.text.trim();
+    final payload = <String, dynamic>{
+      'title': title,
+      'description': _descCtrl.text.trim(),
+      'enabled': _enabled,
+      'startAt': _startAt == null ? null : Timestamp.fromDate(_startAt!),
+      'endAt': _endAt == null ? null : Timestamp.fromDate(_endAt!),
+      'costPoints': _parseIntCtrl(_costPointsCtrl),
+      'minOrderAmount': _parseDoubleCtrl(_minOrderAmountCtrl),
+      'prizes': _prizes.map((p) => p.toMap()).toList(),
+      'updatedAt': FieldValue.serverTimestamp(),
+      if (!_isEdit) 'createdAt': FieldValue.serverTimestamp(),
+    };
+
+    try {
+      await _ref.set(payload, SetOptions(merge: true));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_isEdit ? '已更新抽獎活動' : '已新增抽獎活動（ID：${_ref.id}）')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+    }
+  }
+
+  Future<void> _delete() async {
+    if (!_isEdit) {
+      Navigator.pop(context);
+      return;
+    }
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('確認刪除'),
-        content: Text('確定刪除選取的 ${_selected.length} 筆自動派發活動？此操作不可復原。'),
+        title: const Text('刪除抽獎活動'),
+        content: Text(
+          '確定要刪除「${_titleCtrl.text.trim().isEmpty ? _ref.id : _titleCtrl.text.trim()}」？此操作不可復原。',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('刪除'),
+          ),
         ],
       ),
     );
-
     if (ok != true) return;
 
-    final fs = FirebaseFirestore.instance;
-    final batch = fs.batch();
-    for (final id in _selected) {
-      batch.delete(fs.collection('auto_campaigns').doc(id));
+    try {
+      await _ref.delete();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已刪除')));
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('刪除失敗：$e')));
     }
-    final count = _selected.length;
-    await batch.commit();
-    _selected.clear();
-    if (!mounted) return;
-    setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已刪除 $count 筆')),
-    );
   }
 
-  // ============================================================
-  // KPI
-  // ============================================================
+  // ---------- UI ----------
+  @override
+  Widget build(BuildContext context) {
+    final pageTitle = _isEdit ? '編輯抽獎活動' : '新增抽獎活動';
 
-  Widget _kpiCards(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    final total = docs.length;
-    final active = docs.where((d) => _b(d.data()['isActive'], fallback: false)).length;
-
-    num sent = 0;
-    num conv = 0;
-    for (final doc in docs) {
-      final d = doc.data();
-      sent += _n(d['sentCount']);
-      conv += _n(d['conversionCount']);
-    }
-    final cvr = sent > 0 ? (conv / sent * 100) : 0;
-
-    return Wrap(
-      spacing: 12,
-      runSpacing: 12,
-      children: [
-        _kpi('活動總數', '$total', Icons.campaign),
-        _kpi('啟用中', '$active', Icons.toggle_on),
-        _kpi('總發送', sent.toInt().toString(), Icons.send),
-        _kpi('總轉換', conv.toInt().toString(), Icons.auto_graph),
-        _kpi('平均 CVR', '${cvr.toStringAsFixed(1)}%', Icons.trending_up),
-      ],
-    );
-  }
-
-  Widget _kpi(String title, String value, IconData icon) {
-    return Container(
-      width: 180,
-      height: 92,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [BoxShadow(color: Colors.grey.shade300, blurRadius: 4)],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: Colors.blueAccent),
-          const SizedBox(height: 6),
-          Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
-          Text(title, style: const TextStyle(color: Colors.grey)),
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(pageTitle),
+        actions: [
+          IconButton(
+            tooltip: '儲存',
+            onPressed: _loading ? null : _save,
+            icon: const Icon(Icons.save),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _loadError != null
+          ? _ErrorView(message: '載入失敗：$_loadError', onRetry: _load)
+          : Form(
+              key: _formKey,
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  _idCard(),
+                  const SizedBox(height: 12),
+                  _basicCard(),
+                  const SizedBox(height: 12),
+                  _scheduleCard(),
+                  const SizedBox(height: 12),
+                  _rulesCard(),
+                  const SizedBox(height: 12),
+                  _prizesCard(),
+                  const SizedBox(height: 16),
+                  _bottomActions(),
+                ],
+              ),
+            ),
     );
   }
 
-  // ============================================================
-  // UI
-  // ============================================================
-
-  Widget _toolbar() {
+  Widget _idCard() {
     return Card(
-      elevation: 1,
-      margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: ListTile(
+        title: const Text('Lottery ID'),
+        subtitle: Text(_ref.id),
+        trailing: Switch(
+          value: _enabled,
+          onChanged: (v) => setState(() => _enabled = v),
+        ),
+      ),
+    );
+  }
+
+  Widget _basicCard() {
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          crossAxisAlignment: WrapCrossAlignment.center,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(
-              width: 280,
-              child: TextField(
-                controller: _keywordCtrl,
-                decoration: InputDecoration(
-                  prefixIcon: const Icon(Icons.search),
-                  hintText: '搜尋：標題 / 訊息 / 分群ID / 優惠券ID / 渠道…',
-                  isDense: true,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-                onChanged: (_) => setState(() {}),
+            const Text('基本資訊', style: TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _titleCtrl,
+              decoration: const InputDecoration(
+                labelText: '標題',
+                border: OutlineInputBorder(),
               ),
-            ),
-            DropdownButton<String>(
-              value: _type,
-              items: const [
-                DropdownMenuItem(value: 'all', child: Text('類型：全部')),
-                DropdownMenuItem(value: 'birthday', child: Text('類型：生日')),
-                DropdownMenuItem(value: 'new_user', child: Text('類型：新用戶')),
-                DropdownMenuItem(value: 'winback', child: Text('類型：喚回')),
-                DropdownMenuItem(value: 'cart_abandon', child: Text('類型：購物車')),
-                DropdownMenuItem(value: 'segment_blast', child: Text('類型：分群群發')),
-                DropdownMenuItem(value: 'custom', child: Text('類型：自訂')),
-              ],
-              onChanged: (v) => setState(() => _type = v ?? 'all'),
-            ),
-            DropdownButton<String>(
-              value: _status,
-              items: const [
-                DropdownMenuItem(value: 'all', child: Text('狀態：全部')),
-                DropdownMenuItem(value: 'active', child: Text('狀態：啟用')),
-                DropdownMenuItem(value: 'inactive', child: Text('狀態：停用')),
-              ],
-              onChanged: (v) => setState(() => _status = v ?? 'all'),
-            ),
-            DropdownButton<String>(
-              value: _channel,
-              items: const [
-                DropdownMenuItem(value: 'all', child: Text('渠道：全部')),
-                DropdownMenuItem(value: 'push', child: Text('渠道：推播')),
-                DropdownMenuItem(value: 'line', child: Text('渠道：LINE')),
-                DropdownMenuItem(value: 'email', child: Text('渠道：Email')),
-                DropdownMenuItem(value: 'inapp', child: Text('渠道：站內通知')),
-                DropdownMenuItem(value: 'none', child: Text('渠道：未設定')),
-              ],
-              onChanged: (v) => setState(() => _channel = v ?? 'all'),
-            ),
-            DropdownButton<String>(
-              value: _sortBy,
-              items: const [
-                DropdownMenuItem(value: 'updatedAt', child: Text('排序：最近更新')),
-                DropdownMenuItem(value: 'nextRunAt', child: Text('排序：下次執行')),
-                DropdownMenuItem(value: 'sentCount', child: Text('排序：發送量')),
-                DropdownMenuItem(value: 'conversionCount', child: Text('排序：轉換量')),
-              ],
-              onChanged: (v) => setState(() => _sortBy = v ?? 'updatedAt'),
-            ),
-            IconButton(
-              tooltip: _desc ? '目前：由大到小' : '目前：由小到大',
-              onPressed: () => setState(() => _desc = !_desc),
-              icon: Icon(_desc ? Icons.arrow_downward : Icons.arrow_upward),
-            ),
-            OutlinedButton.icon(
-              onPressed: () {
-                _keywordCtrl.clear();
-                setState(() {
-                  _type = 'all';
-                  _status = 'all';
-                  _channel = 'all';
-                  _sortBy = 'updatedAt';
-                  _desc = true;
-                });
+              validator: (v) {
+                final s = (v ?? '').trim();
+                if (s.isEmpty) return '請輸入標題';
+                if (s.length < 2) return '標題太短';
+                return null;
               },
-              icon: const Icon(Icons.clear, size: 18),
-              label: const Text('清除條件'),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _descCtrl,
+              decoration: const InputDecoration(
+                labelText: '描述（可空）',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
             ),
           ],
         ),
@@ -396,281 +434,465 @@ class _AdminAutoCampaignsPageState extends State<AdminAutoCampaignsPage> {
     );
   }
 
-  Widget _chip(IconData icon, String text, {Color? bg, Color? border, Color? fg}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: bg ?? Colors.grey.shade100,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: border ?? Colors.grey.shade300),
+  Widget _scheduleCard() {
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('活動期間', style: TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _dtTile(
+                    label: '開始時間',
+                    value: _fmtDateTime(_startAt),
+                    onPick: () => _pickDateTime(isStart: true),
+                    onClear: () => setState(() => _startAt = null),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _dtTile(
+                    label: '結束時間（可空）',
+                    value: _fmtDateTime(_endAt),
+                    onPick: () => _pickDateTime(isStart: false),
+                    onClear: () => setState(() => _endAt = null),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+    );
+  }
+
+  Widget _dtTile({
+    required String label,
+    required String value,
+    required VoidCallback onPick,
+    required VoidCallback onClear,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.black12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 14, color: fg ?? Colors.grey.shade700),
-          const SizedBox(width: 6),
-          Text(
-            text,
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: fg ?? Colors.grey.shade800),
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          Text(value, style: TextStyle(color: Colors.grey[800])),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: onPick,
+                icon: const Icon(Icons.calendar_month),
+                label: const Text('選擇'),
+              ),
+              const SizedBox(width: 8),
+              TextButton(onPressed: onClear, child: const Text('清除')),
+            ],
           ),
         ],
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final stream = FirebaseFirestore.instance
-        .collection('auto_campaigns')
-        .orderBy('updatedAt', descending: true)
-        .limit(_limit)
-        .snapshots();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('自動派發管理'),
-        actions: [
-          if (_selected.isNotEmpty)
-            PopupMenuButton<String>(
-              tooltip: '批次操作',
-              onSelected: (v) {
-                if (v == 'enable') _batchToggle(true);
-                if (v == 'disable') _batchToggle(false);
-                if (v == 'delete') _batchDelete();
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'enable', child: Text('批次啟用')),
-                PopupMenuItem(value: 'disable', child: Text('批次停用')),
-                PopupMenuItem(value: 'delete', child: Text('批次刪除')),
-              ],
+  Widget _rulesCard() {
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '成本 / 門檻',
+              style: TextStyle(fontWeight: FontWeight.w800),
             ),
-          IconButton(
-            tooltip: '新增自動派發',
-            onPressed: () => Navigator.pushNamed(context, '/admin/auto_campaigns/edit'),
-            icon: const Icon(Icons.add),
-          ),
-        ],
-      ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: stream,
-        builder: (context, snap) {
-          if (snap.hasError) {
-            return _ErrorView(
-              message: '讀取失敗：${snap.error}',
-              onRetry: () => setState(() {}),
-            );
-          }
-          if (!snap.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final raw = snap.data!.docs;
-          final docs = _applyFilters(raw);
-
-          final df = DateFormat('yyyy/MM/dd HH:mm');
-
-          return Column(
-            children: [
-              _toolbar(),
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _kpiCards(docs),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Icon(Icons.info_outline, size: 16, color: Colors.grey.shade700),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              '顯示 ${docs.length} / ${raw.length}（即時更新，最多 $_limit 筆）',
-                              style: TextStyle(color: Colors.grey.shade700, fontWeight: FontWeight.w700),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      if (docs.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.all(24),
-                          child: Center(child: Text('沒有符合條件的自動派發活動')),
-                        ),
-                      if (docs.isNotEmpty)
-                        ListView.separated(
-                          itemCount: docs.length,
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          separatorBuilder: (_, __) => const SizedBox(height: 8),
-                          itemBuilder: (context, i) {
-                            final doc = docs[i];
-                            final d = doc.data();
-                            final id = doc.id;
-
-                            final isActive = _b(d['isActive'], fallback: false);
-                            final selected = _selected.contains(id);
-
-                            final title = _s(d['title'], fallback: '（未命名）');
-                            final type = _s(d['type']);
-                            final channel = _s(d['channel']);
-                            final segmentId = _s(d['segmentId']);
-                            final couponId = _s(d['couponId']);
-                            final lotteryId = _s(d['lotteryId']);
-
-                            final sent = _n(d['sentCount']).toInt();
-                            final conv = _n(d['conversionCount']).toInt();
-                            final cvr = sent > 0 ? (conv / sent * 100) : 0.0;
-
-                            final nextRun = _dt(d['nextRunAt']);
-                            final lastRun = _dt(d['lastRunAt']);
-                            final updated = _dt(d['updatedAt']) ?? _dt(d['createdAt']);
-
-                            return Card(
-                              elevation: 1,
-                              child: Padding(
-                                padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-                                child: Column(
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Checkbox(
-                                          value: selected,
-                                          onChanged: (v) {
-                                            setState(() {
-                                              if (v == true) {
-                                                _selected.add(id);
-                                              } else {
-                                                _selected.remove(id);
-                                              }
-                                            });
-                                          },
-                                        ),
-                                        Switch(
-                                          value: isActive,
-                                          onChanged: (v) async {
-                                            await FirebaseFirestore.instance
-                                                .collection('auto_campaigns')
-                                                .doc(id)
-                                                .update({
-                                              'isActive': v,
-                                              'updatedAt': FieldValue.serverTimestamp(),
-                                            });
-                                          },
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Expanded(
-                                          child: Text(
-                                            title,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(fontWeight: FontWeight.w900),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        _chip(
-                                          Icons.circle,
-                                          isActive ? '啟用' : '停用',
-                                          bg: isActive ? Colors.green.withOpacity(0.10) : Colors.grey.shade200,
-                                          border: isActive ? Colors.green.withOpacity(0.35) : Colors.grey.shade400,
-                                          fg: _statusColor(isActive),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        IconButton(
-                                          tooltip: '編輯',
-                                          onPressed: () => Navigator.pushNamed(
-                                            context,
-                                            '/admin/auto_campaigns/edit',
-                                            arguments: {'id': id},
-                                          ),
-                                          icon: const Icon(Icons.edit),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Wrap(
-                                        spacing: 10,
-                                        runSpacing: 8,
-                                        children: [
-                                          _chip(Icons.category_outlined, '類型：${_typeLabel(type)}'),
-                                          _chip(Icons.send_outlined, '渠道：${_channelLabel(channel)}'),
-                                          if (segmentId.isNotEmpty)
-                                            _chip(Icons.group_work_outlined, '分群：$segmentId'),
-                                          if (couponId.isNotEmpty)
-                                            _chip(Icons.card_giftcard_outlined, '券：$couponId'),
-                                          if (lotteryId.isNotEmpty)
-                                            _chip(Icons.emoji_events_outlined, '抽：$lotteryId'),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 10),
-                                    Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Wrap(
-                                        spacing: 10,
-                                        runSpacing: 8,
-                                        children: [
-                                          _chip(Icons.send, '發送 $sent'),
-                                          _chip(Icons.auto_graph, '轉換 $conv'),
-                                          _chip(Icons.trending_up, 'CVR ${cvr.toStringAsFixed(1)}%'),
-                                          if (nextRun != null)
-                                            _chip(Icons.schedule, '下次：${df.format(nextRun)}'),
-                                          if (lastRun != null)
-                                            _chip(Icons.history, '上次：${df.format(lastRun)}'),
-                                          if (updated != null)
-                                            _chip(Icons.update, '更新：${df.format(updated)}'),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                    ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _costPointsCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '抽一次成本點數（costPoints）',
+                      border: OutlineInputBorder(),
+                    ),
                   ),
                 ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextFormField(
+                    controller: _minOrderAmountCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '最低訂單金額門檻（minOrderAmount）',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _prizesCard() {
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    '獎品清單',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _addPrize,
+                  icon: const Icon(Icons.add),
+                  label: const Text('新增獎品'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ReorderableListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _prizes.length,
+              onReorder: (oldIndex, newIndex) {
+                if (newIndex > oldIndex) newIndex -= 1;
+                _movePrize(oldIndex, newIndex);
+              },
+              itemBuilder: (context, index) {
+                final p = _prizes[index];
+                return _PrizeEditorCard(
+                  key: ValueKey(p.uid), // ✅ stable key
+                  index: index,
+                  total: _prizes.length,
+                  prize: p,
+                  canRemove: _prizes.length > 1,
+                  onRemove: () => _removePrize(index),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bottomActions() {
+    return Row(
+      children: [
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: _save,
+            icon: const Icon(Icons.save),
+            label: const Text('儲存'),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: _delete,
+            icon: Icon(_isEdit ? Icons.delete : Icons.close),
+            label: Text(_isEdit ? '刪除' : '取消'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: _isEdit ? Colors.red : null,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ------------------------------------------------------------
+// Prize Draft + UI
+// ------------------------------------------------------------
+
+class _PrizeDraft {
+  _PrizeDraft({
+    required this.uid,
+    required this.nameCtrl,
+    required this.imageUrlCtrl,
+    required this.stockCtrl,
+    required this.weightCtrl,
+    required this.valueCtrl,
+    required this.active,
+  });
+
+  /// stable id for Reorderable key
+  final String uid;
+
+  final TextEditingController nameCtrl;
+  final TextEditingController imageUrlCtrl;
+  final TextEditingController stockCtrl;
+  final TextEditingController weightCtrl;
+  final TextEditingController valueCtrl;
+  bool active;
+
+  static String _newUid() => UniqueKey().toString();
+
+  factory _PrizeDraft.defaults() => _PrizeDraft(
+    uid: _newUid(),
+    nameCtrl: TextEditingController(text: '獎品'),
+    imageUrlCtrl: TextEditingController(text: ''),
+    stockCtrl: TextEditingController(text: '0'),
+    weightCtrl: TextEditingController(text: '1'),
+    valueCtrl: TextEditingController(text: '0'),
+    active: true,
+  );
+
+  factory _PrizeDraft.fromMap(Map<String, dynamic> m) {
+    int asInt(dynamic v) {
+      if (v == null) return 0;
+      if (v is int) return v;
+      if (v is double) return v.round();
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v.trim()) ?? 0;
+      return 0;
+    }
+
+    double asDouble(dynamic v) {
+      if (v == null) return 0.0;
+      if (v is double) return v;
+      if (v is int) return v.toDouble();
+      if (v is num) return v.toDouble();
+      if (v is String) return double.tryParse(v.trim()) ?? 0.0;
+      return 0.0;
+    }
+
+    bool resolveActive(Map<String, dynamic> m) {
+      final a = m['active'];
+      if (a is bool) return a;
+      final e = m['enabled'];
+      if (e is bool) return e;
+      return true;
+    }
+
+    return _PrizeDraft(
+      uid: _newUid(),
+      nameCtrl: TextEditingController(text: (m['name'] ?? '').toString()),
+      imageUrlCtrl: TextEditingController(
+        text: (m['imageUrl'] ?? m['image_url'] ?? '').toString(),
+      ),
+      stockCtrl: TextEditingController(
+        text: asInt(m['stock'] ?? m['qty'] ?? m['quantity']).toString(),
+      ),
+      weightCtrl: TextEditingController(
+        text: asDouble(m['weight'] ?? m['prob'] ?? m['odds']).toString(),
+      ),
+      valueCtrl: TextEditingController(
+        text: asDouble(m['value'] ?? m['amount']).toString(),
+      ),
+      active: resolveActive(m),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    int i(String s) => int.tryParse(s.trim()) ?? 0;
+    double d(String s) => double.tryParse(s.trim()) ?? 0.0;
+
+    return {
+      'name': nameCtrl.text.trim(),
+      'imageUrl': imageUrlCtrl.text.trim(),
+      'stock': i(stockCtrl.text),
+      'weight': d(weightCtrl.text),
+      'value': d(valueCtrl.text),
+      'active': active,
+    };
+  }
+
+  void dispose() {
+    nameCtrl.dispose();
+    imageUrlCtrl.dispose();
+    stockCtrl.dispose();
+    weightCtrl.dispose();
+    valueCtrl.dispose();
+  }
+}
+
+class _PrizeEditorCard extends StatefulWidget {
+  const _PrizeEditorCard({
+    super.key,
+    required this.index,
+    required this.total,
+    required this.prize,
+    required this.canRemove,
+    required this.onRemove,
+  });
+
+  final int index;
+  final int total;
+  final _PrizeDraft prize;
+  final bool canRemove;
+  final VoidCallback onRemove;
+
+  @override
+  State<_PrizeEditorCard> createState() => _PrizeEditorCardState();
+}
+
+class _PrizeEditorCardState extends State<_PrizeEditorCard> {
+  bool get _active => widget.prize.active;
+
+  void _setActive(bool v) {
+    setState(() {
+      widget.prize.active = v;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final prize = widget.prize;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      elevation: 0.6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '獎品 ${widget.index + 1} / ${widget.total}',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                Switch(value: _active, onChanged: _setActive),
+                const SizedBox(width: 6),
+                if (widget.canRemove)
+                  IconButton(
+                    tooltip: '刪除獎品',
+                    onPressed: widget.onRemove,
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                  ),
+                const Icon(Icons.drag_handle),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: prize.nameCtrl,
+              decoration: const InputDecoration(
+                labelText: '獎品名稱（name）',
+                border: OutlineInputBorder(),
               ),
-            ],
-          );
-        },
+              validator: (v) {
+                final s = (v ?? '').trim();
+                if (s.isEmpty) return '請輸入獎品名稱';
+                return null;
+              },
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: prize.imageUrlCtrl,
+              decoration: const InputDecoration(
+                labelText: '圖片 URL（imageUrl，可空）',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: prize.stockCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '庫存（stock）',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextFormField(
+                    controller: prize.weightCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '權重（weight）',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextFormField(
+                    controller: prize.valueCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '價值（value）',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Checkbox(
+                  value: _active,
+                  onChanged: (v) => _setActive(v ?? true),
+                ),
+                const Text('啟用（active）'),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _ErrorView extends StatelessWidget {
+  const _ErrorView({required this.message, required this.onRetry});
   final String message;
   final VoidCallback onRetry;
-
-  const _ErrorView({required this.message, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.error_outline, size: 40, color: Colors.red),
-                const SizedBox(height: 10),
-                Text(message, style: const TextStyle(fontWeight: FontWeight.w800), textAlign: TextAlign.center),
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  onPressed: onRetry,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('重試'),
-                ),
-              ],
-            ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(message, style: const TextStyle(color: Colors.red)),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('重試'),
+              ),
+            ],
           ),
         ),
       ),

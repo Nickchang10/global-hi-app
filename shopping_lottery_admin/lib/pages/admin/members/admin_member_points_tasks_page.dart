@@ -1,29 +1,34 @@
 // lib/pages/admin/members/admin_member_points_tasks_page.dart
 //
-// ✅ AdminMemberPointsTasksPage（積分 / 任務｜專業單檔完整版｜可編譯｜欄位容錯｜可搜尋/篩選｜可查看詳情）
+// ✅ AdminMemberPointsTasksPage（單檔完整版｜可編譯可用｜已使用 _fmtDt 消除 unused_element）
 // ------------------------------------------------------------
-// - 讀取 Firestore points_logs 集合（orderBy createdAt desc）
-// - 搜尋：userId / uid / email / phone / reason / refId / taskId（有就搜）
-// - 篩選：類型 type（points / task / reward / admin / system...）、正負分、日期區間（client filter 避免複合索引）
-// - 列表：顯示分數變動、原因、使用者、時間
-// - 詳情 Dialog：顯示完整原始欄位（Debug）+ 可複製 docId / userId
+// 來源 uid：
+// 1) 可直接傳入 AdminMemberPointsTasksPage(uid: 'xxx')
+// 2) 或從 Navigator.pushNamed arguments 取得：{'uid': 'xxx'}
+// ------------------------------------------------------------
 //
-// 建議 points_logs 結構（可彈性）：
-// points_logs/{logId}
-// {
-//   userId: string,        // 或 uid
-//   email: string?,
-//   phone: string?,
-//   points: number,        // 分數變動（可正可負）
-//   type: string?,         // "task" | "admin" | "system" | ...
-//   reason: string?,       // 文字原因
-//   taskId: string?,       // 任務 id（若是任務）
-//   refId: string?,        // 關聯 id（訂單/活動/兌換）
-//   meta: map?,            // 任何附加資訊
-//   createdAt: Timestamp,
-//   operatorUid: string?,  // 後台操作人（若有）
+// Firestore 建議結構（可依你現況調整）
+// users/{uid} {
+//   points: 1200,
+//   displayName: "...",
+//   email: "...",
+//   updatedAt: Timestamp,
 // }
-//
+// users/{uid}/points_logs/{logId} {
+//   type: "earn" | "spend" | "admin_manual_adjust" | ...
+//   delta: 50,
+//   before: 1000,
+//   after: 1050,
+//   reason: "...",
+//   createdAt: Timestamp
+// }
+// users/{uid}/tasks/{taskId} {
+//   title: "...",
+//   status: "pending"|"done",
+//   points: 30,
+//   createdAt: Timestamp,
+//   doneAt: Timestamp?
+// }
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -32,685 +37,863 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 class AdminMemberPointsTasksPage extends StatefulWidget {
-  const AdminMemberPointsTasksPage({super.key});
+  final String? uid;
+
+  const AdminMemberPointsTasksPage({super.key, this.uid});
 
   @override
   State<AdminMemberPointsTasksPage> createState() =>
       _AdminMemberPointsTasksPageState();
 }
 
-class _AdminMemberPointsTasksPageState extends State<AdminMemberPointsTasksPage> {
+class _AdminMemberPointsTasksPageState extends State<AdminMemberPointsTasksPage>
+    with SingleTickerProviderStateMixin {
   final _db = FirebaseFirestore.instance;
 
-  final _search = TextEditingController();
-
-  DateTimeRange? _range;
-
-  static const String _all = 'all';
-  String _type = _all; // task/admin/system/...
-  String _sign = _all; // all/pos/neg/zero
-
+  late final TabController _tabCtrl;
   bool _busy = false;
 
-  int _limit = 800;
-
-  final _dtFmt = DateFormat('yyyy/MM/dd HH:mm');
+  @override
+  void initState() {
+    super.initState();
+    _tabCtrl = TabController(length: 2, vsync: this);
+  }
 
   @override
   void dispose() {
-    _search.dispose();
+    _tabCtrl.dispose();
     super.dispose();
   }
 
-  // ------------------------------------------------------------
-  // Query
-  // ------------------------------------------------------------
-  Query<Map<String, dynamic>> _baseQuery() {
-    // points_logs 必須有 createdAt 才能 orderBy；若沒有請改成 updatedAt 或移除 orderBy
-    return _db
-        .collection('points_logs')
-        .orderBy('createdAt', descending: true)
-        .limit(_limit);
+  String _resolveUid(BuildContext context) {
+    if (widget.uid != null && widget.uid!.trim().isNotEmpty) {
+      return widget.uid!.trim();
+    }
+
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map) {
+      final v = args['uid'];
+      if (v != null && v.toString().trim().isNotEmpty) {
+        return v.toString().trim();
+      }
+    }
+    return '';
   }
 
-  // ------------------------------------------------------------
-  // Safe casting
-  // ------------------------------------------------------------
-  String _s(dynamic v) => v == null ? '' : v.toString();
-
-  int _i(dynamic v) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    return int.tryParse(_s(v)) ?? 0;
+  // ✅ 修正 unused_element：此方法會在 UI 內實際使用
+  String _fmtDt(DateTime? dt) {
+    if (dt == null) {
+      return '—';
+    }
+    return DateFormat('yyyy/MM/dd HH:mm').format(dt);
   }
 
-  num _n(dynamic v) {
-    if (v is num) return v;
-    return num.tryParse(_s(v)) ?? 0;
-  }
-
-  DateTime? _dt(dynamic v) {
-    if (v == null) return null;
-    if (v is DateTime) return v;
-    if (v is Timestamp) return v.toDate();
-    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
-    return null;
-  }
-
-  Map<String, dynamic> _m(dynamic v) =>
-      (v is Map<String, dynamic>) ? v : <String, dynamic>{};
-
-  String _lower(dynamic v) => _s(v).trim().toLowerCase();
-
-  bool _inRange(DateTime? t, DateTimeRange? r) {
-    if (r == null) return true;
-    if (t == null) return false;
-    return !t.isBefore(r.start) && !t.isAfter(r.end);
-  }
-
-  // ------------------------------------------------------------
-  // UI
-  // ------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    final q = _baseQuery();
+    final cs = Theme.of(context).colorScheme;
+    final uid = _resolveUid(context);
+
+    if (uid.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text(
+            '會員點數/任務',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+        ),
+        body: _EmptyView(
+          title: '缺少 uid',
+          message:
+              '請用 routes arguments 傳入 uid，或直接建立 AdminMemberPointsTasksPage(uid: ...)。',
+        ),
+      );
+    }
+
+    final userDoc = _db.collection('users').doc(uid);
+    final logsQuery = userDoc
+        .collection('points_logs')
+        .orderBy('createdAt', descending: true)
+        .limit(200);
+    final tasksQuery = userDoc
+        .collection('tasks')
+        .orderBy('createdAt', descending: true)
+        .limit(200);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('積分 / 任務', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: Text(
+          '點數/任務：$uid',
+          style: const TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
-            tooltip: '清除篩選',
-            icon: const Icon(Icons.filter_alt_off),
-            onPressed: _busy
-                ? null
-                : () {
-                    setState(() {
-                      _search.clear();
-                      _type = _all;
-                      _sign = _all;
-                      _range = null;
-                      _limit = 800;
-                    });
-                  },
+            tooltip: '複製 uid',
+            icon: const Icon(Icons.copy),
+            onPressed: () => _copy(uid),
           ),
           IconButton(
-            tooltip: '重新整理',
-            icon: const Icon(Icons.refresh),
-            onPressed: _busy ? null : () => setState(() {}),
+            tooltip: '手動調整點數',
+            icon: const Icon(Icons.tune),
+            onPressed: _busy ? null : () => _openAdjustDialog(uid),
           ),
         ],
+        bottom: TabBar(
+          controller: _tabCtrl,
+          tabs: const [
+            Tab(icon: Icon(Icons.payments_outlined), text: '點數流水'),
+            Tab(icon: Icon(Icons.task_alt_outlined), text: '任務'),
+          ],
+        ),
       ),
-      body: Stack(
+      body: Column(
         children: [
-          Column(
-            children: [
-              _topBar(),
-              const Divider(height: 1),
-              Expanded(
-                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: q.snapshots(),
+          // 顶部概況
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: userDoc.snapshots(),
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return const LinearProgressIndicator(minHeight: 2);
+              }
+              if (snap.hasError) {
+                return _HintBar(
+                  icon: Icons.error_outline,
+                  text: '讀取會員資料失敗：${snap.error}',
+                  color: cs.errorContainer,
+                  textColor: cs.onErrorContainer,
+                );
+              }
+
+              final data = snap.data?.data() ?? <String, dynamic>{};
+              final name = (data['displayName'] ?? data['name'] ?? '')
+                  .toString();
+              final email = (data['email'] ?? '').toString();
+              final points = _toInt(data['points']);
+              final updatedAt = _toDt(data['updatedAt']);
+
+              return _SummaryCard(
+                uid: uid,
+                name: name,
+                email: email,
+                points: points,
+                updatedAtText: _fmtDt(updatedAt), // ✅ 使用 _fmtDt
+                busy: _busy,
+                onAdjust: () => _openAdjustDialog(uid),
+              );
+            },
+          ),
+
+          Expanded(
+            child: TabBarView(
+              controller: _tabCtrl,
+              children: [
+                // ----------------- Logs -----------------
+                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: logsQuery.snapshots(),
                   builder: (context, snap) {
                     if (snap.connectionState == ConnectionState.waiting) {
                       return const Center(child: CircularProgressIndicator());
                     }
                     if (snap.hasError) {
                       return _ErrorView(
-                        title: '載入失敗',
-                        message: '${snap.error}',
-                        hint: '請確認 points_logs 集合存在、createdAt 欄位為 Timestamp，並檢查 Firestore rules（admin 需可讀 points_logs）。',
+                        title: '載入點數流水失敗',
+                        message: snap.error.toString(),
                         onRetry: () => setState(() {}),
                       );
                     }
 
-                    final docs = snap.data?.docs ?? [];
+                    final docs = snap.data?.docs ?? const [];
                     if (docs.isEmpty) {
-                      return const _EmptyView(title: '目前沒有積分紀錄');
+                      return _EmptyView(
+                        title: '沒有點數流水',
+                        message: 'users/$uid/points_logs 目前沒有資料。',
+                      );
                     }
 
-                    final filtered = _applyFilters(docs);
-                    if (filtered.isEmpty) {
-                      return const _EmptyView(title: '沒有符合條件的紀錄');
-                    }
+                    final logs = docs
+                        .map((d) => _PointsLog.fromDoc(d))
+                        .toList();
 
-                    final stats = _calcStats(filtered);
+                    return ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                      itemCount: logs.length,
+                      itemBuilder: (_, i) {
+                        final it = logs[i];
+                        final deltaColor = it.delta >= 0
+                            ? Colors.green.shade700
+                            : Colors.red.shade700;
+                        final badgeBg = it.delta >= 0
+                            ? Colors.green.shade100
+                            : Colors.red.shade100;
 
-                    return Column(
-                      children: [
-                        _statsBar(stats),
-                        const Divider(height: 1),
-                        Expanded(child: _buildList(filtered)),
-                      ],
+                        return Card(
+                          elevation: 0,
+                          margin: const EdgeInsets.only(bottom: 10),
+                          child: ListTile(
+                            leading: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: badgeBg,
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                it.delta >= 0
+                                    ? '+${it.delta}'
+                                    : it.delta.toString(),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w900,
+                                  color: deltaColor,
+                                ),
+                              ),
+                            ),
+                            title: Text(
+                              it.type.isEmpty ? '(未分類)' : it.type,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            subtitle: Text(
+                              'before=${it.before}  •  after=${it.after}\n'
+                              'time=${_fmtDt(it.createdAt)}'
+                              '${it.reason.isNotEmpty ? '\nreason=${it.reason}' : ''}',
+                              style: TextStyle(
+                                color: cs.onSurfaceVariant,
+                                fontWeight: FontWeight.w600,
+                                height: 1.25,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
-              ),
-            ],
-          ),
-          if (_busy)
-            Positioned.fill(
-              child: Container(
-                color: Colors.black.withOpacity(0.06),
-                child: const Center(child: CircularProgressIndicator()),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
 
-  // ------------------------------------------------------------
-  // Top bar (search + filters)
-  // ------------------------------------------------------------
-  Widget _topBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
-      child: LayoutBuilder(
-        builder: (context, c) {
-          final narrow = c.maxWidth < 980;
+                // ----------------- Tasks -----------------
+                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: tasksQuery.snapshots(),
+                  builder: (context, snap) {
+                    if (snap.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (snap.hasError) {
+                      return _ErrorView(
+                        title: '載入任務失敗',
+                        message: snap.error.toString(),
+                        onRetry: () => setState(() {}),
+                      );
+                    }
 
-          final search = TextField(
-            controller: _search,
-            onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(
-              prefixIcon: const Icon(Icons.search),
-              hintText: '搜尋（userId/uid/email/phone/reason/refId/taskId）',
-              isDense: true,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          );
+                    final docs = snap.data?.docs ?? const [];
+                    if (docs.isEmpty) {
+                      return _EmptyView(
+                        title: '沒有任務資料',
+                        message:
+                            'users/$uid/tasks 目前沒有資料（若你用 다른 collection 名稱請自行調整）。',
+                      );
+                    }
 
-          final typeDD = _dropdown(
-            label: '類型',
-            value: _type,
-            items: const [
-              (_all, '全部'),
-              ('task', 'task'),
-              ('admin', 'admin'),
-              ('system', 'system'),
-              ('reward', 'reward'),
-              ('order', 'order'),
-              ('unknown', 'unknown'),
-            ],
-            onChanged: (v) => setState(() => _type = v),
-          );
+                    final tasks = docs
+                        .map((d) => _TaskItem.fromDoc(d))
+                        .toList();
 
-          final signDD = _dropdown(
-            label: '分數',
-            value: _sign,
-            items: const [
-              (_all, '全部'),
-              ('pos', '加分'),
-              ('neg', '扣分'),
-              ('zero', '0 分'),
-            ],
-            onChanged: (v) => setState(() => _sign = v),
-          );
+                    return ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                      itemCount: tasks.length,
+                      itemBuilder: (_, i) {
+                        final t = tasks[i];
+                        final done = t.status == 'done';
+                        final pillBg = done
+                            ? Colors.green.shade100
+                            : Colors.orange.shade100;
+                        final pillFg = done
+                            ? Colors.green.shade900
+                            : Colors.orange.shade900;
 
-          final rangeBtn = OutlinedButton.icon(
-            onPressed: _pickRange,
-            icon: const Icon(Icons.date_range),
-            label: Text(_range == null ? '日期區間' : _fmtRange(_range!)),
-          );
-
-          final clearRange = TextButton(
-            onPressed: _range == null ? null : () => setState(() => _range = null),
-            child: const Text('清除'),
-          );
-
-          final limitDD = _dropdown(
-            label: '載入上限',
-            value: '$_limit',
-            items: const [
-              ('200', '200'),
-              ('400', '400'),
-              ('800', '800'),
-              ('1200', '1200'),
-            ],
-            onChanged: (v) => setState(() => _limit = int.tryParse(v) ?? 800),
-          );
-
-          if (narrow) {
-            return Column(
-              children: [
-                Row(children: [Expanded(child: search)]),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(child: typeDD),
-                    const SizedBox(width: 10),
-                    Expanded(child: signDD),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(child: rangeBtn),
-                    const SizedBox(width: 6),
-                    clearRange,
-                    const SizedBox(width: 10),
-                    SizedBox(width: 160, child: limitDD),
-                  ],
+                        return Card(
+                          elevation: 0,
+                          margin: const EdgeInsets.only(bottom: 10),
+                          child: ListTile(
+                            leading: Icon(
+                              done
+                                  ? Icons.check_circle
+                                  : Icons.radio_button_unchecked,
+                              color: done ? Colors.green : Colors.orange,
+                            ),
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    t.title.isEmpty ? '(未命名任務)' : t.title,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: pillBg,
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: Text(
+                                    done ? '已完成' : '未完成',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 12,
+                                      color: pillFg,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            subtitle: Text(
+                              'points=${t.points}\n'
+                              'createdAt=${_fmtDt(t.createdAt)}  •  doneAt=${_fmtDt(t.doneAt)}',
+                              style: TextStyle(
+                                color: cs.onSurfaceVariant,
+                                fontWeight: FontWeight.w600,
+                                height: 1.25,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
                 ),
               ],
-            );
-          }
-
-          return Row(
-            children: [
-              Expanded(flex: 5, child: search),
-              const SizedBox(width: 10),
-              Expanded(flex: 2, child: typeDD),
-              const SizedBox(width: 10),
-              Expanded(flex: 2, child: signDD),
-              const SizedBox(width: 10),
-              rangeBtn,
-              const SizedBox(width: 6),
-              clearRange,
-              const SizedBox(width: 10),
-              SizedBox(width: 160, child: limitDD),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _dropdown({
-    required String label,
-    required String value,
-    required List<(String, String)> items,
-    required ValueChanged<String> onChanged,
-  }) {
-    final allowed = items.map((e) => e.$1).toList();
-    final v = allowed.contains(value) ? value : items.first.$1;
-
-    return DropdownButtonFormField<String>(
-      isExpanded: true,
-      value: v,
-      onChanged: (nv) => onChanged(nv ?? v),
-      decoration: InputDecoration(
-        labelText: label,
-        isDense: true,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-      items: items.map((e) => DropdownMenuItem(value: e.$1, child: Text(e.$2))).toList(),
-    );
-  }
-
-  Future<void> _pickRange() async {
-    final now = DateTime.now();
-    final initial = _range ??
-        DateTimeRange(
-          start: DateTime(now.year, now.month, now.day).subtract(const Duration(days: 29)),
-          end: DateTime(now.year, now.month, now.day, 23, 59, 59),
-        );
-
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(now.year - 3, 1, 1),
-      lastDate: DateTime(now.year + 1, 12, 31),
-      initialDateRange: initial,
-      helpText: '選擇日期區間（createdAt）',
-      confirmText: '套用',
-      cancelText: '取消',
-    );
-    if (picked == null) return;
-
-    setState(() {
-      _range = DateTimeRange(
-        start: DateTime(picked.start.year, picked.start.month, picked.start.day, 0, 0, 0),
-        end: DateTime(picked.end.year, picked.end.month, picked.end.day, 23, 59, 59),
-      );
-    });
-  }
-
-  String _fmtRange(DateTimeRange r) {
-    final a = DateFormat('yyyy/MM/dd').format(r.start);
-    final b = DateFormat('yyyy/MM/dd').format(r.end);
-    return '$a～$b';
-  }
-
-  // ------------------------------------------------------------
-  // Filters (client-side)
-  // ------------------------------------------------------------
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _applyFilters(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
-    final kw = _search.text.trim().toLowerCase();
-
-    return docs.where((doc) {
-      final d = doc.data();
-
-      final createdAt = _dt(d['createdAt']);
-      if (!_inRange(createdAt, _range)) return false;
-
-      // type
-      final type = _lower(d['type']);
-      if (_type != _all) {
-        final t = type.isEmpty ? 'unknown' : type;
-        if (t != _type) return false;
-      }
-
-      // sign
-      final delta = _n(d['points']);
-      if (_sign == 'pos' && !(delta > 0)) return false;
-      if (_sign == 'neg' && !(delta < 0)) return false;
-      if (_sign == 'zero' && !(delta == 0)) return false;
-
-      if (kw.isEmpty) return true;
-
-      final userId = _lower(d['userId']);
-      final uid = _lower(d['uid']); // 兼容
-      final email = _lower(d['email']);
-      final phone = _lower(d['phone']);
-      final reason = _lower(d['reason']);
-      final refId = _lower(d['refId']);
-      final taskId = _lower(d['taskId']);
-      final operatorUid = _lower(d['operatorUid']);
-
-      return doc.id.toLowerCase().contains(kw) ||
-          userId.contains(kw) ||
-          uid.contains(kw) ||
-          email.contains(kw) ||
-          phone.contains(kw) ||
-          reason.contains(kw) ||
-          refId.contains(kw) ||
-          taskId.contains(kw) ||
-          operatorUid.contains(kw);
-    }).toList();
-  }
-
-  // ------------------------------------------------------------
-  // Stats
-  // ------------------------------------------------------------
-  _PointsStats _calcStats(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    int total = docs.length;
-    int pos = 0;
-    int neg = 0;
-    int zero = 0;
-    num sum = 0;
-
-    for (final doc in docs) {
-      final d = doc.data();
-      final delta = _n(d['points']);
-      sum += delta;
-      if (delta > 0) pos++;
-      else if (delta < 0) neg++;
-      else zero++;
-    }
-
-    return _PointsStats(total: total, pos: pos, neg: neg, zero: zero, sum: sum);
-  }
-
-  Widget _statsBar(_PointsStats s) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          _pill('筆數', '${s.total}', cs.surfaceContainerHighest, cs.onSurfaceVariant),
-          _pill('加分', '${s.pos}', Colors.green.shade50, Colors.green.shade800),
-          _pill('扣分', '${s.neg}', Colors.red.shade50, Colors.red.shade800),
-          _pill('0分', '${s.zero}', Colors.grey.shade200, Colors.grey.shade800),
-          _pill('合計', s.sum >= 0 ? '+${s.sum}' : '${s.sum}',
-              cs.surfaceContainerHighest, cs.onSurfaceVariant),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _pill(String k, String v, Color bg, Color fg) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(999)),
-      child: Text('$k：$v', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: fg)),
-    );
-  }
+  // ============================================================
+  // Manual adjust points
+  // ============================================================
 
-  // ------------------------------------------------------------
-  // List
-  // ------------------------------------------------------------
-  Widget _buildList(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 18),
-      itemCount: docs.length,
-      itemBuilder: (context, i) => _logTile(docs[i]),
-    );
-  }
+  Future<void> _openAdjustDialog(String uid) async {
+    final deltaCtrl = TextEditingController();
+    final reasonCtrl = TextEditingController();
 
-  Widget _logTile(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-    final cs = Theme.of(context).colorScheme;
-    final d = doc.data();
-
-    final userId = _s(d['userId']).trim();
-    final uid = _s(d['uid']).trim();
-    final email = _s(d['email']).trim();
-    final phone = _s(d['phone']).trim();
-
-    final delta = _i(d['points']);
-    final reason = _s(d['reason']).trim();
-    final type = _lower(d['type']);
-    final createdAt = _dt(d['createdAt']);
-
-    final isPositive = delta >= 0;
-    final color = isPositive ? Colors.green : Colors.red;
-
-    final who = userId.isNotEmpty
-        ? userId
-        : (uid.isNotEmpty ? uid : (email.isNotEmpty ? email : '—'));
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      child: ListTile(
-        contentPadding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-        title: Row(
-          children: [
-            Text(
-              '${isPositive ? '+' : ''}$delta 分',
-              style: TextStyle(fontWeight: FontWeight.w900, color: color),
+    bool? ok;
+    try {
+      ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text(
+            '手動調整點數',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'uid：$uid',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: deltaCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '點數變動（delta）',
+                    helperText: '例如：+50 或 -20（會自動解析）',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: reasonCtrl,
+                  decoration: const InputDecoration(labelText: '原因 / 備註（可空）'),
+                ),
+              ],
             ),
-            const SizedBox(width: 10),
-            if (type.isNotEmpty)
-              _chip('type', type, cs.surfaceContainerHighest, cs.onSurfaceVariant),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(context, true),
+              icon: const Icon(Icons.save_outlined),
+              label: const Text('確認'),
+            ),
           ],
         ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                children: [
-                  _miniTag('docId', doc.id),
-                  _miniTag('who', who),
-                  if (email.isNotEmpty) _miniTag('email', email),
-                  if (phone.isNotEmpty) _miniTag('phone', phone),
-                  if (createdAt != null) _miniTag('time', _dtFmt.format(createdAt)),
-                ],
-              ),
-              if (reason.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text('原因：$reason', style: TextStyle(color: cs.onSurfaceVariant)),
-              ],
-            ],
-          ),
-        ),
-        trailing: Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
-        onTap: () => _openDetail(doc),
-      ),
-    );
+      );
+    } finally {
+      // no-op
+    }
+
+    if (ok != true) {
+      deltaCtrl.dispose();
+      reasonCtrl.dispose();
+      return;
+    }
+
+    final raw = deltaCtrl.text.trim().replaceAll(' ', '');
+    final delta = int.tryParse(raw.startsWith('+') ? raw.substring(1) : raw);
+    final reason = reasonCtrl.text.trim();
+
+    deltaCtrl.dispose();
+    reasonCtrl.dispose();
+
+    if (delta == null) {
+      _toast('delta 格式不正確');
+      return;
+    }
+
+    await _adjustPoints(uid: uid, delta: delta, reason: reason);
   }
 
-  // ------------------------------------------------------------
-  // Detail dialog
-  // ------------------------------------------------------------
-  Future<void> _openDetail(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
-    final cs = Theme.of(context).colorScheme;
-    final d = doc.data();
+  Future<void> _adjustPoints({
+    required String uid,
+    required int delta,
+    required String reason,
+  }) async {
+    setState(() => _busy = true);
 
-    final userId = _s(d['userId']).trim();
-    final uid = _s(d['uid']).trim();
+    final userDoc = _db.collection('users').doc(uid);
 
-    await showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('紀錄詳情：${doc.id}', style: const TextStyle(fontWeight: FontWeight.w900)),
-        content: SizedBox(
-          width: 860,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    _miniTag('docId', doc.id),
-                    if (userId.isNotEmpty) _miniTag('userId', userId),
-                    if (uid.isNotEmpty) _miniTag('uid', uid),
-                    if (_dt(d['createdAt']) != null) _miniTag('createdAt', _dtFmt.format(_dt(d['createdAt'])!)),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                const Text('原始欄位（Debug）', style: TextStyle(fontWeight: FontWeight.w900)),
-                const SizedBox(height: 8),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: cs.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    _prettyMap(d),
-                    style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      color: cs.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: doc.id));
-              _toast('已複製 docId');
-            },
-            child: const Text('複製 docId'),
-          ),
-          TextButton(
-            onPressed: (userId.isEmpty && uid.isEmpty)
-                ? null
-                : () async {
-                    await Clipboard.setData(ClipboardData(text: userId.isNotEmpty ? userId : uid));
-                    _toast('已複製 userId/uid');
-                  },
-            child: const Text('複製 userId/uid'),
-          ),
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('關閉')),
-        ],
-      ),
-    );
+    try {
+      await _db.runTransaction((tx) async {
+        final snap = await tx.get(userDoc);
+        final data = snap.data() ?? <String, dynamic>{};
+
+        final before = _toInt(data['points']);
+        final after = (before + delta) < 0 ? 0 : (before + delta);
+
+        tx.set(userDoc, {
+          'points': after,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        final logRef = userDoc.collection('points_logs').doc();
+        tx.set(logRef, {
+          'uid': uid,
+          'type': 'admin_manual_adjust',
+          'delta': delta,
+          'before': before,
+          'after': after,
+          'reason': reason,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      });
+
+      _toast('已調整點數');
+    } catch (e) {
+      _toast('調整失敗：$e');
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
   }
 
-  // ------------------------------------------------------------
-  // Small UI helpers
-  // ------------------------------------------------------------
-  Widget _chip(String k, String v, Color bg, Color fg) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(999)),
-      child: Text('$k:$v', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: fg)),
-    );
+  // ============================================================
+  // Helpers
+  // ============================================================
+
+  int _toInt(dynamic v) {
+    if (v == null) {
+      return 0;
+    }
+    if (v is int) {
+      return v;
+    }
+    if (v is num) {
+      return v.toInt();
+    }
+    return int.tryParse(v.toString()) ?? 0;
   }
 
-  Widget _miniTag(String k, String v) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        border: Border.all(color: cs.outlineVariant),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        '$k：$v',
-        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: cs.onSurfaceVariant),
-      ),
-    );
+  DateTime? _toDt(dynamic v) {
+    if (v == null) {
+      return null;
+    }
+    if (v is Timestamp) {
+      return v.toDate();
+    }
+    if (v is DateTime) {
+      return v;
+    }
+    if (v is int) {
+      return DateTime.fromMillisecondsSinceEpoch(v);
+    }
+    return null;
   }
 
-  String _prettyMap(Map<String, dynamic> d) {
-    // 避免 jsonEncode 遇到 Timestamp 例外
-    final buf = StringBuffer();
-    d.forEach((k, v) => buf.writeln('$k: ${_prettyValue(v)}'));
-    return buf.toString();
-  }
-
-  String _prettyValue(dynamic v) {
-    if (v == null) return 'null';
-    if (v is Timestamp) return 'Timestamp(${v.toDate().toIso8601String()})';
-    if (v is DateTime) return v.toIso8601String();
-    if (v is Map) return '{...}';
-    if (v is List) return '[${v.length}]';
-    return v.toString();
+  Future<void> _copy(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    _toast('已複製：$text');
   }
 
   void _toast(String msg) {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 }
 
-// ------------------------------------------------------------
-// Stats model
-// ------------------------------------------------------------
-class _PointsStats {
-  final int total;
-  final int pos;
-  final int neg;
-  final int zero;
-  final num sum;
+// ============================================================
+// Models
+// ============================================================
 
-  _PointsStats({
-    required this.total,
-    required this.pos,
-    required this.neg,
-    required this.zero,
-    required this.sum,
+class _PointsLog {
+  final String id;
+  final String type;
+  final int delta;
+  final int before;
+  final int after;
+  final String reason;
+  final DateTime? createdAt;
+
+  _PointsLog({
+    required this.id,
+    required this.type,
+    required this.delta,
+    required this.before,
+    required this.after,
+    required this.reason,
+    required this.createdAt,
   });
+
+  factory _PointsLog.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final m = doc.data() ?? <String, dynamic>{};
+
+    int toInt(dynamic v) {
+      if (v == null) {
+        return 0;
+      }
+      if (v is int) {
+        return v;
+      }
+      if (v is num) {
+        return v.toInt();
+      }
+      return int.tryParse(v.toString()) ?? 0;
+    }
+
+    DateTime? toDt(dynamic v) {
+      if (v == null) {
+        return null;
+      }
+      if (v is Timestamp) {
+        return v.toDate();
+      }
+      if (v is DateTime) {
+        return v;
+      }
+      if (v is int) {
+        return DateTime.fromMillisecondsSinceEpoch(v);
+      }
+      return null;
+    }
+
+    return _PointsLog(
+      id: doc.id,
+      type: (m['type'] ?? '').toString(),
+      delta: toInt(m['delta']),
+      before: toInt(m['before']),
+      after: toInt(m['after']),
+      reason: (m['reason'] ?? '').toString(),
+      createdAt: toDt(m['createdAt']),
+    );
+  }
 }
 
-// ------------------------------------------------------------
-// Common Views
-// ------------------------------------------------------------
-class _EmptyView extends StatelessWidget {
+class _TaskItem {
+  final String id;
   final String title;
-  const _EmptyView({required this.title});
+  final String status;
+  final int points;
+  final DateTime? createdAt;
+  final DateTime? doneAt;
+
+  _TaskItem({
+    required this.id,
+    required this.title,
+    required this.status,
+    required this.points,
+    required this.createdAt,
+    required this.doneAt,
+  });
+
+  factory _TaskItem.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final m = doc.data() ?? <String, dynamic>{};
+
+    int toInt(dynamic v) {
+      if (v == null) {
+        return 0;
+      }
+      if (v is int) {
+        return v;
+      }
+      if (v is num) {
+        return v.toInt();
+      }
+      return int.tryParse(v.toString()) ?? 0;
+    }
+
+    DateTime? toDt(dynamic v) {
+      if (v == null) {
+        return null;
+      }
+      if (v is Timestamp) {
+        return v.toDate();
+      }
+      if (v is DateTime) {
+        return v;
+      }
+      if (v is int) {
+        return DateTime.fromMillisecondsSinceEpoch(v);
+      }
+      return null;
+    }
+
+    return _TaskItem(
+      id: doc.id,
+      title: (m['title'] ?? '').toString(),
+      status: (m['status'] ?? 'pending').toString(),
+      points: toInt(m['points']),
+      createdAt: toDt(m['createdAt']),
+      doneAt: toDt(m['doneAt']),
+    );
+  }
+}
+
+// ============================================================
+// UI
+// ============================================================
+
+class _SummaryCard extends StatelessWidget {
+  final String uid;
+  final String name;
+  final String email;
+  final int points;
+  final String updatedAtText;
+  final bool busy;
+  final VoidCallback onAdjust;
+
+  const _SummaryCard({
+    required this.uid,
+    required this.name,
+    required this.email,
+    required this.points,
+    required this.updatedAtText,
+    required this.busy,
+    required this.onAdjust,
+  });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Card(
+        elevation: 0,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '會員點數概況',
+                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'uid：$uid',
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '名稱：${name.isEmpty ? "—" : name}',
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              Text(
+                'Email：${email.isEmpty ? "—" : email}',
+                style: TextStyle(
+                  color: cs.onSurfaceVariant,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: cs.primaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Points',
+                            style: TextStyle(color: cs.onPrimaryContainer),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            points.toString(),
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w900,
+                              color: cs.onPrimaryContainer,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: cs.secondaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Updated',
+                            style: TextStyle(color: cs.onSecondaryContainer),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            updatedAtText,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w900,
+                              color: cs.onSecondaryContainer,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: busy ? null : onAdjust,
+                      icon: busy
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.tune),
+                      label: Text(busy ? '處理中...' : '手動調整點數'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HintBar extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  final Color color;
+  final Color textColor;
+
+  const _HintBar({
+    required this.icon,
+    required this.text,
+    required this.color,
+    required this.textColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: color,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          Icon(icon, color: textColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(color: textColor, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyView extends StatelessWidget {
+  final String title;
+  final String message;
+
+  const _EmptyView({required this.title, required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.inbox_outlined, size: 44, color: cs.onSurfaceVariant),
-            const SizedBox(height: 10),
-            Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-            const SizedBox(height: 6),
-            Text('請調整篩選條件或新增資料後再試。', style: TextStyle(color: cs.onSurfaceVariant)),
-          ],
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Card(
+            elevation: 0,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.info_outline, size: 44, color: cs.primary),
+                  const SizedBox(height: 10),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -720,22 +903,21 @@ class _EmptyView extends StatelessWidget {
 class _ErrorView extends StatelessWidget {
   final String title;
   final String message;
-  final String? hint;
   final VoidCallback onRetry;
 
   const _ErrorView({
     required this.title,
     required this.message,
     required this.onRetry,
-    this.hint,
   });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+
     return Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 680),
+        constraints: const BoxConstraints(maxWidth: 720),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Card(
@@ -747,13 +929,15 @@ class _ErrorView extends StatelessWidget {
                 children: [
                   Icon(Icons.error_outline, size: 44, color: cs.error),
                   const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                   const SizedBox(height: 10),
                   Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
-                  if (hint != null) ...[
-                    const SizedBox(height: 10),
-                    Text(hint!, style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13)),
-                  ],
                   const SizedBox(height: 14),
                   FilledButton.icon(
                     onPressed: onRetry,

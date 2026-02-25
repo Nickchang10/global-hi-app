@@ -22,7 +22,7 @@
 // - 支援即時更新、錯誤顯示、空狀態、Debug 訊息
 // - 內建複製：連結 / id / 原始資料
 //
-// 依賴：cloud_firestore, flutter/material, flutter/foundation, flutter/services
+// ✅ 修正：移除 withOpacity deprecations（改用 withValues(alpha: ...)）
 // ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -58,7 +58,6 @@ class _DownloadsPageState extends State<DownloadsPage> {
   // Utils
   // -------------------------
   String _s(dynamic v) => (v ?? '').toString().trim();
-
   String _lower(dynamic v) => _s(v).toLowerCase();
 
   DateTime? _toDate(dynamic v) {
@@ -174,7 +173,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
                   );
                 }
 
-                final docs = snap.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                final docs =
+                    snap.data?.docs ??
+                    <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
                 // 前端搜尋過濾
                 final filtered = docs.where((d) {
@@ -197,7 +198,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
                     final data = doc.data();
                     final id = doc.id;
 
-                    final title = _s(data['title']).isEmpty ? '(未命名)' : _s(data['title']);
+                    final title = _s(data['title']).isEmpty
+                        ? '(未命名)'
+                        : _s(data['title']);
                     final desc = _s(data['description']);
                     final url = _s(data['url']);
                     final fileName = _s(data['fileName']);
@@ -231,7 +234,8 @@ class _DownloadsPageState extends State<DownloadsPage> {
                                 const SizedBox(width: 10),
                                 Text(
                                   _fmt(createdAt),
-                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
                                         color: cs.outline,
                                         fontWeight: FontWeight.w700,
                                       ),
@@ -243,9 +247,8 @@ class _DownloadsPageState extends State<DownloadsPage> {
                               const SizedBox(height: 6),
                               Text(
                                 desc,
-                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                      color: cs.onSurfaceVariant,
-                                    ),
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(color: cs.onSurfaceVariant),
                               ),
                             ],
 
@@ -281,18 +284,28 @@ class _DownloadsPageState extends State<DownloadsPage> {
                               padding: const EdgeInsets.all(10),
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: cs.outline.withOpacity(0.18)),
-                                color: cs.surfaceContainerHighest.withOpacity(0.18),
+                                border: Border.all(
+                                  color: cs.outline.withValues(alpha: 0.18),
+                                ),
+                                color: cs.surfaceContainerHighest.withValues(
+                                  alpha: 0.18,
+                                ),
                               ),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Icon(Icons.link, size: 18, color: cs.onSurfaceVariant),
+                                  Icon(
+                                    Icons.link,
+                                    size: 18,
+                                    color: cs.onSurfaceVariant,
+                                  ),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: SelectableText(
                                       url.isEmpty ? '（尚未設定下載連結 url）' : url,
-                                      style: TextStyle(color: cs.onSurfaceVariant),
+                                      style: TextStyle(
+                                        color: cs.onSurfaceVariant,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -319,7 +332,10 @@ class _DownloadsPageState extends State<DownloadsPage> {
                                   label: const Text('複製 ID'),
                                 ),
                                 OutlinedButton.icon(
-                                  onPressed: () => _copy(data.toString(), done: '已複製資料（toString）'),
+                                  onPressed: () => _copy(
+                                    data.toString(),
+                                    done: '已複製資料（toString）',
+                                  ),
                                   icon: const Icon(Icons.data_object),
                                   label: const Text('複製資料'),
                                 ),
@@ -328,7 +344,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
 
                             if (kDebugMode) ...[
                               const SizedBox(height: 12),
-                              Divider(color: cs.outline.withOpacity(0.25)),
+                              Divider(
+                                color: cs.outline.withValues(alpha: 0.25),
+                              ),
                               Text(
                                 'Debug：collection=downloads / docId=$id',
                                 style: TextStyle(
@@ -352,7 +370,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              color: cs.surfaceContainerHighest.withOpacity(0.55),
+              color: cs.surfaceContainerHighest.withValues(alpha: 0.55),
               child: Text(
                 'Debug：collection=downloads orderBy=createdAt desc  search="${_q.trim()}"',
                 style: TextStyle(
@@ -381,8 +399,8 @@ class _MetaChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: cs.outline.withOpacity(0.2)),
-        color: cs.surfaceContainerHighest.withOpacity(0.16),
+        border: Border.all(color: cs.outline.withValues(alpha: 0.2)),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.16),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,

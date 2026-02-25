@@ -75,7 +75,10 @@ class _CouponsPageState extends State<CouponsPage>
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('清空優惠券', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '清空優惠券',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         content: const Text('確定要清空全部折價券/優惠券嗎？'),
         actions: [
           TextButton(
@@ -112,8 +115,10 @@ class _CouponsPageState extends State<CouponsPage>
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        title: const Text('折價券 / 優惠券',
-            style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '折價券 / 優惠券',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         centerTitle: true,
         backgroundColor: Colors.white,
         elevation: 0.6,
@@ -190,7 +195,7 @@ class _CouponsPageState extends State<CouponsPage>
         border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 12,
             offset: const Offset(0, 8),
           ),
@@ -216,7 +221,7 @@ class _CouponsPageState extends State<CouponsPage>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
@@ -287,9 +292,10 @@ class _CouponsPageState extends State<CouponsPage>
           children: [
             Icon(icon, size: 56, color: Colors.grey.shade400),
             const SizedBox(height: 10),
-            Text(title,
-                style: const TextStyle(
-                    fontWeight: FontWeight.w900, fontSize: 16)),
+            Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+            ),
             const SizedBox(height: 6),
             Text(
               desc,
@@ -345,7 +351,7 @@ class _CouponCard extends StatelessWidget {
         border: Border.all(color: borderColor, width: 1.2),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(isInactive ? 0.02 : 0.05),
+            color: Colors.black.withValues(alpha: isInactive ? 0.02 : 0.05),
             blurRadius: 12,
             offset: const Offset(0, 8),
           ),
@@ -361,7 +367,7 @@ class _CouponCard extends StatelessWidget {
               decoration: BoxDecoration(
                 color: isInactive
                     ? Colors.grey.shade200
-                    : Colors.orangeAccent.withOpacity(0.16),
+                    : Colors.orangeAccent.withValues(alpha: 0.16),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(
@@ -397,16 +403,19 @@ class _CouponCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(999),
                           child: Ink(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 6),
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.04),
+                              color: Colors.black.withValues(alpha: 0.04),
                               borderRadius: BorderRadius.circular(999),
                             ),
                             child: Text(
                               '券碼：$code',
                               style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w800),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                              ),
                             ),
                           ),
                         ),

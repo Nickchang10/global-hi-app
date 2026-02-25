@@ -1,175 +1,207 @@
-// lib/pages/notifications_page.dart
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
-import '../services/notification_service.dart';
-
-class NotificationsPage extends StatefulWidget {
-  const NotificationsPage({super.key});
+/// ✅ OnboardingPage（新手引導｜修改後完整版）
+/// ------------------------------------------------------------
+/// 修正重點：
+/// - ✅ 完全移除 AppNotification 型別依賴（避免 non_type_as_type_argument）
+/// - ✅ 純 Flutter PageView + 指示點
+/// - ✅ 完成後導向 /login（你可依專案改成 /home）
+/// ------------------------------------------------------------
+class OnboardingPage extends StatefulWidget {
+  const OnboardingPage({super.key});
 
   @override
-  State<NotificationsPage> createState() => _NotificationsPageState();
+  State<OnboardingPage> createState() => _OnboardingPageState();
 }
 
-class _NotificationsPageState extends State<NotificationsPage> {
-  String _selected = '全部';
+class _OnboardingPageState extends State<OnboardingPage> {
+  final PageController _controller = PageController();
+  int _index = 0;
 
-  /// 可依實際通知類型調整
-  final List<String> _filters = <String>[
-    '全部',
-    '訂單',
-    '系統',
-    '活動',
-    '會員',
-    'leaderboard',
+  final List<_OnboardSlide> _slides = const [
+    _OnboardSlide(
+      icon: Icons.shopping_bag_outlined,
+      title: 'Osmile 購物與活動',
+      desc: '一次整合商城、抽獎、優惠券、任務與積分，讓你買得划算、玩得開心。',
+    ),
+    _OnboardSlide(
+      icon: Icons.local_activity_outlined,
+      title: '任務積分與徽章',
+      desc: '完成每日任務拿積分，收集徽章，解鎖更多回饋與活動資格。',
+    ),
+    _OnboardSlide(
+      icon: Icons.notifications_outlined,
+      title: '通知中心',
+      desc: '訂單、活動、優惠券與系統消息集中管理，不再漏接重要訊息。',
+    ),
+    _OnboardSlide(
+      icon: Icons.sos_outlined,
+      title: 'SOS 求助與守護',
+      desc: '關鍵時刻一鍵求助，守護家人安全（需依裝置/權限設定）。',
+    ),
   ];
 
-  List<AppNotification> _applyFilter(List<AppNotification> all) {
-    if (_selected == '全部') return all;
-    return all
-        .where((n) =>
-            n.type.toLowerCase() == _selected.toLowerCase() ||
-            n.type == _selected)
-        .toList();
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
-  String _formatTime(DateTime t) {
-    return '${t.month.toString().padLeft(2, '0')}/${t.day.toString().padLeft(2, '0')} '
-        '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  void _next() {
+    if (_index >= _slides.length - 1) {
+      _finish();
+      return;
+    }
+    _controller.nextPage(
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _skip() => _finish();
+
+  void _finish() {
+    // ✅ 這裡只做導航，不依賴任何通知/模型/服務，避免再引入型別錯誤
+    if (!mounted) return;
+    Navigator.of(context).pushReplacementNamed('/login'); // 你要改 /home 也可以
   }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<NotificationService>(
-      builder: (context, notifier, _) {
-        final all = notifier.notifications;
-        final list = _applyFilter(all);
+    final isLast = _index == _slides.length - 1;
 
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('通知中心'),
-            actions: [
-              if (all.isNotEmpty)
-                IconButton(
-                  tooltip: '全部設為已讀',
-                  icon: const Icon(Icons.done_all),
-                  onPressed: notifier.markAllRead,
-                ),
-              if (all.isNotEmpty)
-                IconButton(
-                  tooltip: '清空通知',
-                  icon: const Icon(Icons.delete_sweep_outlined),
-                  onPressed: notifier.clearAll,
-                ),
-            ],
-          ),
-          body: Column(
-            children: [
-              // 篩選 Chips
-              SizedBox(
-                height: 46,
-                child: ListView.separated(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _filters.length,
-                  itemBuilder: (_, i) {
-                    final label = _filters[i];
-                    final selected = label == _selected;
-                    return ChoiceChip(
-                      label: Text(label),
-                      selected: selected,
-                      onSelected: (_) {
-                        setState(() => _selected = label);
-                      },
-                    );
-                  },
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                ),
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            // top bar
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  TextButton(onPressed: _skip, child: const Text('略過')),
+                  const Spacer(),
+                  Text(
+                    '${_index + 1}/${_slides.length}',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                ],
               ),
-              const Divider(height: 1),
+            ),
 
-              // 通知列表
-              Expanded(
-                child: list.isEmpty
-                    ? const Center(child: Text('目前沒有通知'))
-                    : ListView.builder(
-                        itemCount: list.length,
-                        itemBuilder: (context, index) {
-                          final AppNotification n = list[index];
-                          final String id = n.id;
-                          final bool read = n.read;
+            // pages
+            Expanded(
+              child: PageView.builder(
+                controller: _controller,
+                itemCount: _slides.length,
+                onPageChanged: (i) => setState(() => _index = i),
+                itemBuilder: (context, i) => _slideView(_slides[i]),
+              ),
+            ),
 
-                          return Dismissible(
-                            key: ValueKey(id),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              color: Colors.redAccent,
-                              alignment: Alignment.centerRight,
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 20),
-                              child: const Icon(
-                                Icons.delete,
-                                color: Colors.white,
-                              ),
-                            ),
-                            onDismissed: (_) => notifier.remove(id),
-                            child: ListTile(
-                              leading: CircleAvatar(
-                                backgroundColor: read
-                                    ? Colors.grey.shade200
-                                    : Colors.blue.shade50,
-                                child: Icon(
-                                  n.icon ?? Icons.notifications,
-                                  color: read
-                                      ? Colors.grey
-                                      : Colors.blueAccent,
-                                ),
-                              ),
-                              title: Text(
-                                n.title,
-                                style: TextStyle(
-                                  fontWeight: read
-                                      ? FontWeight.normal
-                                      : FontWeight.bold,
-                                ),
-                              ),
-                              subtitle: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (n.message.isNotEmpty)
-                                    Text(
-                                      n.message,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatTime(n.createdAt),
-                                    style: TextStyle(
-                                      color: Colors.grey.shade600,
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              trailing: read
-                                  ? null
-                                  : const Icon(
-                                      Icons.brightness_1,
-                                      size: 10,
-                                      color: Colors.redAccent,
-                                    ),
-                              onTap: () => notifier.markAsRead(id),
-                            ),
-                          );
-                        },
+            // dots + actions
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 18),
+              child: Column(
+                children: [
+                  _dots(),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _skip,
+                          child: const Text('先逛逛'),
+                        ),
                       ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: isLast ? _finish : _next,
+                          child: Text(isLast ? '開始使用' : '下一步'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-            ],
-          ),
-        );
-      },
+            ),
+          ],
+        ),
+      ),
     );
   }
+
+  Widget _slideView(_OnboardSlide s) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 12, 18, 12),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(s.icon, size: 64, color: Colors.blueGrey),
+                  const SizedBox(height: 14),
+                  Text(
+                    s.title,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    s.desc,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      height: 1.45,
+                      color: Colors.black87,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dots() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: List.generate(_slides.length, (i) {
+        final active = i == _index;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          width: active ? 18 : 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: active ? Colors.blueGrey : Colors.grey.shade300,
+            borderRadius: BorderRadius.circular(999),
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _OnboardSlide {
+  final IconData icon;
+  final String title;
+  final String desc;
+
+  const _OnboardSlide({
+    required this.icon,
+    required this.title,
+    required this.desc,
+  });
 }

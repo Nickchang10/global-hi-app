@@ -1,37 +1,6 @@
 // lib/pages/admin/content/admin_guestbook_page.dart
 //
 // ✅ AdminGuestbookPage（內容管理｜留言板審核｜A. 基礎專業版｜單檔完整版｜可編譯）
-// ------------------------------------------------------------
-// Firestore：guestbook 集合
-//
-// 功能：
-// 1) 列表：搜尋 / 狀態篩選（new/approved/rejected）/ 置頂篩選
-// 2) 審核：通過 / 駁回（寫回 status）
-// 3) 置頂：isPinned
-// 4) 多選批次：通過 / 駁回 / 置頂 / 取消置頂 / 刪除
-// 5) 詳情視窗：顯示留言內容、聯絡資訊、裝置資訊（若有）、建立/更新時間
-// 6) 欄位容錯：Map 轉型、Timestamp → DateTime、缺欄位不崩潰
-//
-// 建議資料結構：guestbook/{id}
-// {
-//   status: "new" | "approved" | "rejected",
-//   isPinned: false,
-//   name: "王小明",
-//   phone: "09xx",
-//   email: "xx@xx.com",
-//   message: "留言內容...",
-//   source: "app" | "web" | "line" | ... (可選)
-//   deviceId: "xxx" (可選)
-//   userId: "uid" (可選)
-//   vendorId: "vid" (可選)
-//   note: "後台備註" (可選)
-//   createdAt: Timestamp,
-//   updatedAt: Timestamp,
-//   updatedBy: "admin"
-// }
-//
-// 依賴：cloud_firestore, intl
-// ------------------------------------------------------------
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -47,7 +16,9 @@ class AdminGuestbookPage extends StatefulWidget {
 
 class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
   final _db = FirebaseFirestore.instance;
-  late final CollectionReference<Map<String, dynamic>> _col = _db.collection('guestbook');
+  late final CollectionReference<Map<String, dynamic>> _col = _db.collection(
+    'guestbook',
+  );
 
   final _search = TextEditingController();
 
@@ -84,18 +55,25 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('內容管理：留言板審核', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          '內容管理：留言板審核',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           if (_selectionMode) ...[
             IconButton(
               tooltip: '批次通過',
               icon: const Icon(Icons.verified_outlined),
-              onPressed: _selected.isEmpty ? null : () => _batchSetStatus(_statusApproved),
+              onPressed: _selected.isEmpty
+                  ? null
+                  : () => _batchSetStatus(_statusApproved),
             ),
             IconButton(
               tooltip: '批次駁回',
               icon: const Icon(Icons.block_outlined),
-              onPressed: _selected.isEmpty ? null : () => _batchSetStatus(_statusRejected),
+              onPressed: _selected.isEmpty
+                  ? null
+                  : () => _batchSetStatus(_statusRejected),
             ),
             IconButton(
               tooltip: '批次置頂',
@@ -105,7 +83,9 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
             IconButton(
               tooltip: '取消置頂',
               icon: const Icon(Icons.push_pin_outlined),
-              onPressed: _selected.isEmpty ? null : () => _batchSetPinned(false),
+              onPressed: _selected.isEmpty
+                  ? null
+                  : () => _batchSetPinned(false),
             ),
             IconButton(
               tooltip: '批次刪除',
@@ -145,15 +125,19 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
                   );
                 }
 
-                final docs = (snap.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[])
-                    .map((d) => _GuestbookDoc.fromDoc(d))
-                    .toList();
+                final docs =
+                    (snap.data?.docs ??
+                            <QueryDocumentSnapshot<Map<String, dynamic>>>[])
+                        .map((d) => _GuestbookDoc.fromDoc(d))
+                        .toList();
 
                 // ✅ 排序：置頂優先 -> updatedAt/createdAt desc
                 docs.sort((a, b) {
                   if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
-                  final at = (a.updatedAt ?? a.createdAt)?.millisecondsSinceEpoch ?? 0;
-                  final bt = (b.updatedAt ?? b.createdAt)?.millisecondsSinceEpoch ?? 0;
+                  final at =
+                      (a.updatedAt ?? a.createdAt)?.millisecondsSinceEpoch ?? 0;
+                  final bt =
+                      (b.updatedAt ?? b.createdAt)?.millisecondsSinceEpoch ?? 0;
                   return bt.compareTo(at);
                 });
 
@@ -169,7 +153,8 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
                           : ListView.builder(
                               padding: const EdgeInsets.only(bottom: 24),
                               itemCount: filtered.length,
-                              itemBuilder: (context, i) => _buildTile(filtered[i]),
+                              itemBuilder: (context, i) =>
+                                  _buildTile(filtered[i]),
                             ),
                     ),
                   ],
@@ -200,18 +185,26 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
               prefixIcon: const Icon(Icons.search),
               hintText: '搜尋（姓名 / 電話 / Email / 內容 / userId / deviceId / id）',
               isDense: true,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
             ),
           );
 
           final statusDD = DropdownButtonFormField<String>(
+            key: ValueKey('gb_status_$_status'),
             isExpanded: true,
-            value: _status,
+            initialValue: _status, // ✅ 修正：value -> initialValue
             decoration: InputDecoration(
               isDense: true,
               labelText: '狀態',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
             ),
             items: const [
               DropdownMenuItem(value: _statusAll, child: Text('全部')),
@@ -223,13 +216,19 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
           );
 
           final pinDD = DropdownButtonFormField<String>(
+            key: ValueKey('gb_pin_$_pin'),
             isExpanded: true,
-            value: _pin,
+            initialValue: _pin, // ✅ 修正：value -> initialValue
             decoration: InputDecoration(
               isDense: true,
               labelText: '置頂',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
             ),
             items: const [
               DropdownMenuItem(value: _pinAll, child: Text('全部')),
@@ -289,7 +288,13 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       child: Row(
         children: [
-          Text('共 $count 筆', style: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700)),
+          Text(
+            '共 $count 筆',
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           const Spacer(),
           FilledButton.tonalIcon(
             onPressed: () => setState(() {}),
@@ -305,7 +310,8 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
     final q = _search.text.trim().toLowerCase();
 
     return input.where((d) {
-      final matchQ = q.isEmpty ||
+      final matchQ =
+          q.isEmpty ||
           d.id.toLowerCase().contains(q) ||
           d.name.toLowerCase().contains(q) ||
           d.phone.toLowerCase().contains(q) ||
@@ -347,9 +353,14 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
       child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
         leading: CircleAvatar(
-          backgroundColor: d.isPinned ? cs.primaryContainer : Colors.grey.shade200,
+          backgroundColor: d.isPinned
+              ? cs.primaryContainer
+              : Colors.grey.shade200,
           child: Icon(
             d.isPinned ? Icons.push_pin_outlined : Icons.chat_bubble_outline,
             color: d.isPinned ? cs.onPrimaryContainer : Colors.grey.shade600,
@@ -403,16 +414,22 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
                     IconButton(
                       tooltip: '通過',
                       icon: const Icon(Icons.verified_outlined),
-                      onPressed: d.status == _statusApproved ? null : () => _setStatus(d.id, _statusApproved),
+                      onPressed: d.status == _statusApproved
+                          ? null
+                          : () => _setStatus(d.id, _statusApproved),
                     ),
                     IconButton(
                       tooltip: '駁回',
                       icon: const Icon(Icons.block_outlined),
-                      onPressed: d.status == _statusRejected ? null : () => _setStatus(d.id, _statusRejected),
+                      onPressed: d.status == _statusRejected
+                          ? null
+                          : () => _setStatus(d.id, _statusRejected),
                     ),
                     IconButton(
                       tooltip: d.isPinned ? '取消置頂' : '置頂',
-                      icon: Icon(d.isPinned ? Icons.push_pin : Icons.push_pin_outlined),
+                      icon: Icon(
+                        d.isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                      ),
                       onPressed: () => _setPinned(d.id, !d.isPinned),
                     ),
                     IconButton(
@@ -452,8 +469,14 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
     final fg = enabled ? Colors.green.shade900 : cs.onSurfaceVariant;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(999)),
-      child: Text(text, style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: fg)),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12, color: fg),
+      ),
     );
   }
 
@@ -487,10 +510,11 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
 
   Future<void> _saveNote(String id, String note) async {
     try {
-      await _col.doc(id).set(
-        {'note': note.trim(), 'updatedAt': FieldValue.serverTimestamp(), 'updatedBy': 'admin'},
-        SetOptions(merge: true),
-      );
+      await _col.doc(id).set({
+        'note': note.trim(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': 'admin',
+      }, SetOptions(merge: true));
       _toast('已更新備註');
     } catch (e) {
       _toast('更新失敗：$e');
@@ -503,10 +527,11 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
 
   Future<void> _setStatus(String id, String status) async {
     try {
-      await _col.doc(id).set(
-        {'status': status, 'updatedAt': FieldValue.serverTimestamp(), 'updatedBy': 'admin'},
-        SetOptions(merge: true),
-      );
+      await _col.doc(id).set({
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': 'admin',
+      }, SetOptions(merge: true));
       _toast('已更新狀態：${_statusText(status)}');
     } catch (e) {
       _toast('更新失敗：$e');
@@ -515,10 +540,11 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
 
   Future<void> _setPinned(String id, bool pinned) async {
     try {
-      await _col.doc(id).set(
-        {'isPinned': pinned, 'updatedAt': FieldValue.serverTimestamp(), 'updatedBy': 'admin'},
-        SetOptions(merge: true),
-      );
+      await _col.doc(id).set({
+        'isPinned': pinned,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': 'admin',
+      }, SetOptions(merge: true));
       _toast(pinned ? '已置頂' : '已取消置頂');
     } catch (e) {
       _toast('更新失敗：$e');
@@ -532,18 +558,19 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
   Future<void> _batchSetStatus(String status) async {
     final ok = await _confirm(
       title: status == _statusApproved ? '批次通過' : '批次駁回',
-      message: '共選取 ${_selected.length} 筆，確定要${status == _statusApproved ? '通過' : '駁回'}？',
+      message:
+          '共選取 ${_selected.length} 筆，確定要${status == _statusApproved ? '通過' : '駁回'}？',
       confirmText: '確認',
     );
     if (ok != true) return;
 
     final batch = _db.batch();
     for (final id in _selected) {
-      batch.set(
-        _col.doc(id),
-        {'status': status, 'updatedAt': FieldValue.serverTimestamp(), 'updatedBy': 'admin'},
-        SetOptions(merge: true),
-      );
+      batch.set(_col.doc(id), {
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': 'admin',
+      }, SetOptions(merge: true));
     }
     await batch.commit();
 
@@ -562,11 +589,11 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
 
     final batch = _db.batch();
     for (final id in _selected) {
-      batch.set(
-        _col.doc(id),
-        {'isPinned': pinned, 'updatedAt': FieldValue.serverTimestamp(), 'updatedBy': 'admin'},
-        SetOptions(merge: true),
-      );
+      batch.set(_col.doc(id), {
+        'isPinned': pinned,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': 'admin',
+      }, SetOptions(merge: true));
     }
     await batch.commit();
 
@@ -644,7 +671,10 @@ class _AdminGuestbookPageState extends State<AdminGuestbookPage> {
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
         content: Text(message),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: isDanger ? cs.error : null,
@@ -707,11 +737,15 @@ class _GuestbookDetailDialogState extends State<_GuestbookDetailDialog> {
     final cs = Theme.of(context).colorScheme;
     final d = widget.doc;
 
-    final created = d.createdAt == null ? '—' : widget.dtFmt.format(d.createdAt!);
-    final updated = d.updatedAt == null ? '—' : widget.dtFmt.format(d.updatedAt!);
+    final created = d.createdAt == null
+        ? '—'
+        : widget.dtFmt.format(d.createdAt!);
+    final updated = d.updatedAt == null
+        ? '—'
+        : widget.dtFmt.format(d.updatedAt!);
 
     return AlertDialog(
-      title: Text('留言詳情', style: const TextStyle(fontWeight: FontWeight.w900)),
+      title: const Text('留言詳情', style: TextStyle(fontWeight: FontWeight.w900)),
       content: SizedBox(
         width: 760,
         child: SingleChildScrollView(
@@ -730,7 +764,13 @@ class _GuestbookDetailDialogState extends State<_GuestbookDetailDialog> {
               _kv('建立時間', created),
               _kv('更新時間', updated),
               const Divider(height: 22),
-              Text('留言內容', style: TextStyle(fontWeight: FontWeight.w900, color: cs.onSurface)),
+              Text(
+                '留言內容',
+                style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                  color: cs.onSurface,
+                ),
+              ),
               const SizedBox(height: 6),
               Container(
                 width: double.infinity,
@@ -756,8 +796,10 @@ class _GuestbookDetailDialogState extends State<_GuestbookDetailDialog> {
                 child: FilledButton.tonalIcon(
                   onPressed: () async {
                     await widget.onSaveNote(_note.text);
-                    if (!mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已儲存備註')));
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已儲存備註')));
                   },
                   icon: const Icon(Icons.save_outlined),
                   label: const Text('儲存備註'),
@@ -821,8 +863,16 @@ class _GuestbookDetailDialogState extends State<_GuestbookDetailDialog> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 90, child: Text(k, style: TextStyle(color: cs.onSurfaceVariant))),
-          Expanded(child: Text(value, style: const TextStyle(fontWeight: FontWeight.w700))),
+          SizedBox(
+            width: 90,
+            child: Text(k, style: TextStyle(color: cs.onSurfaceVariant)),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
           if (onCopy != null && value != '—')
             IconButton(
               tooltip: '複製',
@@ -877,7 +927,9 @@ class _GuestbookDoc {
     required this.updatedAt,
   });
 
-  factory _GuestbookDoc.fromDoc(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+  factory _GuestbookDoc.fromDoc(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
     final d = doc.data();
     return _GuestbookDoc(
       id: doc.id,
@@ -941,7 +993,13 @@ class _ErrorView extends StatelessWidget {
                 children: [
                   Icon(Icons.error_outline, size: 44, color: cs.error),
                   const SizedBox(height: 10),
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                   const SizedBox(height: 10),
                   Text(message, style: TextStyle(color: cs.onSurfaceVariant)),
                   if (hint != null) ...[

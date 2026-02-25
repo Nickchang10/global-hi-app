@@ -1,288 +1,398 @@
+// lib/pages/admin/sos/admin_sos_notify_settings_page.dart
+//
+// ✅ AdminSosNotifySettingsPage（SOS 通知設定｜可編譯完整版｜已修正 use_build_context_synchronously）
+// ------------------------------------------------------------
+// - Firestore 路徑：app_config/sos_notify_settings（可自行改）
+// - 讀取 / 編輯 / 儲存（merge）
+// - 常見欄位：enabled、notifyEmails、notifyPhones、webhookUrl、updatedAt
+//
+// ✅ 修正重點：
+// - 所有 async gap 後使用 context 的地方：
+//   - 先取 messenger / navigator
+//   - await 後 if (!mounted) return;
+//   - 用 messenger/navigator 顯示 SnackBar 或 pop
+//
+// 依賴：cloud_firestore
+// ------------------------------------------------------------
+
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-class AdminSOSNotifySettingsPage extends StatefulWidget {
-  const AdminSOSNotifySettingsPage({super.key});
+class AdminSosNotifySettingsPage extends StatefulWidget {
+  const AdminSosNotifySettingsPage({super.key});
 
   @override
-  State<AdminSOSNotifySettingsPage> createState() =>
-      _AdminSOSNotifySettingsPageState();
+  State<AdminSosNotifySettingsPage> createState() =>
+      _AdminSosNotifySettingsPageState();
 }
 
-class _AdminSOSNotifySettingsPageState extends State<AdminSOSNotifySettingsPage> {
+class _AdminSosNotifySettingsPageState
+    extends State<AdminSosNotifySettingsPage> {
   final _db = FirebaseFirestore.instance;
 
+  // ✅ 依你專案實際路徑調整
   DocumentReference<Map<String, dynamic>> get _ref =>
-      _db.collection('app_config').doc('sos_notify');
+      _db.collection('app_config').doc('sos_notify_settings');
 
-  static const _defaults = <String, dynamic>{
-    'enabled': true,
-    'fcmEnabled': true,
-    'lineEnabled': false,
-    'smsEnabled': false,
-    'lineNotifyToken': '',
-    'smsProvider': 'twilio',
-    'twilioFrom': '',
-    'notifyAdmins': true,
-    'adminUserIds': <String>[],
-  };
+  bool _loading = true;
+  bool _busy = false;
+  String? _error;
 
-  final _adminIdsCtrl = TextEditingController();
-  final _lineTokenCtrl = TextEditingController();
-  final _twilioFromCtrl = TextEditingController();
+  // data
+  bool _enabled = true;
+  final _emailsCtrl = TextEditingController(); // 多行，逗號/換行都可
+  final _phonesCtrl = TextEditingController(); // 多行
+  final _webhookCtrl = TextEditingController(); // 選填
+  final _rawJsonCtrl = TextEditingController(); // 檢視用（不長存）
 
-  bool _saving = false;
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   @override
   void dispose() {
-    _adminIdsCtrl.dispose();
-    _lineTokenCtrl.dispose();
-    _twilioFromCtrl.dispose();
+    _emailsCtrl.dispose();
+    _phonesCtrl.dispose();
+    _webhookCtrl.dispose();
+    _rawJsonCtrl.dispose();
     super.dispose();
   }
 
+  // -----------------------------
+  // helpers
+  // -----------------------------
+  List<String> _splitList(String text) {
+    return text
+        .split(RegExp(r'[\n,，;；]'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList();
+  }
+
+  String _prettyJson(Map<String, dynamic> m) =>
+      const JsonEncoder.withIndent('  ').convert(m);
+
+  // -----------------------------
+  // load / save
+  // -----------------------------
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final doc = await _ref.get();
+      final data = doc.data() ?? <String, dynamic>{};
+
+      final enabled = data['enabled'] == true;
+
+      final emails = <String>[];
+      final phones = <String>[];
+
+      final rawEmails = data['notifyEmails'];
+      final rawPhones = data['notifyPhones'];
+
+      if (rawEmails is List) {
+        for (final x in rawEmails) {
+          final s = x.toString().trim();
+          if (s.isNotEmpty) emails.add(s);
+        }
+      }
+      if (rawPhones is List) {
+        for (final x in rawPhones) {
+          final s = x.toString().trim();
+          if (s.isNotEmpty) phones.add(s);
+        }
+      }
+
+      final webhook = (data['webhookUrl'] ?? '').toString().trim();
+
+      if (!mounted) return;
+      setState(() {
+        _enabled = enabled;
+        _emailsCtrl.text = emails.join('\n');
+        _phonesCtrl.text = phones.join('\n');
+        _webhookCtrl.text = webhook;
+        _rawJsonCtrl.text = _prettyJson(data);
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _save() async {
+    if (_busy) return;
+
+    // ✅ 先取 messenger，避免 async gap 後再用 context
+    final messenger = ScaffoldMessenger.of(context);
+
+    setState(() => _busy = true);
+    try {
+      final payload = <String, dynamic>{
+        'enabled': _enabled,
+        'notifyEmails': _splitList(_emailsCtrl.text),
+        'notifyPhones': _splitList(_phonesCtrl.text),
+        'webhookUrl': _webhookCtrl.text.trim(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      await _ref.set(payload, SetOptions(merge: true));
+
+      if (!mounted) return;
+      messenger.showSnackBar(const SnackBar(content: Text('已儲存 SOS 通知設定')));
+      await _load(); // 重新同步一次
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('儲存失敗：$e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _editRawJson() async {
+    final messenger = ScaffoldMessenger.of(context);
+
+    // 先取目前 Firestore 快照（也可以用本地 _rawJsonCtrl.text）
+    Map<String, dynamic> current = <String, dynamic>{};
+    try {
+      final doc = await _ref.get();
+      current = doc.data() ?? <String, dynamic>{};
+    } catch (_) {}
+
+    if (!mounted) return;
+
+    final ctrl = TextEditingController(text: _prettyJson(current));
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text(
+          '編輯原始 JSON',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
+        content: SizedBox(
+          width: 720,
+          child: TextField(
+            controller: ctrl,
+            maxLines: 18,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              isDense: true,
+              hintText: '{ ... }',
+            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('套用'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      final parsed = json.decode(ctrl.text) as Map<String, dynamic>;
+      await _ref.set(parsed, SetOptions(merge: true));
+
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('已 merge JSON 到 Firestore')),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('JSON 套用失敗：$e')));
+    }
+  }
+
+  // -----------------------------
+  // UI
+  // -----------------------------
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    if (_error != null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text(
+            'SOS 通知設定',
+            style: TextStyle(fontWeight: FontWeight.w900),
+          ),
+          actions: [
+            IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+          ],
+        ),
+        body: Center(child: Text('載入失敗：$_error')),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SOS 通知設定', style: TextStyle(fontWeight: FontWeight.w900)),
+        title: const Text(
+          'SOS 通知設定',
+          style: TextStyle(fontWeight: FontWeight.w900),
+        ),
         actions: [
           IconButton(
-            tooltip: '重新整理',
+            tooltip: '重新載入',
+            onPressed: _busy ? null : _load,
             icon: const Icon(Icons.refresh),
-            onPressed: () => setState(() {}),
           ),
+          IconButton(
+            tooltip: '編輯原始 JSON',
+            onPressed: _busy ? null : _editRawJson,
+            icon: const Icon(Icons.code),
+          ),
+          FilledButton.icon(
+            onPressed: _busy ? null : _save,
+            icon: _busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save),
+            label: const Text('儲存'),
+          ),
+          const SizedBox(width: 10),
         ],
       ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _ref.snapshots(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return Center(child: Text('載入失敗：${snap.error}'));
-          }
-
-          final exists = snap.data?.exists == true;
-          final data = <String, dynamic>{
-            ..._defaults,
-            ...(snap.data?.data() ?? const <String, dynamic>{}),
-          };
-
-          bool enabled = data['enabled'] == true;
-          bool fcmEnabled = data['fcmEnabled'] == true;
-          bool lineEnabled = data['lineEnabled'] == true;
-          bool smsEnabled = data['smsEnabled'] == true;
-          bool notifyAdmins = data['notifyAdmins'] == true;
-
-          final adminIds = (data['adminUserIds'] is List)
-              ? (data['adminUserIds'] as List).map((e) => e.toString()).toList()
-              : <String>[];
-
-          _adminIdsCtrl.text = adminIds.join(',');
-          _lineTokenCtrl.text = (data['lineNotifyToken'] ?? '').toString();
-          _twilioFromCtrl.text = (data['twilioFrom'] ?? '').toString();
-
-          return ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              Card(
-                elevation: 0,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(exists ? '設定文件已建立' : '尚未建立設定文件',
-                          style: const TextStyle(fontWeight: FontWeight.w900)),
-                      const SizedBox(height: 10),
-                      FilledButton.tonalIcon(
-                        onPressed: exists ? null : _initIfMissing,
-                        icon: const Icon(Icons.add),
-                        label: const Text('初始化設定文件'),
-                      ),
-                    ],
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '總開關',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
                   ),
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              _title('總開關'),
-              Card(
-                elevation: 0,
-                child: SwitchListTile(
-                  title: const Text('啟用 SOS 通知', style: TextStyle(fontWeight: FontWeight.w900)),
-                  subtitle: Text('關閉後：FCM / Line / SMS 全部不發送',
-                      style: TextStyle(color: cs.onSurfaceVariant)),
-                  value: enabled,
-                  onChanged: (v) => _savePatch({'enabled': v}),
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              _title('通道設定'),
-              Card(
-                elevation: 0,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Column(
-                    children: [
-                      SwitchListTile(
-                        title: const Text('FCM 推播', style: TextStyle(fontWeight: FontWeight.w900)),
-                        subtitle: Text('對綁定監護人/管理員送推播',
-                            style: TextStyle(color: cs.onSurfaceVariant)),
-                        value: fcmEnabled,
-                        onChanged: enabled ? (v) => _savePatch({'fcmEnabled': v}) : null,
-                      ),
-                      SwitchListTile(
-                        title: const Text('Line Notify', style: TextStyle(fontWeight: FontWeight.w900)),
-                        subtitle: Text('使用 Line Notify Token 發送訊息到指定 Line',
-                            style: TextStyle(color: cs.onSurfaceVariant)),
-                        value: lineEnabled,
-                        onChanged: enabled ? (v) => _savePatch({'lineEnabled': v}) : null,
-                      ),
-                      if (lineEnabled) ...[
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                          child: TextField(
-                            controller: _lineTokenCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Line Notify Token',
-                              border: OutlineInputBorder(),
-                            ),
-                            obscureText: true,
-                          ),
-                        ),
-                      ],
-                      SwitchListTile(
-                        title: const Text('SMS', style: TextStyle(fontWeight: FontWeight.w900)),
-                        subtitle: Text('建議用 Twilio（走 Cloud Functions）',
-                            style: TextStyle(color: cs.onSurfaceVariant)),
-                        value: smsEnabled,
-                        onChanged: enabled ? (v) => _savePatch({'smsEnabled': v}) : null,
-                      ),
-                      if (smsEnabled) ...[
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                          child: TextField(
-                            controller: _twilioFromCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Twilio From（例如 +1xxxxxxxxxx）',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              _title('收件人：管理員'),
-              Card(
-                elevation: 0,
-                child: Column(
-                  children: [
-                    SwitchListTile(
-                      title: const Text('通知管理員', style: TextStyle(fontWeight: FontWeight.w900)),
-                      subtitle: Text('將 SOS 發送給 adminUserIds 內的人',
-                          style: TextStyle(color: cs.onSurfaceVariant)),
-                      value: notifyAdmins,
-                      onChanged: enabled ? (v) => _savePatch({'notifyAdmins': v}) : null,
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      '啟用 SOS 通知',
+                      style: TextStyle(fontWeight: FontWeight.w700),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                      child: TextField(
-                        controller: _adminIdsCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'adminUserIds（用逗號分隔）',
-                          helperText: '例如：uid1,uid2,uid3',
-                          border: OutlineInputBorder(),
-                        ),
+                    subtitle: const Text(
+                      '關閉後，後端仍可寫入 SOS 事件，但此設定可讓前台/後台決定是否發通知',
+                    ),
+                    value: _enabled,
+                    onChanged: (v) => setState(() => _enabled = v),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '通知收件人',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _emailsCtrl,
+                    minLines: 3,
+                    maxLines: 6,
+                    decoration: const InputDecoration(
+                      labelText: 'notifyEmails（每行一個或用逗號分隔）',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _phonesCtrl,
+                    minLines: 3,
+                    maxLines: 6,
+                    decoration: const InputDecoration(
+                      labelText: 'notifyPhones（每行一個或用逗號分隔）',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _webhookCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'webhookUrl（可空）',
+                      hintText: 'https://...',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '原始 JSON（檢視）',
+                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+                    ),
+                    child: Text(
+                      _rawJsonCtrl.text,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
                       ),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-
-              FilledButton.icon(
-                onPressed: _saving
-                    ? null
-                    : () async {
-                        setState(() => _saving = true);
-                        try {
-                          final ids = _adminIdsCtrl.text
-                              .split(',')
-                              .map((e) => e.trim())
-                              .where((s) => s.isNotEmpty)
-                              .toList();
-
-                          await _savePatch({
-                            'adminUserIds': ids,
-                            'lineNotifyToken': _lineTokenCtrl.text.trim(),
-                            'twilioFrom': _twilioFromCtrl.text.trim(),
-                          });
-
-                          if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('已儲存通知設定')),
-                          );
-                        } finally {
-                          if (mounted) setState(() => _saving = false);
-                        }
-                      },
-                icon: _saving
-                    ? SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: cs.onPrimary),
-                      )
-                    : const Icon(Icons.save_outlined),
-                label: Text(_saving ? '儲存中...' : '儲存'),
-              ),
-
-              const SizedBox(height: 12),
-              Card(
-                elevation: 0,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    '注意：\n'
-                    '1) Line Notify / SMS 必須走 Cloud Functions，App 端不要直接打第三方 API。\n'
-                    '2) FCM 需確保 users/{uid}.fcmTokens 有正確寫入。\n'
-                    '3) 建議在 SOS 事件建立時，一併寫入 childName / deviceId / location。\n',
-                    style: TextStyle(color: cs.onSurfaceVariant, height: 1.35),
                   ),
-                ),
+                ],
               ),
-            ],
-          );
-        },
+            ),
+          ),
+
+          const SizedBox(height: 30),
+        ],
       ),
     );
-  }
-
-  Widget _title(String t) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(t, style: const TextStyle(fontWeight: FontWeight.w900)),
-      );
-
-  Future<void> _initIfMissing() async {
-    await _ref.set({
-      ..._defaults,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
-
-  Future<void> _savePatch(Map<String, dynamic> patch) async {
-    await _ref.set({
-      ...patch,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
   }
 }

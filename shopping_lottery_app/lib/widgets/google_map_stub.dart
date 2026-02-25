@@ -18,28 +18,29 @@ class PlatformMapView extends StatelessWidget {
   Widget build(BuildContext context) {
     return CustomPaint(
       painter: _MapPainter(history),
-      child: const Center(
-        child: Text('模擬地圖（Web 測試模式）'),
-      ),
+      child: const Center(child: Text('模擬地圖（Web 測試模式）')),
     );
   }
 }
 
 class _MapPainter extends CustomPainter {
   final List<TrackingPoint> list;
-  _MapPainter(this.list);
+  const _MapPainter(this.list);
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (list.isEmpty) return;
+    if (list.isEmpty) {
+      return;
+    }
+
     final paint = Paint()
       ..color = Colors.blueAccent
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
 
     final path = Path();
-    final lats = list.map((e) => e.lat).toList();
-    final lngs = list.map((e) => e.lng).toList();
+    final lats = list.map((e) => e.lat).toList(growable: false);
+    final lngs = list.map((e) => e.lng).toList(growable: false);
 
     final minLat = lats.reduce((a, b) => a < b ? a : b);
     final maxLat = lats.reduce((a, b) => a > b ? a : b);
@@ -55,11 +56,17 @@ class _MapPainter extends CustomPainter {
       final p = list[i];
       final x = toX(p.lng);
       final y = toY(p.lat);
-      if (i == 0) path.moveTo(x, y);
-      else path.lineTo(x, y);
+
+      // ✅ 修正：if/else 加上大括號
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
     }
 
     canvas.drawPath(path, paint);
+
     final last = list.last;
     canvas.drawCircle(
       Offset(toX(last.lng), toY(last.lat)),
@@ -69,6 +76,11 @@ class _MapPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _MapPainter oldDelegate) =>
-      oldDelegate.list.length != list.length;
+  bool shouldRepaint(covariant _MapPainter oldDelegate) {
+    return oldDelegate.list.length != list.length ||
+        (oldDelegate.list.isNotEmpty &&
+            list.isNotEmpty &&
+            (oldDelegate.list.last.lat != list.last.lat ||
+                oldDelegate.list.last.lng != list.last.lng));
+  }
 }

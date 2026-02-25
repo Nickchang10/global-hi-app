@@ -43,12 +43,12 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions web = FirebaseOptions(
     apiKey: 'AIzaSyAtipjUHy_aInMD_WNY0JL_RsMfv88fTQY',
-    appId: '1:569654002656:web:93160142b0980e8313a185',
+    appId: '1:569654002656:web:60089c954fc5721913a185',
     messagingSenderId: '569654002656',
     projectId: 'global-hi-app',
     authDomain: 'global-hi-app.firebaseapp.com',
     storageBucket: 'global-hi-app.firebasestorage.app',
-    measurementId: 'G-RQ6YSSYKFB',
+    measurementId: 'G-BB1BHZHEJ6',
   );
 
   // =========================
