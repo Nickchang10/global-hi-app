@@ -1,28 +1,33 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+// lib/firebase_bootstrap.dart
+import 'dart:developer' as dev;
+
 import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
-import 'firebase_web_options.dart';
+import 'firebase_options.dart';
 
 class FirebaseBootstrap {
   FirebaseBootstrap._();
 
   static Future<void> ensureInitialized() async {
+    dev.log('FirebaseBootstrap.ensureInitialized() start', name: 'FB');
+
     WidgetsFlutterBinding.ensureInitialized();
 
-    // 避免 hot restart / 多處呼叫導致 duplicate-app
-    if (Firebase.apps.isNotEmpty) return;
+    dev.log('Firebase.apps.length(before)=${Firebase.apps.length}', name: 'FB');
 
-    if (kIsWeb) {
-      await Firebase.initializeApp(options: firebaseWebOptions);
-
-      // ✅ Web 端穩定化：關閉 persistence，避免 IndexedDB 狀態造成 firebase-js-sdk 內部崩潰
-      FirebaseFirestore.instance.settings = const Settings(
-        persistenceEnabled: false,
-      );
-    } else {
-      await Firebase.initializeApp();
+    if (Firebase.apps.isNotEmpty) {
+      dev.log('Firebase already initialized, skip', name: 'FB');
+      return;
     }
+
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    dev.log(
+      'Firebase initialized OK. apps=${Firebase.apps.map((e) => e.name).toList()}',
+      name: 'FB',
+    );
   }
 }
