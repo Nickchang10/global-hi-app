@@ -34,10 +34,27 @@ class _CheckoutPageState extends State<CheckoutPage> {
   // cart fallback
   List<Map<String, dynamic>> _cartItems = const [];
 
+  bool _parsedArgsOnce = false;
+
   @override
   void initState() {
     super.initState();
-    _parseArgs(widget.args);
+    // 注意：initState 不能安全拿 ModalRoute arguments
+    // 所以解析 arguments 放到 didChangeDependencies
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    if (_parsedArgsOnce) return;
+    _parsedArgsOnce = true;
+
+    // ✅ 兼容兩種：1) constructor args 2) pushNamed arguments
+    final routeArgs = ModalRoute.of(context)?.settings.arguments;
+    final args = widget.args ?? routeArgs;
+
+    _parseArgs(args);
     _loadItems();
   }
 
@@ -51,29 +68,32 @@ class _CheckoutPageState extends State<CheckoutPage> {
   }
 
   void _parseArgs(Object? args) {
+    List<Map<String, dynamic>> parsed = [];
+
     if (args is Map) {
       final di = args['directItems'];
       if (di is List) {
-        _directItems = di
+        parsed = di
             .whereType<Map>()
             .map((m) => Map<String, dynamic>.from(m))
             .toList();
-        _useDirect = _directItems.isNotEmpty;
       }
     } else if (args is List) {
-      _directItems = args
+      parsed = args
           .whereType<Map>()
           .map((m) => Map<String, dynamic>.from(m))
           .toList();
-      _useDirect = _directItems.isNotEmpty;
     }
+
+    _directItems = parsed;
+    _useDirect = _directItems.isNotEmpty;
   }
 
   Future<void> _loadItems() async {
     setState(() => _loadingItems = true);
     try {
       if (_useDirect) {
-        // 直接購買已帶入
+        // direct items 已帶入，不用讀 cart
         return;
       }
 
@@ -88,7 +108,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
           .get();
       if (a.docs.isNotEmpty) {
         _cartItems = a.docs
-            .map((d) => (d.data()))
+            .map((d) => d.data())
             .map((m) => Map<String, dynamic>.from(m))
             .toList();
         return;
@@ -101,7 +121,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
           .collection('items')
           .get();
       _cartItems = b.docs
-          .map((d) => (d.data()))
+          .map((d) => d.data())
           .map((m) => Map<String, dynamic>.from(m))
           .toList();
     } finally {
@@ -121,12 +141,27 @@ class _CheckoutPageState extends State<CheckoutPage> {
     return 0;
   }
 
+  int _qtyOf(Map<String, dynamic> it) {
+    final q = _toInt(it['qty'] ?? it['quantity'] ?? 1);
+    return q <= 0 ? 1 : q;
+  }
+
+  int _unitPriceOf(Map<String, dynamic> it) {
+    // ✅ 兼容 directItems / cartItems 欄位
+    return _toInt(it['unitPrice'] ?? it['price'] ?? it['amount'] ?? 0);
+  }
+
+  int _lineTotalOf(Map<String, dynamic> it) {
+    // ✅ 優先用 lineTotal（最不會算歪）
+    final lt = _toInt(it['lineTotal']);
+    if (lt > 0) return lt;
+    return _unitPriceOf(it) * _qtyOf(it);
+  }
+
   int _calcSubtotal(List<Map<String, dynamic>> items) {
     int sum = 0;
     for (final it in items) {
-      final price = _toInt(it['price']);
-      final qty = _toInt(it['qty'] ?? it['quantity'] ?? 1);
-      sum += price * (qty <= 0 ? 1 : qty);
+      sum += _lineTotalOf(it);
     }
     return sum;
   }
@@ -136,15 +171,26 @@ class _CheckoutPageState extends State<CheckoutPage> {
     return subtotal >= 999 ? 0 : 80;
   }
 
-  Future<void> _submit() async {
-    final messenger = ScaffoldMessenger.of(context);
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
+    );
+  }
 
+  Future<void> _submit() async {
     final name = _receiverName.text.trim();
     final phone = _receiverPhone.text.trim();
     final addr = _receiverAddress.text.trim();
 
     if (name.isEmpty || phone.isEmpty || addr.isEmpty) {
-      messenger.showSnackBar(const SnackBar(content: Text('請填寫完整收件資訊')));
+      _toast('請填寫完整收件資訊');
+      return;
+    }
+
+    final items = _useDirect ? _directItems : _cartItems;
+    if (items.isEmpty) {
+      _toast('沒有可結帳的商品');
       return;
     }
 
@@ -165,7 +211,9 @@ class _CheckoutPageState extends State<CheckoutPage> {
           directItems: _directItems,
         );
         if (!mounted) return;
-        messenger.showSnackBar(SnackBar(content: Text('下單成功：${r.orderId}')));
+
+        // ✅ 成功回傳 orderId 給上一頁
+        Navigator.of(context).pop({'orderId': r.orderId});
       } else {
         final r = await CheckoutSubmitService.instance.placeOrderFromCart(
           receiverName: name,
@@ -176,13 +224,11 @@ class _CheckoutPageState extends State<CheckoutPage> {
           couponCode: couponCode,
         );
         if (!mounted) return;
-        messenger.showSnackBar(SnackBar(content: Text('下單成功：${r.orderId}')));
-      }
 
-      if (!mounted) return;
-      Navigator.of(context).pop();
+        Navigator.of(context).pop({'orderId': r.orderId});
+      }
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('建立訂單失敗：$e')));
+      _toast('建立訂單失敗：$e');
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
@@ -194,7 +240,10 @@ class _CheckoutPageState extends State<CheckoutPage> {
 
     final subtotal = _calcSubtotal(items);
     final ship = _shippingFee(subtotal);
-    final total = subtotal + ship;
+
+    // ✅ 先預留折扣（你目前 UI 固定 0）
+    final discount = 0;
+    final total = subtotal + ship - discount;
 
     return Scaffold(
       appBar: AppBar(title: const Text('結帳')),
@@ -239,15 +288,15 @@ class _CheckoutPageState extends State<CheckoutPage> {
                 children: items.map((it) {
                   final title = (it['title'] ?? it['name'] ?? '未命名商品')
                       .toString();
-                  final price = _toInt(it['price']);
-                  final qty = _toInt(it['qty'] ?? it['quantity'] ?? 1);
+                  final unitPrice = _unitPriceOf(it);
+                  final qty = _qtyOf(it);
                   return ListTile(
                     title: Text(
                       title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    subtitle: Text('NT\$ $price ・ 數量 $qty'),
+                    subtitle: Text('NT\$ $unitPrice ・ 數量 $qty'),
                   );
                 }).toList(),
               ),
@@ -348,11 +397,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
                   ),
                   const SizedBox(width: 10),
                   OutlinedButton(
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('優惠碼將於下單時一併寫入 coupon_redemptions'),
-                      ),
-                    ),
+                    onPressed: () => _toast('優惠碼會在下單時帶入 couponCode'),
                     child: const Text('套用'),
                   ),
                 ],
@@ -371,7 +416,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
                 children: [
                   _moneyRow('小計', subtotal),
                   _moneyRow('運費', ship),
-                  _moneyRow('折扣', 0),
+                  _moneyRow('折扣', discount),
                   const Divider(),
                   _moneyRow('總計', total, bold: true),
                 ],

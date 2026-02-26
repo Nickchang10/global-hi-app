@@ -16,6 +16,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
   Map<String, dynamic>? _data;
   bool _loading = true;
+  bool _buying = false;
 
   int _qty = 1;
 
@@ -33,6 +34,12 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     if (v is num) return v.toInt();
     if (v is String) return int.tryParse(v.replaceAll(',', '').trim()) ?? 0;
     return 0;
+  }
+
+  int _price(Map<String, dynamic> p) {
+    // 常見欄位 fallback：price -> salePrice -> amount
+    final v = p['price'] ?? p['salePrice'] ?? p['amount'];
+    return _toInt(v);
   }
 
   String _title(Map<String, dynamic> p) {
@@ -68,26 +75,51 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   void _toast(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
     );
   }
 
-  void _buyNow(Map<String, dynamic> p) {
-    final item = <String, dynamic>{
-      'productId': widget.productId,
-      'title': _title(p),
-      'price': _toInt(p['price']),
-      'qty': _qty,
-      'imageUrl': _imageUrl(p),
-    };
+  Future<void> _buyNow(Map<String, dynamic> p) async {
+    if (_buying) return;
+    setState(() => _buying = true);
 
-    Navigator.of(context).pushNamed(
-      '/checkout',
-      arguments: {
-        'directItems': [item],
-      },
-    );
+    try {
+      final unitPrice = _price(p);
+      if (unitPrice <= 0) {
+        _toast('商品價格異常，請檢查 products/${widget.productId}.price');
+        return;
+      }
+
+      final item = <String, dynamic>{
+        'productId': widget.productId,
+        'title': _title(p),
+        'imageUrl': _imageUrl(p),
+
+        // ✅ 建議 checkout 全都用這兩個欄位作為唯一金額來源
+        'unitPrice': unitPrice,
+        'qty': _qty,
+        'lineTotal': unitPrice * _qty,
+      };
+
+      // ✅ 接住 checkout 回傳的 orderId（或其他結果）
+      final result = await Navigator.of(context).pushNamed(
+        '/checkout',
+        arguments: {
+          'directItems': [item],
+          'source': 'buyNow',
+        },
+      );
+
+      // Checkout 若用 Navigator.pop(context, {'orderId': 'xxx'}) 回來
+      if (!mounted) return;
+      if (result is Map && result['orderId'] != null) {
+        _toast('下單成功：${result['orderId']}');
+      }
+    } finally {
+      if (mounted) setState(() => _buying = false);
+    }
   }
 
   @override
@@ -144,7 +176,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'NT\$${_toInt(p['price'])}',
+                  'NT\$${_price(p)}',
                   style: const TextStyle(
                     color: Colors.redAccent,
                     fontWeight: FontWeight.w900,
@@ -182,7 +214,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: () => _toast('加入購物車：你若要串接 cart 我可以再幫你接'),
+                        onPressed: () => _toast('加入購物車：下一步再把 cart 串起來'),
                         icon: const Icon(Icons.add_shopping_cart_outlined),
                         label: const Text('加入購物車'),
                       ),
@@ -190,9 +222,17 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: ElevatedButton.icon(
-                        onPressed: () => _buyNow(p),
-                        icon: const Icon(Icons.shopping_bag_outlined),
-                        label: const Text('立即購買'),
+                        onPressed: _buying ? null : () => _buyNow(p),
+                        icon: _buying
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.shopping_bag_outlined),
+                        label: Text(_buying ? '處理中...' : '立即購買'),
                       ),
                     ),
                   ],

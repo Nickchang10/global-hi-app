@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'order_detail_page.dart';
+import 'orders/order_detail_page.dart';
 
 /// ✅ OrderHistoryPage（訂單歷史｜修改後完整版）
 /// ------------------------------------------------------------
