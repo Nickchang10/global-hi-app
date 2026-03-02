@@ -1,7 +1,7 @@
 // lib/widgets/common_appbar.dart
 import 'package:flutter/material.dart';
-import '../pages/cart_page.dart';
-import '../pages/notification_page.dart';
+import '../pages/cart/cart_page.dart';
+import '../pages/notifications/notifications_page.dart';
 
 PreferredSizeWidget buildCommonAppBar(BuildContext context, String title) {
   return AppBar(

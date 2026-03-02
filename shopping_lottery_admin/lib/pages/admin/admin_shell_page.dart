@@ -1,118 +1,127 @@
-// lib/pages/admin/admin_shell_page.dart
-//
-// ✅ AdminShellPage（管理總覽｜修正版｜避免 Unknown route）
-// ------------------------------------------------------------
-// - 用 ScaffoldWithDrawer 統一後台 Layout
-// - 以「快捷入口」方式導到各管理模組（用 Named Routes）
-// - ✅ 已把容易 Unknown 的路由改成你 main.dart 已註冊的路由：
-//   - 行銷中心：/admin/coupons（原 /admin-marketing）
-//   - 報表統計：/admin_reports_dashboard（原 /reports）
-//   - 通知中心：/notifications（原 /user-notifications）
-// - 其餘若你尚未建立（/admin-content、/admin-settings），先留著，下一步再補 main.dart 路由
-// ------------------------------------------------------------
-
 import 'package:flutter/material.dart';
 import '../../layouts/scaffold_with_drawer.dart';
+
+// ✅ 重要：引入商品模組
+import 'products/admin_products_page.dart';
 
 class AdminShellPage extends StatelessWidget {
   const AdminShellPage({super.key});
 
-  /// ✅ 與 main.dart 登入後導入的路由一致（你是 pushReplacementNamed('/dashboard')）
-  static const String routeName = '/dashboard';
+  static const String routeName = '/admin';
 
   @override
   Widget build(BuildContext context) {
+    final raw = ModalRoute.of(context)?.settings.name ?? routeName;
+    final normalized = _normalize(raw);
+
     return ScaffoldWithDrawer(
-      title: '管理總覽',
-
-      // ✅ FIX: 你的 ScaffoldWithDrawer 需要 currentRoute（required）
-      currentRoute: routeName,
-
-      // ✅ FIX: 你的 ScaffoldWithDrawer 需要 body（required）
-      body: const _Body(),
+      title: _title(normalized),
+      currentRoute: normalized,
+      body: _body(normalized, context),
     );
+  }
+
+  Widget _body(String route, BuildContext context) {
+    switch (route) {
+      case '/admin/products':
+        return const AdminProductsModule();
+
+      case '/admin/orders':
+        return const _ModulePlaceholder(title: '訂單管理（待接上）');
+
+      case '/admin/campaigns':
+        return const _ModulePlaceholder(title: '活動管理（待接上）');
+
+      // 讓商品新增/詳情 route 也先不 Unknown（先顯示 placeholder）
+      case '/admin_product_edit':
+        final args = ModalRoute.of(context)?.settings.arguments;
+        final pid = (args is Map) ? (args['productId']?.toString() ?? '') : '';
+        return _ModulePlaceholder(
+          title: pid.isEmpty ? '新增商品（待接上編輯頁）' : '編輯商品 $pid（待接上編輯頁）',
+        );
+
+      case '/admin_product_detail':
+        final args = ModalRoute.of(context)?.settings.arguments;
+        final pid = (args is Map) ? (args['productId']?.toString() ?? '') : '';
+        return _ModulePlaceholder(
+          title: pid.isEmpty ? '商品詳情（缺 productId）' : '商品詳情 $pid（待接上詳情頁）',
+        );
+
+      default:
+        return const _DashboardBody();
+    }
+  }
+
+  String _title(String route) {
+    switch (route) {
+      case '/admin/products':
+        return '商品管理';
+      case '/admin/orders':
+        return '訂單管理';
+      case '/admin/campaigns':
+        return '活動管理';
+      default:
+        return '管理總覽';
+    }
   }
 }
 
-class _Body extends StatelessWidget {
-  const _Body();
+/// hyphen → slash 統一
+String _normalize(String r) {
+  if (r == '/admin-products') return '/admin/products';
+  if (r == '/admin-orders') return '/admin/orders';
+  if (r == '/admin-campaigns') return '/admin/campaigns';
+  return r.isEmpty ? '/admin' : r;
+}
+
+class _DashboardBody extends StatelessWidget {
+  const _DashboardBody();
 
   @override
   Widget build(BuildContext context) {
-    final items = <_AdminEntry>[
-      _AdminEntry(
-        title: '商品管理',
-        subtitle: '新增/編輯/上架/庫存',
-        icon: Icons.inventory_2_outlined,
-        route: '/admin-products',
+    final items = <_Entry>[
+      _Entry(
+        '商品管理',
+        '新增/編輯/上架/庫存',
+        Icons.inventory_2_outlined,
+        '/admin/products',
       ),
-      _AdminEntry(
-        title: '訂單管理',
-        subtitle: '查詢/出貨/退款/批次',
-        icon: Icons.receipt_long_outlined,
-        route: '/admin-orders',
+      _Entry(
+        '訂單管理',
+        '查詢/出貨/退款/批次',
+        Icons.receipt_long_outlined,
+        '/admin/orders',
       ),
-      _AdminEntry(
-        title: '會員管理',
-        subtitle: '會員列表/積分/任務',
-        icon: Icons.people_alt_outlined,
-        route: '/admin-members',
-      ),
-
-      // ✅ 直接導到優惠券（你 main.dart 已有 /admin/coupons）
-      _AdminEntry(
-        title: '行銷中心',
-        subtitle: '優惠券/抽獎/分群/自動派發',
-        icon: Icons.campaign_outlined,
-        route: '/admin/coupons',
-      ),
-
-      // ⚠️ 你若還沒在 main.dart 補 /admin-content，點了會 Unknown
-      _AdminEntry(
-        title: '公告/內容',
-        subtitle: '公告/FAQ/頁面內容',
-        icon: Icons.announcement_outlined,
-        route: '/admin-content',
-      ),
-
-      // ✅ 你 main.dart 已有 /admin_reports_dashboard
-      _AdminEntry(
-        title: '報表統計',
-        subtitle: '營運/轉換/成效',
-        icon: Icons.bar_chart_outlined,
-        route: '/admin_reports_dashboard',
-      ),
-
-      // ⚠️ 你若還沒在 main.dart 補 /admin-settings，點了會 Unknown
-      _AdminEntry(
-        title: '系統設定',
-        subtitle: '角色/權限/設定',
-        icon: Icons.settings_outlined,
-        route: '/admin-settings',
-      ),
-
-      // ✅ 你 main.dart 已有 /notifications
-      _AdminEntry(
-        title: '通知中心',
-        subtitle: '推播/站內通知',
-        icon: Icons.notifications_outlined,
-        route: '/notifications',
+      _Entry(
+        '活動管理',
+        '優惠券/抽獎/分群/派發',
+        Icons.campaign_outlined,
+        '/admin/campaigns',
       ),
     ];
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _buildHeader(context),
+        _header(context),
         const SizedBox(height: 12),
-        _buildGrid(context, items),
-        const SizedBox(height: 16),
-        _buildTipsCard(context),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: items.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 1.35,
+          ),
+          itemBuilder: (_, i) => _Card(entry: items[i]),
+        ),
       ],
     );
   }
 
-  Widget _buildHeader(BuildContext context) {
+  Widget _header(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.all(16),
@@ -120,11 +129,11 @@ class _Body extends StatelessWidget {
         color: cs.primaryContainer,
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Row(
+      child: const Row(
         children: [
-          Icon(Icons.dashboard_outlined, color: cs.primary, size: 28),
-          const SizedBox(width: 10),
-          const Expanded(
+          Icon(Icons.dashboard_outlined, size: 28),
+          SizedBox(width: 10),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -141,56 +150,15 @@ class _Body extends StatelessWidget {
       ),
     );
   }
-
-  Widget _buildGrid(BuildContext context, List<_AdminEntry> items) {
-    return LayoutBuilder(
-      builder: (context, c) {
-        final w = c.maxWidth;
-        final crossAxisCount = w >= 980 ? 4 : (w >= 680 ? 3 : 2);
-
-        return GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: items.length,
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
-            childAspectRatio: 1.35,
-          ),
-          itemBuilder: (_, i) => _EntryCard(entry: items[i]),
-        );
-      },
-    );
-  }
-
-  Widget _buildTipsCard(BuildContext context) {
-    return Card(
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text('小提醒', style: TextStyle(fontWeight: FontWeight.bold)),
-            SizedBox(height: 8),
-            Text('• 如果某路由尚未建立，點擊會跳轉失敗：請先在 main.dart onGenerateRoute 補上對應頁面。'),
-            Text('• Dead code 多半是 non-nullable + `??`：把 `??` 移掉或改成 nullable。'),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
-class _EntryCard extends StatelessWidget {
-  final _AdminEntry entry;
-  const _EntryCard({required this.entry});
+class _Card extends StatelessWidget {
+  final _Entry entry;
+  const _Card({required this.entry});
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: () => Navigator.pushNamed(context, entry.route),
@@ -200,13 +168,6 @@ class _EntryCard extends StatelessWidget {
           color: Colors.white,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: Colors.grey.shade200),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.04),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
         ),
         child: Row(
           children: [
@@ -235,8 +196,6 @@ class _EntryCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     entry.subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: Colors.grey.shade700),
                   ),
                 ],
@@ -250,16 +209,22 @@ class _EntryCard extends StatelessWidget {
   }
 }
 
-class _AdminEntry {
+class _Entry {
   final String title;
   final String subtitle;
   final IconData icon;
   final String route;
+  const _Entry(this.title, this.subtitle, this.icon, this.route);
+}
 
-  const _AdminEntry({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-    required this.route,
-  });
+class _ModulePlaceholder extends StatelessWidget {
+  final String title;
+  const _ModulePlaceholder({required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+    );
+  }
 }

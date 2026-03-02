@@ -25,14 +25,32 @@ class CheckoutSubmitService {
     return int.tryParse(s) ?? (double.tryParse(s)?.round() ?? 0);
   }
 
+  int _qtyOf(Map<String, dynamic> it) {
+    final q = _toInt(it['qty'] ?? it['quantity'] ?? 1);
+    return q <= 0 ? 1 : q;
+  }
+
+  int _unitPriceOf(Map<String, dynamic> it) {
+    return _toInt(
+      it['unitPriceSnapshot'] ??
+          it['priceSnapshot'] ??
+          it['unitPrice'] ??
+          it['price'] ??
+          it['amount'] ??
+          0,
+    );
+  }
+
+  int _lineTotalOf(Map<String, dynamic> it) {
+    final lt = _toInt(it['lineTotalSnapshot'] ?? it['lineTotal']);
+    if (lt > 0) return lt;
+    return _unitPriceOf(it) * _qtyOf(it);
+  }
+
   int _calcSubtotal(List<Map<String, dynamic>> items) {
     int sum = 0;
     for (final it in items) {
-      final price = _toInt(
-        it['priceSnapshot'] ?? it['price'] ?? it['unitPrice'],
-      );
-      final qty = _toInt(it['qty'] ?? it['quantity'] ?? 1);
-      sum += price * (qty <= 0 ? 1 : qty);
+      sum += _lineTotalOf(it);
     }
     return sum;
   }
@@ -42,7 +60,6 @@ class CheckoutSubmitService {
     return subtotal >= 999 ? 0 : 80;
   }
 
-  /// 將 direct/cart items 統一成 order items 結構
   List<Map<String, dynamic>> _normalizeItems(List<Map<String, dynamic>> raw) {
     final out = <Map<String, dynamic>>[];
 
@@ -51,23 +68,26 @@ class CheckoutSubmitService {
       final title = _s(
         it['title'] ?? it['name'] ?? it['productTitle'] ?? '未命名商品',
       );
-      final qty = _toInt(it['qty'] ?? it['quantity'] ?? 1);
-      final price = _toInt(
-        it['price'] ?? it['unitPrice'] ?? it['priceSnapshot'],
-      );
+      final imageUrl = _s(it['imageUrl'] ?? it['image'] ?? it['img'] ?? '');
+
+      final qty = _qtyOf(it);
+      final unitPrice = _unitPriceOf(it);
+      final lineTotal = _lineTotalOf(it);
 
       out.add({
         'productId': productId,
         'nameSnapshot': title,
-        'qty': qty <= 0 ? 1 : qty,
-        'priceSnapshot': price < 0 ? 0 : price,
+        'imageUrlSnapshot': imageUrl,
+        'qty': qty,
+        'unitPriceSnapshot': unitPrice < 0 ? 0 : unitPrice,
+        'priceSnapshot': unitPrice < 0 ? 0 : unitPrice, // 保留舊欄位
+        'lineTotalSnapshot': lineTotal < 0 ? 0 : lineTotal,
       });
     }
 
     return out;
   }
 
-  /// 讀取購物車（支援 users/{uid}/cart_items、carts/{uid}/items）
   Future<List<Map<String, dynamic>>> _loadCartItems(String uid) async {
     // 1) users/{uid}/cart_items
     try {
@@ -79,9 +99,7 @@ class CheckoutSubmitService {
       if (a.docs.isNotEmpty) {
         return a.docs.map((d) => Map<String, dynamic>.from(d.data())).toList();
       }
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
 
     // 2) carts/{uid}/items
     try {
@@ -137,10 +155,10 @@ class CheckoutSubmitService {
   }) async {
     final uid = _auth.currentUser?.uid;
     if (uid == null) throw Exception('請先登入');
-
     if (directItems.isEmpty) throw Exception('沒有商品');
 
     final normalized = _normalizeItems(directItems);
+
     return _createOrder(
       uid: uid,
       items: normalized,
@@ -151,6 +169,7 @@ class CheckoutSubmitService {
       paymentMethod: paymentMethod,
       couponCode: couponCode,
       clearCartAfter: false,
+      source: 'direct',
     );
   }
 
@@ -169,6 +188,7 @@ class CheckoutSubmitService {
     if (cartRaw.isEmpty) throw Exception('購物車是空的');
 
     final normalized = _normalizeItems(cartRaw);
+
     return _createOrder(
       uid: uid,
       items: normalized,
@@ -179,6 +199,7 @@ class CheckoutSubmitService {
       paymentMethod: paymentMethod,
       couponCode: couponCode,
       clearCartAfter: true,
+      source: 'cart',
     );
   }
 
@@ -192,25 +213,26 @@ class CheckoutSubmitService {
     required String paymentMethod,
     String? couponCode,
     required bool clearCartAfter,
+    required String source,
   }) async {
     if (items.isEmpty) throw Exception('沒有商品');
 
     final subtotal = _calcSubtotal(items);
     final shippingFee = _shippingFee(shippingMethod, subtotal);
 
-    // 先不做折扣，留接口（符合你 UI 現在折扣=0）
+    // 先不做折扣，符合你目前 UI 折扣=0
     final discount = 0;
 
     final total = subtotal + shippingFee - discount;
+    if (total < 0) throw Exception('金額異常（total < 0）');
 
     final ref = _db.collection('orders').doc();
 
-    // ✅ 這份 payload 對齊你 rules：
-    // - owner: uid/buyerUid/userId 任一需等於自己（我三個都寫）
-    // - items: list > 0
-    // - paymentMethod: string
-    // - total: number
-    // - status: created (允許)
+    final normalizedCoupon = (couponCode ?? '').trim();
+    final couponOut = normalizedCoupon.isEmpty
+        ? null
+        : normalizedCoupon.toUpperCase();
+
     final payload = <String, dynamic>{
       'uid': uid,
       'buyerUid': uid,
@@ -220,12 +242,25 @@ class CheckoutSubmitService {
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
 
+      'source': source,
+
       'items': items,
 
+      // 舊欄位（你原本就有）
       'subtotal': subtotal,
       'shippingFee': shippingFee,
       'discount': discount,
       'total': total,
+
+      // ✅ 新增 pricing 快照（不破壞舊欄位）
+      'pricing': {
+        'subTotal': subtotal,
+        'shippingFee': shippingFee,
+        'discount': discount,
+        'total': total,
+        'currency': 'TWD',
+        if (couponOut != null) 'couponCode': couponOut,
+      },
 
       'receiverName': receiverName,
       'receiverPhone': receiverPhone,
@@ -234,8 +269,7 @@ class CheckoutSubmitService {
       'shippingMethod': shippingMethod,
       'paymentMethod': paymentMethod,
 
-      if (couponCode != null && couponCode.trim().isNotEmpty)
-        'couponCode': couponCode.trim(),
+      if (couponOut != null) 'couponCode': couponOut,
     };
 
     await ref.set(payload);

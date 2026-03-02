@@ -1,24 +1,21 @@
 // lib/pages/admin/products/admin_product_detail_page.dart
 //
-// ✅ AdminProductDetailPage（商品詳情｜完整版｜可編譯）
+// ✅ AdminProductDetailPage（商品詳情｜最終完整版｜可編譯）
 // ------------------------------------------------------------
 // - Firestore: products/{productId}
 // - 顯示：名稱 / 價格 / 狀態 / 庫存 / 分類 / 圖片 / 描述 / tags
-// - 操作：上架/下架、調整庫存、編輯基本資料（名稱/價格/分類/描述）、編輯 tags
+// - 操作：上架/下架、調整庫存、快速編輯基本資料、編輯 tags、✅開啟完整編輯頁、✅刪除商品
 // - ✅ FIX: withOpacity deprecated → withValues(alpha: 0~1)
-// - 相容 Web/桌面/手機
+// - Web/桌面/手機相容
 //
 // 路由建議：
 // '/admin_product_detail': (_) => const AdminProductDetailPage(),
 // Navigator.pushNamed(context, '/admin_product_detail', arguments: {'productId': id});
-//
-// 若你的欄位命名不同（如 price / salePrice / stockQty / images），告訴我我直接改成你的結構。
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-/// ✅ FIX: withOpacity deprecated → withValues(alpha: 0~1)
 Color _withOpacity(Color c, double opacity01) {
   final o = opacity01.clamp(0.0, 1.0).toDouble();
   return c.withValues(alpha: o);
@@ -37,24 +34,22 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
   String? _productId;
   String? _argError;
 
+  final _money = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
+  final _df = DateFormat('yyyy/MM/dd HH:mm');
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_productId != null || _argError != null) {
-      return;
-    }
+    if (_productId != null || _argError != null) return;
 
     final args = ModalRoute.of(context)?.settings.arguments;
 
     String? pid;
     if (args is String) {
       pid = args.trim();
-    }
-    if (args is Map) {
+    } else if (args is Map) {
       final v = args['productId'] ?? args['id'];
-      if (v != null) {
-        pid = v.toString().trim();
-      }
+      if (v != null) pid = v.toString().trim();
     }
 
     if (pid == null || pid.isEmpty) {
@@ -70,9 +65,6 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
 
   DocumentReference<Map<String, dynamic>> get _ref =>
       _db.collection('products').doc(_productId!);
-
-  final _money = NumberFormat.currency(locale: 'zh_TW', symbol: 'NT\$');
-  final _df = DateFormat('yyyy/MM/dd HH:mm');
 
   // ===========================================================
   // Utils
@@ -106,6 +98,20 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
     for (final x in v) {
       final t = (x ?? '').toString().trim();
       if (t.isNotEmpty) out.add(t);
+    }
+    return out;
+  }
+
+  List<String> _uniqueKeepOrder(List<String> input) {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final u in input) {
+      final k = u.trim();
+      if (k.isEmpty) continue;
+      final key = k.toLowerCase();
+      if (seen.contains(key)) continue;
+      seen.add(key);
+      out.add(k);
     }
     return out;
   }
@@ -316,6 +322,34 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
     }
   }
 
+  void _openFullEdit() {
+    Navigator.pushNamed(
+      context,
+      '/admin_product_edit',
+      arguments: {'productId': _productId},
+    );
+  }
+
+  Future<void> _deleteProduct() async {
+    final ok = await _confirm(
+      title: '刪除商品',
+      message: '確定要刪除此商品嗎？\n此動作無法復原。\nproductId: $_productId',
+      confirmText: '刪除',
+      danger: true,
+    );
+    if (!ok) return;
+
+    try {
+      await _ref.delete();
+      if (!mounted) return;
+      _snack('已刪除商品');
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      _snack('刪除失敗：$e');
+    }
+  }
+
   // ===========================================================
   // UI
   // ===========================================================
@@ -393,8 +427,14 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
           final desc = _s(d['description']);
           final tags = _strList(d['tags']);
 
+          // ✅ 封面優先 imageUrl，再接 images，並去重
+          final imageUrl = _s(d['imageUrl']);
           final images = _strList(d['images'] ?? d['imageUrls']);
-          final cover = images.isNotEmpty ? images.first : _s(d['imageUrl']);
+          final allImages = _uniqueKeepOrder([
+            if (imageUrl.isNotEmpty) imageUrl,
+            ...images,
+          ]);
+          final cover = allImages.isNotEmpty ? allImages.first : '';
 
           final createdAt = _toDt(d['createdAt']);
           final updatedAt = _toDt(d['updatedAt']);
@@ -452,7 +492,6 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
                         ],
                       ),
                       const SizedBox(height: 10),
-
                       Wrap(
                         spacing: 10,
                         runSpacing: 8,
@@ -462,7 +501,6 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
                           _pill('分類', category.isEmpty ? '—' : category),
                         ],
                       ),
-
                       if (createdAt != null || updatedAt != null) ...[
                         const SizedBox(height: 10),
                         Text(
@@ -478,8 +516,8 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
                           ),
                         ),
                       ],
-
                       const SizedBox(height: 12),
+
                       Wrap(
                         spacing: 10,
                         runSpacing: 10,
@@ -501,12 +539,25 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
                           OutlinedButton.icon(
                             onPressed: () => _editBasic(d),
                             icon: const Icon(Icons.edit_outlined),
-                            label: const Text('編輯基本資料'),
+                            label: const Text('快速編輯'),
                           ),
                           OutlinedButton.icon(
                             onPressed: () => _editTags(tags),
                             icon: const Icon(Icons.sell_outlined),
                             label: const Text('編輯 Tags'),
+                          ),
+                          FilledButton.icon(
+                            onPressed: _openFullEdit,
+                            icon: const Icon(Icons.open_in_new),
+                            label: const Text('完整編輯頁'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _deleteProduct,
+                            icon: Icon(Icons.delete_outline, color: cs.error),
+                            label: Text(
+                              '刪除',
+                              style: TextStyle(color: cs.error),
+                            ),
                           ),
                         ],
                       ),
@@ -515,7 +566,7 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
                 ),
               ),
 
-              if (cover.isNotEmpty || images.isNotEmpty) ...[
+              if (cover.isNotEmpty || allImages.isNotEmpty) ...[
                 Card(
                   elevation: 0,
                   shape: RoundedRectangleBorder(
@@ -541,13 +592,13 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
                             '（無封面）',
                             style: TextStyle(color: cs.onSurfaceVariant),
                           ),
-                        if (images.length > 1) ...[
+                        if (allImages.length > 1) ...[
                           const SizedBox(height: 10),
                           Wrap(
                             spacing: 10,
                             runSpacing: 10,
                             children: [
-                              for (final u in images.skip(1).take(8))
+                              for (final u in allImages.skip(1).take(10))
                                 SizedBox(width: 160, child: _ImageTile(url: u)),
                             ],
                           ),
@@ -618,14 +669,10 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
                           ],
                         ),
                       const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          FilledButton.tonalIcon(
-                            onPressed: () => _editTags(tags),
-                            icon: const Icon(Icons.edit),
-                            label: const Text('編輯 Tags'),
-                          ),
-                        ],
+                      FilledButton.tonalIcon(
+                        onPressed: () => _editTags(tags),
+                        icon: const Icon(Icons.edit),
+                        label: const Text('編輯 Tags'),
                       ),
                     ],
                   ),
@@ -654,9 +701,6 @@ class _AdminProductDetailPageState extends State<AdminProductDetailPage> {
   }
 }
 
-// ============================================================================
-// Dialog: Tags
-// ============================================================================
 class _TagsDialog extends StatefulWidget {
   final List<String> initial;
   const _TagsDialog({required this.initial});
@@ -684,12 +728,8 @@ class _TagsDialogState extends State<_TagsDialog> {
 
   void _addTag(String t) {
     final s = t.trim();
-    if (s.isEmpty) {
-      return;
-    }
-    if (tags.map((e) => e.toLowerCase()).contains(s.toLowerCase())) {
-      return;
-    }
+    if (s.isEmpty) return;
+    if (tags.map((e) => e.toLowerCase()).contains(s.toLowerCase())) return;
     setState(() {
       tags.add(s);
       tags.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
@@ -778,9 +818,6 @@ class _TagsDialogState extends State<_TagsDialog> {
   }
 }
 
-// ============================================================================
-// Shared small views
-// ============================================================================
 class _ImageTile extends StatelessWidget {
   const _ImageTile({required this.url});
   final String url;

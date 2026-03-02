@@ -4,12 +4,12 @@ import 'package:provider/provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import '../services/auth_service.dart';
+import '../services/auth/auth_service.dart';
 import '../services/admin_gate.dart';
 import '../services/app_config_service.dart';
 import '../widgets/user_info_badge.dart';
 
-import 'login_page.dart';
+import 'auth/login_page.dart';
 
 class AppConfigPage extends StatefulWidget {
   const AppConfigPage({super.key});

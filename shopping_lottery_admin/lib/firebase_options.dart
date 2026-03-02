@@ -1,11 +1,7 @@
-// lib/firebase_options.dart
 import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 
-/// ⚠️ 佔位版：先讓專案能編譯/跑起來
-/// 請把下面的 apiKey / appId / messagingSenderId / projectId…
-/// 換成你 Firebase Console 的真實設定，或重新跑 flutterfire configure 產生正式檔案。
 class DefaultFirebaseOptions {
   static FirebaseOptions get currentPlatform {
     if (kIsWeb) return web;
@@ -22,7 +18,7 @@ class DefaultFirebaseOptions {
       case TargetPlatform.linux:
         return linux;
       default:
-        return android;
+        return web; // ✅ 更安全
     }
   }
 
@@ -35,8 +31,6 @@ class DefaultFirebaseOptions {
     storageBucket: 'global-hi-app.firebasestorage.app',
     measurementId: 'G-BB1BHZHEJ6',
   );
-
-  // ✅ 下面全部請換成真實值（先填佔位也能編譯，但 Firebase 可能無法連線）
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyBbQVFqXoXlsxZ0H55NHVfYT9gYbTAxRS0',
@@ -52,7 +46,8 @@ class DefaultFirebaseOptions {
     messagingSenderId: '569654002656',
     projectId: 'global-hi-app',
     storageBucket: 'global-hi-app.firebasestorage.app',
-    iosClientId: '569654002656-a43cdjeit5ch9parl4c4hil4hbk875vd.apps.googleusercontent.com',
+    iosClientId:
+        '569654002656-a43cdjeit5ch9parl4c4hil4hbk875vd.apps.googleusercontent.com',
     iosBundleId: 'com.example.shoppingLotteryAdmin',
   );
 
@@ -62,7 +57,8 @@ class DefaultFirebaseOptions {
     messagingSenderId: '569654002656',
     projectId: 'global-hi-app',
     storageBucket: 'global-hi-app.firebasestorage.app',
-    iosClientId: '569654002656-a43cdjeit5ch9parl4c4hil4hbk875vd.apps.googleusercontent.com',
+    iosClientId:
+        '569654002656-a43cdjeit5ch9parl4c4hil4hbk875vd.apps.googleusercontent.com',
     iosBundleId: 'com.example.shoppingLotteryAdmin',
   );
 
@@ -76,10 +72,5 @@ class DefaultFirebaseOptions {
     measurementId: 'G-BB1BHZHEJ6',
   );
 
-  static const FirebaseOptions linux = FirebaseOptions(
-    apiKey: 'REPLACE_ME',
-    appId: 'REPLACE_ME',
-    messagingSenderId: 'REPLACE_ME',
-    projectId: 'REPLACE_ME',
-  );
+  static const FirebaseOptions linux = web; // ✅ 不要 REPLACE_ME
 }

@@ -15,7 +15,7 @@ import 'package:provider/provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../services/product_service.dart';
-import '../services/auth_service.dart';
+import '../services/auth/auth_service.dart';
 import '../services/admin_gate.dart';
 import '../widgets/user_info_badge.dart';
 import '../utils/csv_download.dart';

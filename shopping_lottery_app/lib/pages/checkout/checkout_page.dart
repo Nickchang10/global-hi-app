@@ -28,29 +28,27 @@ class _CheckoutPageState extends State<CheckoutPage> {
   String _paymentMethod = 'card';
 
   // direct buy
-  List<Map<String, dynamic>> _directItems = const [];
+  List<Map<String, dynamic>> _directItems = [];
   bool _useDirect = false;
 
   // cart fallback
-  List<Map<String, dynamic>> _cartItems = const [];
+  List<Map<String, dynamic>> _cartItems = [];
 
   bool _parsedArgsOnce = false;
 
   @override
   void initState() {
     super.initState();
-    // 注意：initState 不能安全拿 ModalRoute arguments
-    // 所以解析 arguments 放到 didChangeDependencies
+    // initState 不讀 ModalRoute；解析 args 放 didChangeDependencies
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-
     if (_parsedArgsOnce) return;
     _parsedArgsOnce = true;
 
-    // ✅ 兼容兩種：1) constructor args 2) pushNamed arguments
+    // ✅ 兼容：constructor args + route args
     final routeArgs = ModalRoute.of(context)?.settings.arguments;
     final args = widget.args ?? routeArgs;
 
@@ -92,10 +90,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
   Future<void> _loadItems() async {
     setState(() => _loadingItems = true);
     try {
-      if (_useDirect) {
-        // direct items 已帶入，不用讀 cart
-        return;
-      }
+      if (_useDirect) return;
 
       final uid = _auth.currentUser?.uid;
       if (uid == null) return;
@@ -115,11 +110,8 @@ class _CheckoutPageState extends State<CheckoutPage> {
       }
 
       // 再試 carts/{uid}/items
-      final b = await _db
-          .collection('carts')
-          .doc(uid)
-          .collection('items')
-          .get();
+      final b =
+          await _db.collection('carts').doc(uid).collection('items').get();
       _cartItems = b.docs
           .map((d) => d.data())
           .map((m) => Map<String, dynamic>.from(m))
@@ -147,13 +139,18 @@ class _CheckoutPageState extends State<CheckoutPage> {
   }
 
   int _unitPriceOf(Map<String, dynamic> it) {
-    // ✅ 兼容 directItems / cartItems 欄位
-    return _toInt(it['unitPrice'] ?? it['price'] ?? it['amount'] ?? 0);
+    return _toInt(
+      it['unitPriceSnapshot'] ??
+          it['priceSnapshot'] ??
+          it['unitPrice'] ??
+          it['price'] ??
+          it['amount'] ??
+          0,
+    );
   }
 
   int _lineTotalOf(Map<String, dynamic> it) {
-    // ✅ 優先用 lineTotal（最不會算歪）
-    final lt = _toInt(it['lineTotal']);
+    final lt = _toInt(it['lineTotalSnapshot'] ?? it['lineTotal']);
     if (lt > 0) return lt;
     return _unitPriceOf(it) * _qtyOf(it);
   }
@@ -194,11 +191,16 @@ class _CheckoutPageState extends State<CheckoutPage> {
       return;
     }
 
+    // ✅ 金額（與 service 同邏輯）
+    final subtotal = _calcSubtotal(items);
+    final ship = _shippingFee(subtotal);
+    final discount = 0;
+    final total = subtotal + ship - discount;
+
     setState(() => _submitting = true);
     try {
-      final couponCode = _coupon.text.trim().isEmpty
-          ? null
-          : _coupon.text.trim();
+      final couponCode =
+          _coupon.text.trim().isEmpty ? null : _coupon.text.trim();
 
       if (_useDirect) {
         final r = await CheckoutSubmitService.instance.placeOrderDirect(
@@ -212,8 +214,14 @@ class _CheckoutPageState extends State<CheckoutPage> {
         );
         if (!mounted) return;
 
-        // ✅ 成功回傳 orderId 給上一頁
-        Navigator.of(context).pop({'orderId': r.orderId});
+        // ✅ 前端金流流程：下單成功 → 進付款頁
+        Navigator.of(context).pushReplacementNamed(
+          '/payment',
+          arguments: {
+            'orderId': r.orderId,
+            'amount': total,
+          },
+        );
       } else {
         final r = await CheckoutSubmitService.instance.placeOrderFromCart(
           receiverName: name,
@@ -225,7 +233,13 @@ class _CheckoutPageState extends State<CheckoutPage> {
         );
         if (!mounted) return;
 
-        Navigator.of(context).pop({'orderId': r.orderId});
+        Navigator.of(context).pushReplacementNamed(
+          '/payment',
+          arguments: {
+            'orderId': r.orderId,
+            'amount': total,
+          },
+        );
       }
     } catch (e) {
       _toast('建立訂單失敗：$e');
@@ -240,8 +254,6 @@ class _CheckoutPageState extends State<CheckoutPage> {
 
     final subtotal = _calcSubtotal(items);
     final ship = _shippingFee(subtotal);
-
-    // ✅ 先預留折扣（你目前 UI 固定 0）
     final discount = 0;
     final total = subtotal + ship - discount;
 
@@ -286,16 +298,13 @@ class _CheckoutPageState extends State<CheckoutPage> {
             Card(
               child: Column(
                 children: items.map((it) {
-                  final title = (it['title'] ?? it['name'] ?? '未命名商品')
-                      .toString();
+                  final title =
+                      (it['title'] ?? it['name'] ?? it['nameSnapshot'] ?? '未命名商品')
+                          .toString();
                   final unitPrice = _unitPriceOf(it);
                   final qty = _qtyOf(it);
                   return ListTile(
-                    title: Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
                     subtitle: Text('NT\$ $unitPrice ・ 數量 $qty'),
                   );
                 }).toList(),

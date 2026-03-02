@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/admin_gate.dart';
-import '../services/auth_service.dart';
+import '../services/auth/auth_service.dart';
 import '../widgets/user_info_badge.dart';
 
 class _NavItem {

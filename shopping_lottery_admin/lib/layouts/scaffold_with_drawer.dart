@@ -2,7 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../services/auth_service.dart';
+import 'package:osmile_admin/services/auth_service.dart';
 
 class ScaffoldWithDrawer extends StatelessWidget {
   const ScaffoldWithDrawer({
@@ -13,11 +13,7 @@ class ScaffoldWithDrawer extends StatelessWidget {
   });
 
   final String title;
-
-  /// 用來標記 Drawer 目前所在頁（可高亮/避免重複跳轉）
   final String currentRoute;
-
-  /// 主內容
   final Widget body;
 
   @override
@@ -44,19 +40,19 @@ class ScaffoldWithDrawer extends StatelessWidget {
                 context,
                 icon: Icons.inventory_2_outlined,
                 label: '商品管理',
-                route: '/admin/products',
+                route: '/admin-products',
               ),
               _navItem(
                 context,
                 icon: Icons.receipt_long_outlined,
                 label: '訂單管理',
-                route: '/admin/orders',
+                route: '/admin-orders',
               ),
               _navItem(
                 context,
                 icon: Icons.campaign_outlined,
                 label: '活動管理',
-                route: '/admin/campaigns',
+                route: '/admin-campaigns',
               ),
 
               const Spacer(),
@@ -65,7 +61,7 @@ class ScaffoldWithDrawer extends StatelessWidget {
                 leading: const Icon(Icons.logout),
                 title: const Text('登出'),
                 onTap: () async {
-                  Navigator.of(context).pop(); // close drawer
+                  Navigator.of(context).pop();
                   await auth.signOut();
                   if (context.mounted) {
                     Navigator.of(
@@ -96,10 +92,9 @@ class ScaffoldWithDrawer extends StatelessWidget {
       title: Text(label),
       selected: isActive,
       onTap: isActive
-          ? () => Navigator.of(context)
-                .pop() // 已在此頁 → 只關 drawer
+          ? () => Navigator.of(context).pop()
           : () {
-              Navigator.of(context).pop(); // close drawer
+              Navigator.of(context).pop();
               Navigator.of(context).pushReplacementNamed(route);
             },
     );

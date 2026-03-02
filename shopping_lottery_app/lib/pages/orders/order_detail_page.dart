@@ -15,6 +15,8 @@ class OrderDetailPage extends StatelessWidget {
     return int.tryParse(s) ?? (double.tryParse(s)?.round() ?? 0);
   }
 
+  String _s(dynamic v) => (v ?? '').toString().trim();
+
   String _statusText(String s) {
     final v = s.trim().toLowerCase();
     switch (v) {
@@ -32,10 +34,67 @@ class OrderDetailPage extends StatelessWidget {
       case 'delivered':
         return '已送達';
       case 'cancelled':
+      case 'canceled':
         return '已取消';
       default:
         return s.isEmpty ? '—' : s;
     }
+  }
+
+  Map<String, dynamic> _map(dynamic v) {
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return <String, dynamic>{};
+  }
+
+  List<Map<String, dynamic>> _itemsFrom(dynamic v) {
+    if (v is! List) return <Map<String, dynamic>>[];
+    return v.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  String _fmtTs(dynamic v) {
+    if (v is Timestamp) {
+      final dt = v.toDate().toLocal();
+      String two(int n) => n.toString().padLeft(2, '0');
+      return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+    }
+    return '—';
+  }
+
+  Widget _moneyRow(String label, int value, {bool bold = false}) {
+    final style = TextStyle(
+      fontWeight: bold ? FontWeight.w900 : FontWeight.w700,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: style)),
+          Text('NT\$ $value', style: style),
+        ],
+      ),
+    );
+  }
+
+  int _unitPriceOf(Map<String, dynamic> it) {
+    return _toInt(
+      it['unitPriceSnapshot'] ??
+          it['priceSnapshot'] ??
+          it['unitPrice'] ??
+          it['price'] ??
+          it['amount'] ??
+          0,
+    );
+  }
+
+  int _qtyOf(Map<String, dynamic> it) {
+    final q = _toInt(it['qty'] ?? it['quantity'] ?? 1);
+    return q <= 0 ? 1 : q;
+  }
+
+  int _lineTotalOf(Map<String, dynamic> it) {
+    final lt = _toInt(it['lineTotalSnapshot'] ?? it['lineTotal']);
+    if (lt > 0) return lt;
+    return _unitPriceOf(it) * _qtyOf(it);
   }
 
   @override
@@ -59,28 +118,39 @@ class OrderDetailPage extends StatelessWidget {
 
           final m = snap.data!.data() ?? <String, dynamic>{};
 
-          final statusRaw = (m['status'] ?? 'created').toString();
+          final statusRaw = _s(m['status'] ?? 'created');
           final status = _statusText(statusRaw);
 
-          // 兼容 total/subtotal
-          final subtotal = _toInt(m['subtotal'] ?? 0);
-          final shippingFee = _toInt(m['shippingFee'] ?? m['shipping'] ?? 0);
-          final discount = _toInt(m['discount'] ?? 0);
-          final total = _toInt(
-            m['total'] ?? (subtotal + shippingFee - discount),
+          // ✅ pricing 快照（新）優先，其次 fallback 舊欄位
+          final pricing = _map(m['pricing']);
+          final subtotal = _toInt(pricing['subTotal'] ?? m['subtotal'] ?? 0);
+
+          // 兼容多種運費欄位：pricing.shippingFee / shippingFee / shipping.fee
+          final shippingMap = _map(m['shipping']);
+          final shippingFee = _toInt(
+            pricing['shippingFee'] ??
+                m['shippingFee'] ??
+                shippingMap['fee'] ??
+                0,
           );
 
-          final receiverName = (m['receiverName'] ?? '').toString();
-          final receiverPhone = (m['receiverPhone'] ?? '').toString();
-          final receiverAddress = (m['receiverAddress'] ?? '').toString();
+          final discount = _toInt(pricing['discount'] ?? m['discount'] ?? 0);
 
-          // ✅ 這裡改成讀「訂單文件的 items list」
-          final items = (m['items'] is List)
-              ? (m['items'] as List)
-                    .whereType<Map>()
-                    .map((e) => Map<String, dynamic>.from(e))
-                    .toList()
-              : <Map<String, dynamic>>[];
+          final total = _toInt(
+            pricing['total'] ??
+                m['total'] ??
+                (subtotal + shippingFee - discount),
+          );
+
+          final receiverName = _s(m['receiverName']);
+          final receiverPhone = _s(m['receiverPhone']);
+          final receiverAddress = _s(m['receiverAddress']);
+
+          final createdAt = _fmtTs(m['createdAt']);
+          final updatedAt = _fmtTs(m['updatedAt']);
+
+          // ✅ items list（你目前下單已寫入 order.items）
+          final items = _itemsFrom(m['items']);
 
           return ListView(
             padding: const EdgeInsets.all(16),
@@ -105,7 +175,16 @@ class OrderDetailPage extends StatelessWidget {
                       const SizedBox(height: 6),
                       Text(
                         '總計：NT\$ $total',
-                        style: const TextStyle(fontWeight: FontWeight.w800),
+                        style: const TextStyle(fontWeight: FontWeight.w900),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '建立時間：$createdAt',
+                        style: TextStyle(color: Colors.grey.shade700),
+                      ),
+                      Text(
+                        '更新時間：$updatedAt',
+                        style: TextStyle(color: Colors.grey.shade700),
                       ),
                       const SizedBox(height: 10),
                       Align(
@@ -122,7 +201,7 @@ class OrderDetailPage extends StatelessWidget {
                             }
                           },
                           icon: const Icon(Icons.copy_rounded, size: 18),
-                          label: const Text('複製'),
+                          label: const Text('複製訂單號'),
                         ),
                       ),
                       const Divider(),
@@ -149,28 +228,53 @@ class OrderDetailPage extends StatelessWidget {
               if (items.isEmpty)
                 Text(
                   '（此訂單沒有 items 資料）\n'
-                  '如果你之前是把商品存在 orders/{orderId}/items 子集合，請改成在下單時寫入 order.items，或我也可以幫你加 rules 放行子集合。',
+                  '請確認下單時有寫入 orders/{orderId}.items（目前你的 CheckoutSubmitService 已寫入）。',
                   style: TextStyle(color: Colors.grey.shade700),
                 )
               else
                 ...items.map((it) {
-                  final name =
-                      (it['nameSnapshot'] ?? it['title'] ?? it['name'] ?? '商品')
-                          .toString();
-                  final qty = _toInt(it['qty'] ?? it['quantity'] ?? 1);
-                  final price = _toInt(
-                    it['priceSnapshot'] ?? it['price'] ?? it['unitPrice'],
+                  final name = _s(
+                    it['nameSnapshot'] ?? it['title'] ?? it['name'] ?? '商品',
                   );
-                  final lineTotal = price * (qty <= 0 ? 1 : qty);
+                  final qty = _qtyOf(it);
+                  final unitPrice = _unitPriceOf(it);
+                  final lineTotal = _lineTotalOf(it);
+
+                  final imageUrl = _s(
+                    it['imageUrlSnapshot'] ?? it['imageUrl'] ?? it['image'],
+                  );
+
+                  Widget? leading;
+                  if (imageUrl.isNotEmpty) {
+                    leading = ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.network(
+                        imageUrl,
+                        width: 44,
+                        height: 44,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(
+                          width: 44,
+                          height: 44,
+                          color: Colors.black.withValues(alpha: 0.06),
+                          child: const Icon(
+                            Icons.image_not_supported_outlined,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
 
                   return Card(
                     child: ListTile(
+                      leading: leading,
                       title: Text(
                         name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      subtitle: Text('NT\$ $price ・ 數量 $qty'),
+                      subtitle: Text('NT\$ $unitPrice ・ 數量 $qty'),
                       trailing: Text(
                         'NT\$ $lineTotal',
                         style: const TextStyle(fontWeight: FontWeight.w900),
@@ -198,21 +302,6 @@ class OrderDetailPage extends StatelessWidget {
             ],
           );
         },
-      ),
-    );
-  }
-
-  Widget _moneyRow(String label, int value, {bool bold = false}) {
-    final style = TextStyle(
-      fontWeight: bold ? FontWeight.w900 : FontWeight.w700,
-    );
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Expanded(child: Text(label, style: style)),
-          Text('NT\$ $value', style: style),
-        ],
       ),
     );
   }

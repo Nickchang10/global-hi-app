@@ -21,6 +21,11 @@ import 'pages/activity_detail_page.dart';
 // ✅ orders
 import 'pages/orders/orders_page.dart';
 import 'pages/orders/order_detail_page.dart';
+import 'pages/orders/order_success_page.dart';
+
+// ✅ payment（前端金流流程）
+import 'pages/payment/payment_page.dart';
+import 'pages/payment/payment_status_page.dart';
 
 // ✅ addresses / points
 import 'pages/addresses/addresses_page.dart';
@@ -39,7 +44,7 @@ import 'pages/coupons/coupons_page.dart';
 // ✅ notifications center
 import 'pages/notifications/notifications_page.dart';
 
-// ✅ video routes（新增）
+// ✅ video routes
 import 'pages/videos/video_player_page.dart';
 import 'pages/videos/videos_page.dart';
 
@@ -123,6 +128,12 @@ Route<dynamic>? _onGenerateRoute(RouteSettings settings) {
   late final Widget page;
 
   switch (name) {
+    // ✅ 給 OrderSuccessPage 回首頁用
+    case '/home':
+    case '/':
+      page = const AuthGate();
+      break;
+
     case '/shop':
     case '/products':
     case '/store':
@@ -148,6 +159,37 @@ Route<dynamic>? _onGenerateRoute(RouteSettings settings) {
 
     case '/checkout':
       page = CheckoutPage(args: args);
+      break;
+
+    // ✅ 前端金流流程：付款頁
+    case '/payment':
+      page = PaymentPage(args: args);
+      break;
+
+    // ✅ 前端金流流程：付款狀態監聽頁
+    case '/payment_status':
+      page = PaymentStatusPage(args: args);
+      break;
+
+    // ✅ 下單成功頁
+    case '/order_success':
+      String? orderId;
+      num? amount;
+      int autoBackSeconds = 0;
+
+      if (args is Map) {
+        orderId = args['orderId']?.toString();
+        final a = args['amount'];
+        if (a is num) amount = a;
+        final s = args['autoBackSeconds'];
+        if (s is int) autoBackSeconds = s;
+      }
+
+      page = OrderSuccessPage(
+        orderId: orderId,
+        amount: amount,
+        autoBackSeconds: autoBackSeconds,
+      );
       break;
 
     case '/tasks':
@@ -217,7 +259,6 @@ Route<dynamic>? _onGenerateRoute(RouteSettings settings) {
       page = const NotificationsPage();
       break;
 
-    // ✅ 新增：影片播放 / 影片列表
     case '/video':
       page = VideoPlayerPage(args: args);
       break;

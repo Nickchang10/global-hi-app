@@ -19,7 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/admin_gate.dart';
-import '../services/auth_service.dart';
+import '../services/auth/auth_service.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -61,10 +61,14 @@ class _SettingsPageState extends State<SettingsPage> {
       }, SetOptions(merge: true));
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('資料已更新')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('資料已更新')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('更新失敗：$e')));
     } finally {
       setState(() => _saving = false);
     }
@@ -74,10 +78,14 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('重設密碼信件已寄出：$email')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('重設密碼信件已寄出：$email')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('寄送失敗：$e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('寄送失敗：$e')));
     }
   }
 
@@ -92,7 +100,9 @@ class _SettingsPageState extends State<SettingsPage> {
       builder: (context, snap) {
         final user = snap.data;
         if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
         if (user == null) {
           return const Scaffold(body: Center(child: Text('請先登入')));
@@ -102,7 +112,9 @@ class _SettingsPageState extends State<SettingsPage> {
           future: gate.ensureAndGetRole(user),
           builder: (context, roleSnap) {
             if (roleSnap.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
             }
 
             if (roleSnap.hasError) {
@@ -160,15 +172,30 @@ class _SettingsPageState extends State<SettingsPage> {
                                 CircleAvatar(
                                   radius: 24,
                                   backgroundColor: cs.primaryContainer,
-                                  child: const Icon(Icons.person_outline, size: 28),
+                                  child: const Icon(
+                                    Icons.person_outline,
+                                    size: 28,
+                                  ),
                                 ),
                                 const SizedBox(width: 14),
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
-                                      Text(_email, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                      Text('角色：$_role', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
+                                      Text(
+                                        _email,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      Text(
+                                        '角色：$_role',
+                                        style: TextStyle(
+                                          color: cs.onSurfaceVariant,
+                                          fontSize: 12,
+                                        ),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -200,14 +227,17 @@ class _SettingsPageState extends State<SettingsPage> {
                               children: [
                                 Expanded(
                                   child: FilledButton.icon(
-                                    onPressed: _saving ? null : () => _saveProfile(user),
+                                    onPressed: _saving
+                                        ? null
+                                        : () => _saveProfile(user),
                                     icon: const Icon(Icons.save),
                                     label: const Text('儲存變更'),
                                   ),
                                 ),
                                 const SizedBox(width: 10),
                                 OutlinedButton.icon(
-                                  onPressed: () => _changePassword(user.email ?? ''),
+                                  onPressed: () =>
+                                      _changePassword(user.email ?? ''),
                                   icon: const Icon(Icons.lock_reset_outlined),
                                   label: const Text('重設密碼'),
                                 ),
@@ -220,7 +250,10 @@ class _SettingsPageState extends State<SettingsPage> {
                     const SizedBox(height: 12),
                     Text(
                       '帳號資訊會同步至 Firestore 的 users/{uid} 文件。',
-                      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                      style: TextStyle(
+                        color: cs.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -260,14 +293,28 @@ class _SimpleErrorPage extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
                 const SizedBox(height: 10),
-                Text(message, textAlign: TextAlign.center, style: TextStyle(color: cs.error)),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: cs.error),
+                ),
                 const SizedBox(height: 14),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    OutlinedButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('重試')),
+                    OutlinedButton.icon(
+                      onPressed: onRetry,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('重試'),
+                    ),
                     const SizedBox(width: 10),
                     FilledButton.icon(
                       onPressed: () async => onLogout(),

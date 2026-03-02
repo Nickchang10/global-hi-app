@@ -31,7 +31,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../services/auth_service.dart';
+import '../services/auth/auth_service.dart';
 import '../services/notification_service.dart';
 
 class LotteryUserPage extends StatefulWidget {
