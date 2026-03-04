@@ -44,7 +44,7 @@ class _LotteryRevealPageState extends State<LotteryRevealPage> with SingleTicker
         final state = context.read<AppState>();
         final status = state.revealLottery(widget.id, winRate: 0.1);
 
-        final won = status == LotteryStatus.won || (status == null && Random().nextDouble() < 0.1);
+        final won = status == LotteryStatus.won;
         setState(() => _result = won ? _RevealResult.won : _RevealResult.lost);
 
         _controller?.stop();

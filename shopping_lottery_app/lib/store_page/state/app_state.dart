@@ -95,7 +95,7 @@ class AppState extends ChangeNotifier {
         total: total,
         shippingFee: 0, // 預設免運費
         date: DateTime.now(),
-        status: OrderStatus.completed,
+        status: OrderStatus.shipping,
       ),
     );
     notifyListeners();
