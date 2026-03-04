@@ -107,8 +107,3 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   generate: false
-
-  assets:
-    - assets/
-    - assets/icons/
-    - assets/images/

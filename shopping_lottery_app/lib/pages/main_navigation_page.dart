@@ -11,6 +11,9 @@ import 'products/products_page.dart';
 // ✅ 任務頁：你如果已有真實任務頁，改 import + class
 import 'tasks/tasks_page.dart';
 
+// ✅ Store Page
+import '../store_page/pages/home_page.dart' as store_home;
+
 class MainNavigationPage extends StatefulWidget {
   const MainNavigationPage({super.key});
 
@@ -110,7 +113,7 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
   // =========================
   List<String> _parseFooterTabs(dynamic raw) {
     // ✅ 預設（互動先不要 → 預設不含 interact）
-    const fallback = ['home', 'shop', 'task', 'mine'];
+    const fallback = ['home', 'shop', 'storeapp', 'task', 'mine'];
 
     if (raw is! List) return fallback;
 
@@ -150,6 +153,7 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
         return 'home';
       case 'shop':
       case 'store':
+      case 'storeapp':
       case 'products':
         return 'shop';
       case 'task':
@@ -175,6 +179,7 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
     'task',
     'interact',
     'mine',
+    'storeapp',
   };
 
   // =========================
@@ -242,6 +247,18 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
               icon: Icons.person_outline,
               routes: const ['/me', '/mine', '/member', '/support'],
               pageBuilder: (_) => const MemberPage(),
+            ),
+          );
+          break;
+
+        case 'storeapp':
+          specs.add(
+            _TabSpec(
+              id: 'storeapp',
+              label: '抽獎',
+              icon: Icons.card_giftcard_outlined,
+              routes: const ['/storeapp', '/lottery-shop'],
+              pageBuilder: (_) => const store_home.HomePage(),
             ),
           );
           break;

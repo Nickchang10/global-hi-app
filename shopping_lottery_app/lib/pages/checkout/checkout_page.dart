@@ -216,7 +216,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
 
         // ✅ 前端金流流程：下單成功 → 進付款頁
         Navigator.of(context).pushReplacementNamed(
-          '/payment',
+          '/store_payment',
           arguments: {
             'orderId': r.orderId,
             'amount': total,
@@ -234,7 +234,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
         if (!mounted) return;
 
         Navigator.of(context).pushReplacementNamed(
-          '/payment',
+          '/store_payment',
           arguments: {
             'orderId': r.orderId,
             'amount': total,

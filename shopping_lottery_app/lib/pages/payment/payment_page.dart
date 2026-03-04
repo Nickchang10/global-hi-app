@@ -78,7 +78,7 @@ class PaymentPage extends StatelessWidget {
                   if (orderRef == null)
                     _kv(
                       '應付金額',
-                      amountFromArgs == null ? '—' : _fmtMoney(amountFromArgs!),
+                      amountFromArgs == null ? '—' : _fmtMoney(amountFromArgs as int),
                     )
                   else
                     StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -89,7 +89,7 @@ class PaymentPage extends StatelessWidget {
                             '應付金額',
                             amountFromArgs == null
                                 ? '—'
-                                : '${_fmtMoney(amountFromArgs!)}（讀取訂單失敗）',
+                                : '${_fmtMoney(amountFromArgs as int)}（讀取訂單失敗）',
                           );
                         }
                         if (!snap.hasData || !snap.data!.exists) {
@@ -97,7 +97,7 @@ class PaymentPage extends StatelessWidget {
                             '應付金額',
                             amountFromArgs == null
                                 ? '讀取中…'
-                                : _fmtMoney(amountFromArgs!),
+                                : _fmtMoney(amountFromArgs as int),
                           );
                         }
                         final data = snap.data!.data() ?? <String, dynamic>{};

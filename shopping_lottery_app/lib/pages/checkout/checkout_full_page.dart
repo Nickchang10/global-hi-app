@@ -283,7 +283,7 @@ class _CheckoutFullPageState extends State<CheckoutFullPage> {
                 onPressed: () {
                   Navigator.of(ctx).pop();
                   Navigator.of(context).pushNamed(
-                    '/payment',
+                    '/store_payment',
                     arguments: <String, dynamic>{'orderId': orderDoc.id},
                   );
                 },
